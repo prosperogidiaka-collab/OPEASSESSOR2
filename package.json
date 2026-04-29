@@ -1,0 +1,10 @@
+{
+  "name": "ope-assessor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OPE Assessor assessment app with optional shared sync server",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node server.js"
+  }
+}

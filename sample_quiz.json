@@ -1,0 +1,23 @@
+{
+  "id": "123456",
+  "title": "Demo Quiz - Sample",
+  "timeLimit": 15,
+  "maxGrade": 100,
+  "createdAt": "2026-02-04T00:00:00Z",
+  "teacherId": "teacher_demo",
+  "subjects": [
+    {
+      "name": "Math",
+      "questions": [
+        { "question": "What is 2+2?", "options": ["3","4","5","6"], "answer": "B", "difficulty": "Easy" },
+        { "question": "What is 5-3?", "options": ["1","2","3","4"], "answer": "B", "difficulty": "Easy" }
+      ]
+    },
+    {
+      "name": "English",
+      "questions": [
+        { "question": "Select the synonym of fast.", "options": ["Slow","Rapid","Late","Weak"], "answer": "B", "difficulty": "Medium" }
+      ]
+    }
+  ]
+}

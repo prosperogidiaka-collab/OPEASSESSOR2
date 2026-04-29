@@ -1,0 +1,374 @@
+═══════════════════════════════════════════════════════════════════════════════
+🎨 VISUAL REFERENCE — OPE ASSESSOR Beautiful Design
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🌈 COLOR PALETTE
+
+Pastel Modern Theme:
+┌─────────────────────────────────────────────────────────────┐
+│ Purple (#a78bfa)        │ Soft, calming, professional      │
+│ Pink/Red (#fb7185)      │ Energetic, attention-grabbing    │
+│ Gold (#fbbf24)          │ Accent, highlights               │
+│ Green (#86efac)         │ Success, positive feedback       │
+│ Blue (#93c5fd)          │ Info, calm, trustworthy          │
+│ Orange (#fed7aa)        │ Warning, caution                 │
+└─────────────────────────────────────────────────────────────┘
+
+Page Background:
+    Linear gradient from light purple (#f3e8ff) to light pink (#fce7f3)
+    Creates soft, welcoming atmosphere
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🔤 TYPOGRAPHY
+
+PLAYFAIR DISPLAY (Serif)
+┌─────────────────────────────┐
+│ Welcome to OPE Assessor     │  Large, bold (4xl-5xl)
+│ Teacher Dashboard           │  Headers and titles
+│ Join a Quiz                 │  High impact, elegant
+└─────────────────────────────┘
+
+POPPINS (Sans-serif)
+┌─────────────────────────────┐
+│ Create and manage quizzes   │  Body text, buttons
+│ Fill in all fields below    │  Clear, modern, friendly
+│ Click to continue          │  Most of the interface
+└─────────────────────────────┘
+
+INTER (Sans-serif alternative)
+┌─────────────────────────────┐
+│ question, optionA, ...      │  Code/technical text
+│ Format: CSV or Excel        │  Monospace feel
+└─────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🎁 COMPONENT LIBRARY
+
+### BUTTONS
+
+┌──────────────────────────────────────────────────────────────────┐
+│ PRIMARY BUTTON (Pastel Purple → Darker Purple)                   │
+│                                                                  │
+│  ╔═══════════════════════╗                                      │
+│  ║  📥 Export Template   ║  ← Gradient background               │
+│  ╚═══════════════════════╝    White text, rounded               │
+│                               Hover: Lifts up, dark shadow      │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│ SECONDARY BUTTON (Pastel Pink → Red)                             │
+│                                                                  │
+│  ╔═══════════════════════╗                                      │
+│  ║  ✅ Create Quiz       ║  ← Gradient background               │
+│  ╚═══════════════════════╝    White text, rounded               │
+│                               Hover: Lifts up, pink shadow      │
+└──────────────────────────────────────────────────────────────────┘
+
+### INPUT FIELDS
+
+┌──────────────────────────────────────────────────────────────────┐
+│ INPUT BEAUTIFUL                                                  │
+│                                                                  │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━┓  ← Soft purple border               │
+│ ┃ Enter quiz title...     ┃    Transparent white background    │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━┛    Rounded 12px corners            │
+│                               Focus: Glowing purple border      │
+└──────────────────────────────────────────────────────────────────┘
+
+### CARDS
+
+┌──────────────────────────────────────────────────────────────────┐
+│ CARD BEAUTIFUL                                                   │
+│                                                                  │
+│ ╭──────────────────────────────────────────────────────────────╮ │
+│ │                                                              │ │
+│ │  ┌──────────────────────────────────────────────────────┐  │ │
+│ │  │ 👨‍🏫 Teacher Dashboard                                 │  │ │
+│ │  │                                                      │  │ │
+│ │  │ Create and manage your assessments with ease        │  │ │
+│ │  └──────────────────────────────────────────────────────┘  │ │
+│ │                                                              │ │
+│ │  • Frosted glass effect (backdrop blur)                     │ │
+│ │  • Soft borders with transparency                           │ │
+│ │  • Smooth hover lift animation                              │ │
+│ │  • Gradient or solid background options                     │ │
+│ │                                                              │ │
+│ ╰──────────────────────────────────────────────────────────────╯ │
+│                                                                  │
+│ Hover Effect:                                                    │
+│ • Slight lift (translateY -4px)                                 │
+│ • Enhanced shadow (0 12px 30px)                                │
+│ • Smooth 0.3s transition                                        │
+└──────────────────────────────────────────────────────────────────┘
+
+### BADGES
+
+┌──────────────────────────────────────────────────────────────────┐
+│ BADGE PASTEL                                                     │
+│                                                                  │
+│  ┌────────────────────┐                                         │
+│  │ Quiz ID: 123456    │  ← Gradient background (purple→pink)   │
+│  └────────────────────┘    Purple text on light background     │
+│                            Rounded pill (20px)                  │
+│                            Small, 12px font                     │
+└──────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🏗️ PAGE LAYOUTS
+
+### HOME PAGE LAYOUT
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    [Navigation Bar]                             │
+│          (Gradient purple→pink, white text)                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ╔════════════════════════════════════════════════════════════╗│
+│  ║  Welcome to OPE Assessor          [Playfair, large bold]  ║│
+│  ║  ✨ Zero-Friction • 🔒 Privacy-First • ⚡ No Server        ║│
+│  ║              [Subtitle, smaller, gray]                    ║║
+│  ╚════════════════════════════════════════════════════════════╝│
+│                                                                 │
+│  ┌──────────────────────┐    ┌──────────────────────┐         │
+│  │  👨‍🏫 For Teachers   │    │  📚 For Students     │         │
+│  │                      │    │                      │         │
+│  │ ✓ Create quizzes     │    │ ✓ Join via code      │         │
+│  │ ✓ Import questions   │    │ ✓ No registration    │         │
+│  │ ✓ Track live         │    │ ✓ Instant grading    │         │
+│  │ ✓ Export results     │    │ ✓ View rankings      │         │
+│  │ ✓ Web cam/rankings   │    │ ✓ Print summary      │         │
+│  │                      │    │                      │         │
+│  │ [Primary Button] ▶   │    │ [Secondary Button] ▶ │         │
+│  └──────────────────────┘    └──────────────────────┘         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+### TEACHER DASHBOARD LAYOUT
+
+┌─────────────────────────────────────────────────────────────────┐
+│ [Sticky Navigation]                                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ 👨‍🏫 Teacher Dashboard              [text-gradient, large]       │
+│ Create and manage your assessments  [gray subtitle]            │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 📋 Quiz Settings                    [Card header, bold]     ││
+│ │ ┌─────────┬─────────┬─────────┐                            ││
+│ │ │Exam Name│Quiz Title│Time Limit                           ││
+│ │ │[Input]  │[Input]  │[Input]                              ││
+│ │ └─────────┴─────────┴─────────┘                            ││
+│ │ [More rows...]                                              ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 📚 Configure Subjects                                       ││
+│ │ [Input: # Subjects] [Generate Button]                       ││
+│ │                                                              ││
+│ │ ╔════════════════════════════════════════════════════════╗ ││
+│ │ ║ 📕 Subject 1                                           ║ ││
+│ │ ║ ┌────────┬────────┬────────┬────────┬────────┐         ║ ││
+│ │ ║ │Name    │File    │Count   │Shuffle │Shuffle │         ║ ││
+│ │ ║ │[Input] │[Upload]│[Input] │Q? ☑   │Opts? ☑ ║         ║ ││
+│ │ ║ └────────┴────────┴────────┴────────┴────────┘         ║ ││
+│ │ ║                                                          ║ ││
+│ │ ║ Format: question, optionA, optionB... [help text]       ║ ││
+│ │ ╚════════════════════════════════════════════════════════╝ ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 🔐 Student Whitelist (Optional)                             ││
+│ │ [Upload CSV/Excel file]                                     ││
+│ │ Format: Name, ID columns                                    ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ [📥 Export Template] [✅ Create Quiz]                          │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 📋 Your Existing Quizzes                                    ││
+│ │ ┌─────────────────────────────────────────────────────────┐││
+│ │ │ Physics Midterm [ID: 123456]                            │││
+│ │ │ ABC University • 3 subjects • 75 questions • 60m        │││
+│ │ │ [📊 Results] [🔗 Copy Link] [🗑️ Delete]                │││
+│ │ └─────────────────────────────────────────────────────────┘││
+│ │ [More quizzes...]                                           ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+### STUDENT QUIZ ENTRY LAYOUT
+
+┌─────────────────────────────────────────────────────────────────┐
+│ [Navigation]                                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ 📚 Join a Quiz              [Playfair, bold, gradient text]    │
+│ Enter the quiz code or paste your magic link [subtitle]       │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 🔢 Enter 6-Digit Quiz Code                                 ││
+│ │ ┏━━━━━━━━━━━━━━┓                                           ││
+│ │ ┃   123456     ┃  ← Monospace font, centered, large       ││
+│ │ ┗━━━━━━━━━━━━━━┛                                           ││
+│ │                                                              ││
+│ │ ───────────────────────────────────────────────────────     ││
+│ │              or                                             ││
+│ │ ───────────────────────────────────────────────────────     ││
+│ │                                                              ││
+│ │ 🔗 Paste Magic Link                                         ││
+│ │ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓     ││
+│ │ ┃ https://example.com/?import=... [paste here]     ┃     ││
+│ │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     ││
+│ │                                                              ││
+│ │ [🔓 Join by Code] [📨 Import Link]                          ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+### QUIZ TAKING LAYOUT
+
+┌─────────────────────────────────────────────────────────────────┐
+│ [Navigation]                                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Physics Midterm     [Quiz ID: 123456]                           │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ 🏫 ABC University                                           ││
+│ │                                                              ││
+│ │ ┌───────────┬───────────┬───────────┬───────────┐          ││
+│ │ │  📚  Sub  │ 📋  Qs   │⏱️  Time  │ ⭐ Points │          ││
+│ │ │  3       │   75     │  60m     │  100      │          ││
+│ │ └───────────┴───────────┴───────────┴───────────┘          ││
+│ │                                                              ││
+│ ├──────────────────────────────────────────────────────────────┤│
+│ │                                                              ││
+│ │ ✍️ Before You Begin                                         ││
+│ │                                                              ││
+│ │ 👤 Your Full Name          ✉️ Your Email                  ││
+│ │ [Input: John Doe]          [Input: john@email.com]         ││
+│ │                                                              ││
+│ │ ⚠️ Important Rules & Requirements                           ││
+│ │                                                              ││
+│ │ 1. Fullscreen Mode: Your browser will enter fullscreen...  ││
+│ │ 2. No Tab Switching: Leaving tab → 5-sec warning...        ││
+│ │ 3. Question Navigation: Scroll vertically...                ││
+│ │ 4. Edit Answers: Change answers anytime...                  ││
+│ │ 5. Webcam Verification: Your webcam will be activated...   ││
+│ │                                                              ││
+│ │ ┌──────────────────────────────────────────────────────┐  ││
+│ │ │☑ 📹 Enable Webcam (optional)                         │  ││
+│ │ └──────────────────────────────────────────────────────┘  ││
+│ │ ┌──────────────────────────────────────────────────────┐  ││
+│ │ │☑ ✓ I understand the rules and am ready to begin     │  ││
+│ │ └──────────────────────────────────────────────────────┘  ││
+│ │                                                              ││
+│ │ [🚀 Begin Assessment Now] (full width button)              ││
+│ │                                                              ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ --- WHEN QUIZ STARTS ---                                        │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ ┌─────────────────┬─────────────────┐  [Webcam 120x120]   ││
+│ │ │  ⏱️ 00:45      │  ✔️ 00:02:35  │                       ││
+│ │ │ Time Remaining  │ Elapsed Time    │                       ││
+│ │ └─────────────────┴─────────────────┘                       ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ Question 1/75 [Physics] [Easy]                                  │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ What is the speed of light?                                ││
+│ │                                                              ││
+│ │ ○ 3 × 10⁸ m/s (correct!)                                   ││
+│ │ ○ 3 × 10⁶ m/s                                              ││
+│ │ ○ 3 × 10¹⁰ m/s                                             ││
+│ │ ○ 3 × 10⁻⁸ m/s                                             ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+│ [Question 2] [Question 3] [Question 4] ... [More]            │
+│                                                                 │
+│ ╭─────────────────────────────────────────────────────────────╮│
+│ │ [✅ Finish & Submit Assessment]                            ││
+│ ╰─────────────────────────────────────────────────────────────╯│
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🎬 ANIMATIONS & INTERACTIONS
+
+Smooth Transitions:
+- All interactive elements: 0.3s cubic-bezier easing
+- Button hover: Lift up (translateY -2px) + shadow increase
+- Cards: Smooth shadow expansion on hover
+- Inputs: Border color change + glow on focus
+
+Slide-In Animation:
+- Notifications slide in from right (400px → 0px)
+- Duration: 0.3s ease-out
+- Remove with fade-out
+
+Pulse Animation:
+- Timer when under 60 seconds: opacity 1 → 0.5 → 1
+- Violation warning countdown: same pulse effect
+- Duration: 1s infinite
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 📱 RESPONSIVE DESIGN
+
+Mobile (< 768px):
+- Single column layouts
+- Stack cards vertically
+- Full-width buttons
+- Adjusted font sizes
+- Touch-friendly spacing
+
+Tablet (768px - 1024px):
+- 2-column grids
+- Horizontal button layouts
+- Moderate spacing
+
+Desktop (> 1024px):
+- Full multi-column layouts
+- Optimal spacing
+- Maximum readability
+- Sidebar possibilities
+
+═══════════════════════════════════════════════════════════════════════════════
+
+## 🎯 KEY VISUAL IMPROVEMENTS
+
+✨ BEAUTIFUL TYPOGRAPHY
+   - Premium Google Fonts
+   - Clear hierarchy
+   - Readable, modern feel
+
+🎨 PASTEL COLOR PALETTE
+   - Soft, non-aggressive colors
+   - Professional appearance
+   - Consistent throughout
+
+💎 FROSTED GLASS EFFECT
+   - Modern card styling
+   - Depth and layering
+   - Sophisticated look
+
+✨ SMOOTH ANIMATIONS
+   - Delightful interactions
+   - Professional feel
+   - Not distracting
+
+🌈 GRADIENT ACCENTS
+   - Visual interest
+   - Draws attention
+   - Modern web design
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Ready to deploy! 🚀✨
+

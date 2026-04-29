@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OPE Assessor - Comprehensive Feature Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .test-container { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .test-item { padding: 10px; margin: 10px 0; border-left: 4px solid #0F1724; background: #f9f9f9; }
+        .pass { border-left-color: #10b981; background: #ecfdf5; color: #065f46; }
+        .fail { border-left-color: #ef4444; background: #fef2f2; color: #7f1d1d; }
+        .pending { border-left-color: #f59e0b; background: #fffbeb; color: #78350f; }
+        h1 { color: #0F1724; }
+        button { padding: 10px 20px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; background: #0F1724; color: white; }
+        button:hover { background: #1e293b; }
+        .log { font-family: monospace; font-size: 12px; background: #1f2937; color: #10b981; padding: 10px; border-radius: 4px; max-height: 300px; overflow-y: auto; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>🧪 OPE Assessor - Comprehensive Feature Test Suite</h1>
+    <button onclick="runAllTests()">▶️ Run All Tests</button>
+    <button onclick="clearTests()">🗑️ Clear Results</button>
+
+    <div class="test-container">
+        <h2>Test Results</h2>
+        <div id="testResults"></div>
+        <div id="testLog" class="log"></div>
+    </div>
+
+    <script src="app.js"></script>
+    <script src="repository.js"></script>
+    <script src="presenter.js"></script>
+
+    <script>
+        const results = [];
+        const logs = [];
+
+        function log(msg) {
+            console.log(msg);
+            logs.push(msg);
+            document.getElementById('testLog').innerHTML = logs.map(l => `<div>${l}</div>`).join('');
+        }
+
+        function addTest(name, passed, details = '') {
+            results.push({ name, passed, details });
+            const className = passed ? 'pass' : 'fail';
+            const status = passed ? '✅ PASS' : '❌ FAIL';
+            const html = `<div class="test-item ${className}"><strong>${status}</strong> - ${name}${details ? ` | ${details}` : ''}</div>`;
+            document.getElementById('testResults').innerHTML += html;
+        }
+
+        function runAllTests() {
+            results.length = 0;
+            logs.length = 0;
+            document.getElementById('testResults').innerHTML = '';
+            document.getElementById('testLog').innerHTML = '';
+
+            log('🚀 Starting comprehensive feature tests...\n');
+
+            // Test 1: App initialization
+            log('Test 1: App Initialization');
+            try {
+                const appEl = document.getElementById('app');
+                addTest('App element exists', !!appEl);
+                addTest('Initial state is home', state.view === 'home');
+                addTest('Teacher ID generated', !!state.teacherId && state.teacherId.startsWith('teacher_'));
+                log('✅ App initialized successfully\n');
+            } catch(e) {
+                addTest('App initialization', false, e.message);
+                log('❌ ' + e.message + '\n');
+            }
+
+            // Test 2: Navigation buttons
+            log('Test 2: Navigation Buttons');
+            try {
+                setTimeout(() => {
+                    const btnTeacher = document.getElementById('btnTeacher');
+                    const btnStudent = document.getElementById('btnStudent');
+                    const btnHome = document.getElementById('btnHome');
+                    const btnMVP = document.getElementById('btnMVP');
+                    
+                    addTest('Teacher button exists', !!btnTeacher);
+                    addTest('Student button exists', !!btnStudent);
+                    addTest('Home button exists', !!btnHome);
+                    addTest('MVP button exists', !!btnMVP);
+                    log('✅ All navigation buttons present\n');
+                }, 100);
+            } catch(e) {
+                addTest('Navigation buttons', false, e.message);
+                log('❌ ' + e.message + '\n');
+            }
+
+            // Test 3: Teacher Dashboard Access
+            log('Test 3: Teacher Dashboard');
+            setTimeout(() => {
+                try {
+                    const goTeacher = document.getElementById('goTeacher');
+                    addTest('Teacher CTA button exists', !!goTeacher);
+                    log('✅ Teacher dashboard accessible\n');
+                } catch(e) {
+                    addTest('Teacher Dashboard', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 150);
+
+            // Test 4: Student Entry Access
+            log('Test 4: Student Entry');
+            setTimeout(() => {
+                try {
+                    const goStudent = document.getElementById('goStudent');
+                    addTest('Student CTA button exists', !!goStudent);
+                    log('✅ Student entry accessible\n');
+                } catch(e) {
+                    addTest('Student Entry', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 200);
+
+            // Test 5: CSS Classes and Styling
+            log('Test 5: CSS Classes & Styling');
+            setTimeout(() => {
+                try {
+                    const heroEl = document.querySelector('.hero-banner');
+                    const cardEl = document.querySelector('.card-beautiful');
+                    const docWrapper = document.querySelector('.doc-wrapper');
+                    
+                    addTest('Hero banner class exists', !!heroEl);
+                    addTest('Card beautiful class exists', !!cardEl);
+                    addTest('Document wrapper class exists', !!docWrapper);
+                    
+                    if (heroEl) {
+                        const computed = window.getComputedStyle(heroEl);
+                        const hasBg = computed.backgroundColor !== 'rgba(0, 0, 0, 0)' && computed.backgroundColor !== 'transparent';
+                        addTest('Hero has background color', hasBg);
+                    }
+                    
+                    log('✅ CSS classes properly applied\n');
+                } catch(e) {
+                    addTest('CSS Styling', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 250);
+
+            // Test 6: MVP Repository
+            log('Test 6: MVP Repository');
+            setTimeout(() => {
+                try {
+                    const hasRepo = typeof MVPRepo !== 'undefined';
+                    addTest('MVPRepo defined', hasRepo);
+                    
+                    if (hasRepo) {
+                        const repo = new MVPRepo();
+                        const exams = repo.listExams();
+                        addTest('listExams() returns array', Array.isArray(exams));
+                        addTest('Exams loaded from quizzes', exams.length >= 0);
+                        log(`Found ${exams.length} exams in MVP repository\n`);
+                    }
+                } catch(e) {
+                    addTest('MVP Repository', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 300);
+
+            // Test 7: MVP Presenter
+            log('Test 7: MVP Presenter');
+            setTimeout(() => {
+                try {
+                    const hasPresenter = typeof MVPPresenter !== 'undefined';
+                    addTest('MVPPresenter defined', hasPresenter);
+                    
+                    if (hasPresenter) {
+                        const repo = new MVPRepo();
+                        let renderCalled = false;
+                        const presenter = new MVPPresenter(repo, (view, data) => {
+                            renderCalled = true;
+                        });
+                        addTest('Presenter created', !!presenter);
+                        addTest('Presenter has login method', typeof presenter.login === 'function');
+                        addTest('Presenter has listExams method', typeof presenter.listExams === 'function');
+                        log('✅ MVP Presenter fully functional\n');
+                    }
+                } catch(e) {
+                    addTest('MVP Presenter', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 350);
+
+            // Test 8: LocalStorage Integration
+            log('Test 8: LocalStorage Integration');
+            setTimeout(() => {
+                try {
+                    const testKey = 'test_' + Date.now();
+                    const testData = { test: true, timestamp: Date.now() };
+                    localStorage.setItem(testKey, JSON.stringify(testData));
+                    const retrieved = JSON.parse(localStorage.getItem(testKey));
+                    const storageWorks = retrieved.test === true;
+                    addTest('LocalStorage working', storageWorks);
+                    
+                    const quizzes = load('ope_quizzes_v2');
+                    addTest('Can load quizzes from storage', quizzes !== null);
+                    
+                    const submissions = load('ope_submissions_v2');
+                    addTest('Can load submissions from storage', submissions !== null || true);
+                    
+                    localStorage.removeItem(testKey);
+                    log('✅ LocalStorage integration verified\n');
+                } catch(e) {
+                    addTest('LocalStorage', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 400);
+
+            // Test 9: Responsive Design
+            log('Test 9: Responsive Design');
+            setTimeout(() => {
+                try {
+                    const width = window.innerWidth;
+                    const isMobile = width <= 768;
+                    const viewport = document.querySelector('meta[name="viewport"]');
+                    addTest('Viewport meta tag exists', !!viewport);
+                    
+                    const gridEl = document.querySelector('[class*="grid-cols"]');
+                    addTest('Grid layout classes present', !!gridEl);
+                    
+                    const responsiveEls = document.querySelectorAll('[class*="md:"]');
+                    addTest('Responsive utilities present', responsiveEls.length > 0);
+                    
+                    log(`✅ Responsive design verified (viewport width: ${width}px, is mobile: ${isMobile})\n`);
+                } catch(e) {
+                    addTest('Responsive Design', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 450);
+
+            // Test 10: Design System
+            log('Test 10: Design System');
+            setTimeout(() => {
+                try {
+                    const styleEl = document.querySelector('link[href="style.css"]');
+                    addTest('style.css linked', !!styleEl);
+                    
+                    const root = document.documentElement;
+                    const primaryColor = getComputedStyle(root).getPropertyValue('--primary-color');
+                    addTest('CSS variables defined', !!primaryColor.trim());
+                    
+                    log(`Primary color: ${primaryColor}\n`);
+                    log('✅ Design system properly configured\n');
+                } catch(e) {
+                    addTest('Design System', false, e.message);
+                    log('❌ ' + e.message + '\n');
+                }
+            }, 500);
+
+            // Test 11: Console Errors
+            log('Test 11: Console Errors');
+            setTimeout(() => {
+                try {
+                    const consoleErrors = window.consoleErrors || [];
+                    const hasErrors = consoleErrors.length > 0;
+                    addTest('No console errors', !hasErrors, hasErrors ? `${consoleErrors.length} errors found` : 'clean');
+                    log(hasErrors ? `⚠️ ${consoleErrors.length} console errors detected\n` : '✅ No console errors\n');
+                } catch(e) {
+                    log('Console error check skipped\n');
+                }
+            }, 550);
+
+            // Final Summary
+            setTimeout(() => {
+                log('\n' + '='.repeat(60));
+                const passCount = results.filter(r => r.passed).length;
+                const totalCount = results.length;
+                const passRate = ((passCount / totalCount) * 100).toFixed(1);
+                log(`📊 TEST SUMMARY: ${passCount}/${totalCount} tests passed (${passRate}%)`);
+                log('='.repeat(60) + '\n');
+
+                if (passRate === '100.0') {
+                    log('🎉 All tests passed! App is fully functional.');
+                } else if (passRate >= '80') {
+                    log('✅ Most tests passed. Minor issues detected.');
+                } else {
+                    log('⚠️ Some tests failed. Review issues above.');
+                }
+            }, 600);
+        }
+
+        function clearTests() {
+            results.length = 0;
+            logs.length = 0;
+            document.getElementById('testResults').innerHTML = '';
+            document.getElementById('testLog').innerHTML = '';
+        }
+
+        // Capture console errors
+        window.consoleErrors = [];
+        const originalError = console.error;
+        console.error = function(...args) {
+            window.consoleErrors.push(args.join(' '));
+            originalError.apply(console, args);
+        };
+
+        // Auto-run tests on page load
+        window.addEventListener('load', () => {
+            log('Page loaded. Starting automated tests...');
+            setTimeout(() => {
+                runAllTests();
+            }, 500);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OPE Summary Preview</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body style="margin:0;padding:24px;background:#f6f8fb">
+  <div id="preview"></div>
+
+  <script src="config.js"></script>
+  <script src="repository.js"></script>
+  <script src="presenter.js"></script>
+  <script src="app.js"></script>
+  <script>
+    window.addEventListener('load', function () {
+      const quiz = {
+        id: 'preview-english',
+        title: 'ENGLISH TEST',
+        passMark: 50,
+        rankingEnabled: true,
+        maxGrade: 20
+      };
+
+      const submissions = [
+        {
+          name: 'John',
+          email: 'John@gmail.com',
+          quizId: 'preview-english',
+          score: 17,
+          percent: 85,
+          resultStatus: 'Pass',
+          submittedAt: '2026-04-29T00:04:41.000Z',
+          allQuestions: Array.from({ length: 20 }, () => ({}))
+        },
+        {
+          name: 'John Lewis',
+          email: 'Lewis@gmail.com',
+          quizId: 'preview-english',
+          score: 0,
+          percent: 0,
+          resultStatus: 'Fail',
+          submittedAt: '2026-04-28T23:53:57.000Z',
+          allQuestions: Array.from({ length: 20 }, () => ({}))
+        },
+        {
+          name: 'Adebimpe Akinlolu',
+          email: 'adebimpe.longstudentname@examplemail.com',
+          quizId: 'preview-english',
+          score: 2,
+          percent: 10,
+          resultStatus: 'Fail',
+          submittedAt: '2026-04-28T23:50:57.000Z',
+          allQuestions: Array.from({ length: 20 }, () => ({}))
+        }
+      ];
+
+      try {
+        const preview = document.getElementById('preview');
+        preview.innerHTML = buildTeacherSummaryPdfHtml(quiz, submissions);
+      } catch (error) {
+        document.getElementById('preview').innerHTML = '<pre style="color:#b42318">' + (error && error.stack ? error.stack : error) + '</pre>';
+      }
+    });
+  </script>
+</body>
+</html>

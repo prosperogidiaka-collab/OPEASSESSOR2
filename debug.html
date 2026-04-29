@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OPE Assessor - Debug Mode</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <div class="p-8">
+            <h1 class="text-2xl font-bold mb-4">OPE Assessor Debug Mode</h1>
+            <div id="debug-info" class="bg-gray-100 p-4 rounded mb-4"></div>
+            <button onclick="testApp()" class="bg-blue-500 text-white px-4 py-2 rounded">Test App</button>
+            <div id="test-results" class="mt-4"></div>
+        </div>
+    </div>
+
+    <script>
+        function updateDebugInfo() {
+            const debugInfo = document.getElementById('debug-info');
+            debugInfo.innerHTML = `
+                <h3 class="font-bold mb-2">Debug Information:</h3>
+                <p><strong>URL:</strong> ${window.location.href}</p>
+                <p><strong>User Agent:</strong> ${navigator.userAgent}</p>
+                <p><strong>LocalStorage Available:</strong> ${typeof Storage !== 'undefined' ? 'Yes' : 'No'}</p>
+                <p><strong>External Libraries:</strong></p>
+                <ul>
+                    <li>Tailwind CSS: ${typeof tailwind !== 'undefined' ? 'Loaded' : 'Not loaded'}</li>
+                    <li>XLSX: ${typeof XLSX !== 'undefined' ? 'Loaded' : 'Not loaded'}</li>
+                    <li>html2pdf: ${typeof html2pdf !== 'undefined' ? 'Loaded' : 'Not loaded'}</li>
+                    <li>FileSaver: ${typeof saveAs !== 'undefined' ? 'Loaded' : 'Not loaded'}</li>
+                </ul>
+            `;
+        }
+
+        function testApp() {
+            const results = document.getElementById('test-results');
+            results.innerHTML = '<h3 class="font-bold mb-2">Testing App Components:</h3>';
+            
+            // Test basic functions
+            const tests = [];
+            
+            // Test localStorage
+            try {
+                localStorage.setItem('test', 'value');
+                localStorage.removeItem('test');
+                tests.push('<span class="text-green-600">✓ LocalStorage working</span>');
+            } catch (e) {
+                tests.push('<span class="text-red-600">✗ LocalStorage failed: ' + e.message + '</span>');
+            }
+            
+            // Test app.js loading
+            try {
+                if (typeof render === 'function') {
+                    tests.push('<span class="text-green-600">✓ render() function available</span>');
+                } else {
+                    tests.push('<span class="text-red-600">✗ render() function not found</span>');
+                }
+                
+                if (typeof showNotification === 'function') {
+                    tests.push('<span class="text-green-600">✓ showNotification() function available</span>');
+                } else {
+                    tests.push('<span class="text-red-600">✗ showNotification() function not found</span>');
+                }
+                
+                if (typeof getAllQuizzes === 'function') {
+                    tests.push('<span class="text-green-600">✓ getAllQuizzes() function available</span>');
+                } else {
+                    tests.push('<span class="text-red-600">✗ getAllQuizzes() function not found</span>');
+                }
+            } catch (e) {
+                tests.push('<span class="text-red-600">✗ App.js loading failed: ' + e.message + '</span>');
+            }
+            
+            // Test CSS classes
+            try {
+                const testDiv = document.createElement('div');
+                testDiv.className = 'card-beautiful';
+                document.body.appendChild(testDiv);
+                const styles = window.getComputedStyle(testDiv);
+                if (styles.background && styles.background !== 'rgba(0, 0, 0, 0)') {
+                    tests.push('<span class="text-green-600">✓ CSS classes working</span>');
+                } else {
+                    tests.push('<span class="text-red-600">✗ CSS classes not working</span>');
+                }
+                document.body.removeChild(testDiv);
+            } catch (e) {
+                tests.push('<span class="text-red-600">✗ CSS test failed: ' + e.message + '</span>');
+            }
+            
+            results.innerHTML += '<ul class="list-disc pl-6">' + tests.map(test => '<li>' + test + '</li>').join('') + '</ul>';
+            
+            // Try to render the actual app
+            try {
+                if (typeof render === 'function') {
+                    render();
+                    results.innerHTML += '<p class="text-green-600 mt-4">✓ App rendered successfully</p>';
+                }
+            } catch (e) {
+                results.innerHTML += '<p class="text-red-600 mt-4">✗ App rendering failed: ' + e.message + '</p>';
+                    console.error('App rendering error:', e);
+                }
+        }
+
+        // Initialize debug info
+        updateDebugInfo();
+        
+        // Check for external libraries
+        window.addEventListener('load', function() {
+            setTimeout(updateDebugInfo, 1000);
+        });
+    </script>
+
+    <!-- Load external libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/file-saver/dist/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    
+    <!-- Load app files -->
+    <script src="repository.js"></script>
+    <script src="presenter.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

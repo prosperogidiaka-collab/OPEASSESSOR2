@@ -1,0 +1,3423 @@
+{
+  "quizzes": {
+    "334891": {
+      "id": "334891",
+      "examName": "OKE SECONDARY SCHOOL",
+      "title": "ENGLISH TEST",
+      "password": "",
+      "timeLimit": 5,
+      "maxGrade": 100,
+      "attemptLimit": 1,
+      "passMark": 70,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": false,
+      "subjects": [
+        {
+          "name": "General",
+          "questions": [
+            {
+              "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+              "options": [
+                "plentiful",
+                "scarce",
+                "limited",
+                "rare"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_cgkvn8"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+              "options": [
+                "eager",
+                "unwilling",
+                "hesitant",
+                "doubtful"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_aigeuj"
+            },
+            {
+              "question": "Fill in the blank: She insisted ___ paying the bill.",
+              "options": [
+                "on",
+                "in",
+                "at",
+                "for"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_n2qsmq"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "He don't like rice.",
+                "He doesn't likes rice.",
+                "He doesn't like rice.",
+                "He don't likes rice."
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_ao26sn"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"BRIEF\".",
+              "options": [
+                "short",
+                "long",
+                "detailed",
+                "lengthy"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_nnexyq"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+              "options": [
+                "kindness",
+                "selfishness",
+                "honesty",
+                "bravery"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_hqlnau"
+            },
+            {
+              "question": "Fill in the blank: They have lived here ___ 2010.",
+              "options": [
+                "since",
+                "for",
+                "from",
+                "by"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_s93w9w"
+            },
+            {
+              "question": "Choose the correctly punctuated sentence.",
+              "options": [
+                "What a beautiful day!",
+                "What a beautiful day.",
+                "What a beautiful day,",
+                "What a beautiful day?"
+              ],
+              "answer": "A",
+              "topic": "punctuation",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_v9t4sd"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+              "options": [
+                "barrier",
+                "support",
+                "help",
+                "aid"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_bgrpb1"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"VICTORY\".",
+              "options": [
+                "success",
+                "defeat",
+                "progress",
+                "win"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_zbm4er"
+            },
+            {
+              "question": "Fill in the blank: She is afraid ___ snakes.",
+              "options": [
+                "of",
+                "with",
+                "for",
+                "about"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_ocb6m9"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "I have ate the food.",
+                "I have eaten the food.",
+                "I has eaten the food.",
+                "I have eating the food."
+              ],
+              "answer": "B",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_fhfseb"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+              "options": [
+                "tiny",
+                "huge",
+                "small",
+                "narrow"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_yy7b60"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"COURAGE\".",
+              "options": [
+                "bravery",
+                "fear",
+                "confidence",
+                "strength"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_8nvuwz"
+            },
+            {
+              "question": "Fill in the blank: The teacher spoke ___ the students.",
+              "options": [
+                "to",
+                "for",
+                "with",
+                "about"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_iz7rmh"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "She enjoy reading books.",
+                "She enjoys reading books.",
+                "She enjoying reading books.",
+                "She enjoyed reading books."
+              ],
+              "answer": "B",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_6y7u2v"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+              "options": [
+                "clever",
+                "foolish",
+                "slow",
+                "dull"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_rypsj2"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+              "options": [
+                "old",
+                "aged",
+                "modern",
+                "past"
+              ],
+              "answer": "C",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_fnszyj"
+            },
+            {
+              "question": "Fill in the blank: He is good ___ mathematics.",
+              "options": [
+                "in",
+                "on",
+                "at",
+                "with"
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_o95nk5"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "The informations are correct.",
+                "The information are correct.",
+                "The information is correct.",
+                "The informations is correct."
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_lzvn90"
+            }
+          ],
+          "questionCount": null,
+          "bankQuestions": [
+            {
+              "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+              "options": [
+                "plentiful",
+                "scarce",
+                "limited",
+                "rare"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_cgkvn8"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+              "options": [
+                "eager",
+                "unwilling",
+                "hesitant",
+                "doubtful"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_aigeuj"
+            },
+            {
+              "question": "Fill in the blank: She insisted ___ paying the bill.",
+              "options": [
+                "on",
+                "in",
+                "at",
+                "for"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_n2qsmq"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "He don't like rice.",
+                "He doesn't likes rice.",
+                "He doesn't like rice.",
+                "He don't likes rice."
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_ao26sn"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"BRIEF\".",
+              "options": [
+                "short",
+                "long",
+                "detailed",
+                "lengthy"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_nnexyq"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+              "options": [
+                "kindness",
+                "selfishness",
+                "honesty",
+                "bravery"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_hqlnau"
+            },
+            {
+              "question": "Fill in the blank: They have lived here ___ 2010.",
+              "options": [
+                "since",
+                "for",
+                "from",
+                "by"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_s93w9w"
+            },
+            {
+              "question": "Choose the correctly punctuated sentence.",
+              "options": [
+                "What a beautiful day!",
+                "What a beautiful day.",
+                "What a beautiful day,",
+                "What a beautiful day?"
+              ],
+              "answer": "A",
+              "topic": "punctuation",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_v9t4sd"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+              "options": [
+                "barrier",
+                "support",
+                "help",
+                "aid"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_bgrpb1"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"VICTORY\".",
+              "options": [
+                "success",
+                "defeat",
+                "progress",
+                "win"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_zbm4er"
+            },
+            {
+              "question": "Fill in the blank: She is afraid ___ snakes.",
+              "options": [
+                "of",
+                "with",
+                "for",
+                "about"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_ocb6m9"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "I have ate the food.",
+                "I have eaten the food.",
+                "I has eaten the food.",
+                "I have eating the food."
+              ],
+              "answer": "B",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_fhfseb"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+              "options": [
+                "tiny",
+                "huge",
+                "small",
+                "narrow"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_yy7b60"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"COURAGE\".",
+              "options": [
+                "bravery",
+                "fear",
+                "confidence",
+                "strength"
+              ],
+              "answer": "B",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_8nvuwz"
+            },
+            {
+              "question": "Fill in the blank: The teacher spoke ___ the students.",
+              "options": [
+                "to",
+                "for",
+                "with",
+                "about"
+              ],
+              "answer": "A",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_iz7rmh"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "She enjoy reading books.",
+                "She enjoys reading books.",
+                "She enjoying reading books.",
+                "She enjoyed reading books."
+              ],
+              "answer": "B",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_6y7u2v"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+              "options": [
+                "clever",
+                "foolish",
+                "slow",
+                "dull"
+              ],
+              "answer": "A",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_rypsj2"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+              "options": [
+                "old",
+                "aged",
+                "modern",
+                "past"
+              ],
+              "answer": "C",
+              "topic": "vocabulary",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_fnszyj"
+            },
+            {
+              "question": "Fill in the blank: He is good ___ mathematics.",
+              "options": [
+                "in",
+                "on",
+                "at",
+                "with"
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "easy",
+              "subject": "General",
+              "_sourceId": "q_o95nk5"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "The informations are correct.",
+                "The information are correct.",
+                "The information is correct.",
+                "The informations is correct."
+              ],
+              "answer": "C",
+              "topic": "grammar",
+              "difficulty": "medium",
+              "subject": "General",
+              "_sourceId": "q_lzvn90"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-04-28T22:50:21.406Z",
+      "editedAt": "",
+      "updatedAt": "2026-04-28T22:50:21.406Z",
+      "teacherId": "jillmichae@gmail.com",
+      "shuffleQs": true,
+      "shuffleOpts": true,
+      "verticalLayout": false,
+      "rankingEnabled": true,
+      "whitelist": [],
+      "scheduleStart": "",
+      "scheduleEnd": ""
+    },
+    "905496": {
+      "id": "905496",
+      "examName": "OGIDIAKA SECONDARY SCHOOL",
+      "title": "ENGLISH TEST",
+      "password": "",
+      "timeLimit": 10,
+      "maxGrade": 100,
+      "attemptLimit": 1,
+      "passMark": 70,
+      "negativeMarkEnabled": false,
+      "negativeMarkValue": 0,
+      "showInstantResult": true,
+      "showTopicsAfterSubmission": false,
+      "subjects": [
+        {
+          "name": "vocabulary",
+          "questions": [
+            {
+              "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+              "options": [
+                "plentiful",
+                "scarce",
+                "limited",
+                "rare"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_xqig2y"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+              "options": [
+                "eager",
+                "unwilling",
+                "hesitant",
+                "doubtful"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_wb99wz"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"BRIEF\".",
+              "options": [
+                "short",
+                "long",
+                "detailed",
+                "lengthy"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_egbpn8"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+              "options": [
+                "kindness",
+                "selfishness",
+                "honesty",
+                "bravery"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_y2j7o8"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+              "options": [
+                "barrier",
+                "support",
+                "help",
+                "aid"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_knuxmj"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"VICTORY\".",
+              "options": [
+                "success",
+                "defeat",
+                "progress",
+                "win"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_fk86lt"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+              "options": [
+                "tiny",
+                "huge",
+                "small",
+                "narrow"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_dgpqfu"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"COURAGE\".",
+              "options": [
+                "bravery",
+                "fear",
+                "confidence",
+                "strength"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_ekoujj"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+              "options": [
+                "clever",
+                "foolish",
+                "slow",
+                "dull"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_gddvlc"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+              "options": [
+                "old",
+                "aged",
+                "modern",
+                "past"
+              ],
+              "answer": "C",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_pgiy5"
+            }
+          ],
+          "questionCount": null,
+          "bankQuestions": [
+            {
+              "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+              "options": [
+                "plentiful",
+                "scarce",
+                "limited",
+                "rare"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_xqig2y"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+              "options": [
+                "eager",
+                "unwilling",
+                "hesitant",
+                "doubtful"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_wb99wz"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"BRIEF\".",
+              "options": [
+                "short",
+                "long",
+                "detailed",
+                "lengthy"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_egbpn8"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+              "options": [
+                "kindness",
+                "selfishness",
+                "honesty",
+                "bravery"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_y2j7o8"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+              "options": [
+                "barrier",
+                "support",
+                "help",
+                "aid"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "medium",
+              "_sourceId": "q_knuxmj"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"VICTORY\".",
+              "options": [
+                "success",
+                "defeat",
+                "progress",
+                "win"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_fk86lt"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+              "options": [
+                "tiny",
+                "huge",
+                "small",
+                "narrow"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_dgpqfu"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"COURAGE\".",
+              "options": [
+                "bravery",
+                "fear",
+                "confidence",
+                "strength"
+              ],
+              "answer": "B",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_ekoujj"
+            },
+            {
+              "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+              "options": [
+                "clever",
+                "foolish",
+                "slow",
+                "dull"
+              ],
+              "answer": "A",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_gddvlc"
+            },
+            {
+              "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+              "options": [
+                "old",
+                "aged",
+                "modern",
+                "past"
+              ],
+              "answer": "C",
+              "subject": "vocabulary",
+              "difficulty": "easy",
+              "_sourceId": "q_pgiy5"
+            }
+          ]
+        },
+        {
+          "name": "grammar",
+          "questions": [
+            {
+              "question": "Fill in the blank: She insisted ___ paying the bill.",
+              "options": [
+                "on",
+                "in",
+                "at",
+                "for"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_r364wj"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "He don't like rice.",
+                "He doesn't likes rice.",
+                "He doesn't like rice.",
+                "He don't likes rice."
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_qtb5ug"
+            },
+            {
+              "question": "Fill in the blank: They have lived here ___ 2010.",
+              "options": [
+                "since",
+                "for",
+                "from",
+                "by"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_n2kim3"
+            },
+            {
+              "question": "Fill in the blank: She is afraid ___ snakes.",
+              "options": [
+                "of",
+                "with",
+                "for",
+                "about"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_dborvk"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "I have ate the food.",
+                "I have eaten the food.",
+                "I has eaten the food.",
+                "I have eating the food."
+              ],
+              "answer": "B",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_a9etni"
+            },
+            {
+              "question": "Fill in the blank: The teacher spoke ___ the students.",
+              "options": [
+                "to",
+                "for",
+                "with",
+                "about"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_kds5h4"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "She enjoy reading books.",
+                "She enjoys reading books.",
+                "She enjoying reading books.",
+                "She enjoyed reading books."
+              ],
+              "answer": "B",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_2tsqai"
+            },
+            {
+              "question": "Fill in the blank: He is good ___ mathematics.",
+              "options": [
+                "in",
+                "on",
+                "at",
+                "with"
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_v1jnl0"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "The informations are correct.",
+                "The information are correct.",
+                "The information is correct.",
+                "The informations is correct."
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "medium",
+              "_sourceId": "q_phikcz"
+            }
+          ],
+          "questionCount": null,
+          "bankQuestions": [
+            {
+              "question": "Fill in the blank: She insisted ___ paying the bill.",
+              "options": [
+                "on",
+                "in",
+                "at",
+                "for"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_r364wj"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "He don't like rice.",
+                "He doesn't likes rice.",
+                "He doesn't like rice.",
+                "He don't likes rice."
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_qtb5ug"
+            },
+            {
+              "question": "Fill in the blank: They have lived here ___ 2010.",
+              "options": [
+                "since",
+                "for",
+                "from",
+                "by"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_n2kim3"
+            },
+            {
+              "question": "Fill in the blank: She is afraid ___ snakes.",
+              "options": [
+                "of",
+                "with",
+                "for",
+                "about"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_dborvk"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "I have ate the food.",
+                "I have eaten the food.",
+                "I has eaten the food.",
+                "I have eating the food."
+              ],
+              "answer": "B",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_a9etni"
+            },
+            {
+              "question": "Fill in the blank: The teacher spoke ___ the students.",
+              "options": [
+                "to",
+                "for",
+                "with",
+                "about"
+              ],
+              "answer": "A",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_kds5h4"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "She enjoy reading books.",
+                "She enjoys reading books.",
+                "She enjoying reading books.",
+                "She enjoyed reading books."
+              ],
+              "answer": "B",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_2tsqai"
+            },
+            {
+              "question": "Fill in the blank: He is good ___ mathematics.",
+              "options": [
+                "in",
+                "on",
+                "at",
+                "with"
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "easy",
+              "_sourceId": "q_v1jnl0"
+            },
+            {
+              "question": "Choose the correct sentence.",
+              "options": [
+                "The informations are correct.",
+                "The information are correct.",
+                "The information is correct.",
+                "The informations is correct."
+              ],
+              "answer": "C",
+              "subject": "grammar",
+              "difficulty": "medium",
+              "_sourceId": "q_phikcz"
+            }
+          ]
+        },
+        {
+          "name": "punctuation",
+          "questions": [
+            {
+              "question": "Choose the correctly punctuated sentence.",
+              "options": [
+                "What a beautiful day!",
+                "What a beautiful day.",
+                "What a beautiful day,",
+                "What a beautiful day?"
+              ],
+              "answer": "A",
+              "subject": "punctuation",
+              "difficulty": "easy",
+              "_sourceId": "q_kl98d1"
+            }
+          ],
+          "questionCount": null,
+          "bankQuestions": [
+            {
+              "question": "Choose the correctly punctuated sentence.",
+              "options": [
+                "What a beautiful day!",
+                "What a beautiful day.",
+                "What a beautiful day,",
+                "What a beautiful day?"
+              ],
+              "answer": "A",
+              "subject": "punctuation",
+              "difficulty": "easy",
+              "_sourceId": "q_kl98d1"
+            }
+          ]
+        },
+        {
+          "name": "General",
+          "questions": [
+            {
+              "question": "",
+              "options": [],
+              "answer": "",
+              "subject": "General",
+              "difficulty": "Medium",
+              "_sourceId": "q_1c93nq"
+            },
+            {
+              "question": "",
+              "options": [],
+              "answer": "",
+              "subject": "General",
+              "difficulty": "Medium",
+              "_sourceId": "q_1c93nr"
+            }
+          ],
+          "questionCount": null,
+          "bankQuestions": [
+            {
+              "question": "",
+              "options": [],
+              "answer": "",
+              "subject": "General",
+              "difficulty": "Medium",
+              "_sourceId": "q_1c93nq"
+            },
+            {
+              "question": "",
+              "options": [],
+              "answer": "",
+              "subject": "General",
+              "difficulty": "Medium",
+              "_sourceId": "q_1c93nr"
+            }
+          ]
+        }
+      ],
+      "questionPickCount": 0,
+      "createdAt": "2026-04-28T21:52:41.639Z",
+      "editedAt": "2026-04-28T22:03:02.285Z",
+      "updatedAt": "2026-04-28T22:03:02.285Z",
+      "teacherId": "prosperogidiaka@gmail.com",
+      "shuffleQs": true,
+      "shuffleOpts": true,
+      "verticalLayout": false,
+      "rankingEnabled": false,
+      "whitelist": [],
+      "scheduleStart": "",
+      "scheduleEnd": ""
+    }
+  },
+  "submissions": [
+    {
+      "name": "John Lewis",
+      "email": "jillmichae@gmail.com",
+      "registrationNo": "",
+      "answers": {},
+      "flagged": {},
+      "quizId": "905496",
+      "allQuestions": [
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "foolish",
+            "clever",
+            "dull",
+            "slow"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_gddvlc",
+          "_subject": "vocabulary",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoys reading books.",
+            "She enjoying reading books.",
+            "She enjoyed reading books.",
+            "She enjoy reading books."
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_2tsqai",
+          "_subject": "grammar",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day,",
+            "What a beautiful day!",
+            "What a beautiful day?",
+            "What a beautiful day."
+          ],
+          "answer": "B",
+          "subject": "punctuation",
+          "difficulty": "easy",
+          "_sourceId": "q_kl98d1",
+          "_subject": "punctuation",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I has eaten the food.",
+            "I have eaten the food.",
+            "I have ate the food.",
+            "I have eating the food."
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_a9etni",
+          "_subject": "grammar",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "from",
+            "by",
+            "for",
+            "since"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_n2kim3",
+          "_subject": "grammar",
+          "_correctText": "since"
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "at",
+            "for",
+            "in",
+            "on"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_r364wj",
+          "_subject": "grammar",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't likes rice.",
+            "He doesn't like rice.",
+            "He don't likes rice.",
+            "He don't like rice."
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_qtb5ug",
+          "_subject": "grammar",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "win",
+            "defeat",
+            "success",
+            "progress"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_fk86lt",
+          "_subject": "vocabulary",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nr",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "long",
+            "lengthy",
+            "detailed",
+            "short"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_egbpn8",
+          "_subject": "vocabulary",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "aged",
+            "modern",
+            "old",
+            "past"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_pgiy5",
+          "_subject": "vocabulary",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "bravery",
+            "honesty",
+            "selfishness",
+            "kindness"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_y2j7o8",
+          "_subject": "vocabulary",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nq",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "tiny",
+            "narrow",
+            "small",
+            "huge"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_dgpqfu",
+          "_subject": "vocabulary",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "eager",
+            "doubtful",
+            "hesitant",
+            "unwilling"
+          ],
+          "answer": "A",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_wb99wz",
+          "_subject": "vocabulary",
+          "_correctText": "eager"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "strength",
+            "confidence",
+            "fear",
+            "bravery"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_ekoujj",
+          "_subject": "vocabulary",
+          "_correctText": "fear"
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "at",
+            "with",
+            "in",
+            "on"
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_v1jnl0",
+          "_subject": "grammar",
+          "_correctText": "at"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "plentiful",
+            "scarce",
+            "limited",
+            "rare"
+          ],
+          "answer": "A",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_xqig2y",
+          "_subject": "vocabulary",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The informations are correct.",
+            "The informations is correct.",
+            "The information is correct.",
+            "The information are correct."
+          ],
+          "answer": "C",
+          "subject": "grammar",
+          "difficulty": "medium",
+          "_sourceId": "q_phikcz",
+          "_subject": "grammar",
+          "_correctText": "The information is correct."
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "help",
+            "barrier",
+            "aid",
+            "support"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_knuxmj",
+          "_subject": "vocabulary",
+          "_correctText": "barrier"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "for",
+            "about",
+            "with",
+            "of"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_dborvk",
+          "_subject": "grammar",
+          "_correctText": "of"
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "for",
+            "to",
+            "about",
+            "with"
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_kds5h4",
+          "_subject": "grammar",
+          "_correctText": "to"
+        }
+      ],
+      "currentIndex": 0,
+      "examStarted": true,
+      "startedAt": "2026-04-28T22:00:06.011Z",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 0,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "102.89.32.28",
+        "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 0,
+      "percent": 0,
+      "correctCount": 0,
+      "wrongCount": 0,
+      "attemptedCount": 0,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Fail",
+      "timeSpent": 2.287,
+      "submittedAt": "2026-04-28T22:00:08.298Z"
+    },
+    {
+      "name": "IFY",
+      "email": "IFY@GMAIL.COM",
+      "registrationNo": "",
+      "answers": {},
+      "flagged": {},
+      "quizId": "905496",
+      "allQuestions": [
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "for",
+            "from",
+            "by",
+            "since"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_n2kim3",
+          "_subject": "grammar",
+          "_correctText": "since"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoyed reading books.",
+            "She enjoying reading books.",
+            "She enjoy reading books.",
+            "She enjoys reading books."
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_2tsqai",
+          "_subject": "grammar",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "strength",
+            "bravery",
+            "confidence",
+            "fear"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_ekoujj",
+          "_subject": "vocabulary",
+          "_correctText": "fear"
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nr",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "small",
+            "huge",
+            "narrow",
+            "tiny"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_dgpqfu",
+          "_subject": "vocabulary",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "slow",
+            "dull",
+            "clever",
+            "foolish"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_gddvlc",
+          "_subject": "vocabulary",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "aid",
+            "help",
+            "barrier",
+            "support"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_knuxmj",
+          "_subject": "vocabulary",
+          "_correctText": "barrier"
+        },
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day.",
+            "What a beautiful day?",
+            "What a beautiful day,",
+            "What a beautiful day!"
+          ],
+          "answer": "D",
+          "subject": "punctuation",
+          "difficulty": "easy",
+          "_sourceId": "q_kl98d1",
+          "_subject": "punctuation",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "on",
+            "in",
+            "for",
+            "at"
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_r364wj",
+          "_subject": "grammar",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The information is correct.",
+            "The information are correct.",
+            "The informations are correct.",
+            "The informations is correct."
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "medium",
+          "_sourceId": "q_phikcz",
+          "_subject": "grammar",
+          "_correctText": "The information is correct."
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "in",
+            "on",
+            "with",
+            "at"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_v1jnl0",
+          "_subject": "grammar",
+          "_correctText": "at"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "short",
+            "lengthy",
+            "long",
+            "detailed"
+          ],
+          "answer": "A",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_egbpn8",
+          "_subject": "vocabulary",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "rare",
+            "plentiful",
+            "scarce",
+            "limited"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_xqig2y",
+          "_subject": "vocabulary",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nq",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "for",
+            "to",
+            "about",
+            "with"
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_kds5h4",
+          "_subject": "grammar",
+          "_correctText": "to"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I has eaten the food.",
+            "I have eating the food.",
+            "I have eaten the food.",
+            "I have ate the food."
+          ],
+          "answer": "C",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_a9etni",
+          "_subject": "grammar",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "success",
+            "win",
+            "progress",
+            "defeat"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_fk86lt",
+          "_subject": "vocabulary",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "kindness",
+            "honesty",
+            "selfishness",
+            "bravery"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_y2j7o8",
+          "_subject": "vocabulary",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't like rice.",
+            "He doesn't likes rice.",
+            "He don't like rice.",
+            "He don't likes rice."
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_qtb5ug",
+          "_subject": "grammar",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "aged",
+            "modern",
+            "old",
+            "past"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_pgiy5",
+          "_subject": "vocabulary",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "about",
+            "for",
+            "with",
+            "of"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_dborvk",
+          "_subject": "grammar",
+          "_correctText": "of"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "eager",
+            "unwilling",
+            "doubtful",
+            "hesitant"
+          ],
+          "answer": "A",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_wb99wz",
+          "_subject": "vocabulary",
+          "_correctText": "eager"
+        }
+      ],
+      "currentIndex": 0,
+      "examStarted": true,
+      "startedAt": "2026-04-28T22:01:47.472Z",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 0,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 0,
+      "percent": 0,
+      "correctCount": 0,
+      "wrongCount": 0,
+      "attemptedCount": 0,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Fail",
+      "timeSpent": 2.102,
+      "submittedAt": "2026-04-28T22:01:49.574Z"
+    },
+    {
+      "name": "Lewis",
+      "email": "Lewis@gmail.com",
+      "registrationNo": "",
+      "answers": {
+        "0": "B",
+        "1": "A",
+        "2": "A",
+        "3": "A",
+        "4": "B",
+        "5": "B",
+        "6": "D",
+        "8": "B",
+        "9": "D",
+        "10": "B",
+        "11": "C",
+        "12": "C",
+        "13": "D",
+        "14": "A",
+        "15": "A",
+        "16": "B",
+        "17": "B",
+        "19": "C",
+        "20": "A",
+        "21": "D"
+      },
+      "flagged": {},
+      "quizId": "905496",
+      "allQuestions": [
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I have eating the food.",
+            "I has eaten the food.",
+            "I have eaten the food.",
+            "I have ate the food."
+          ],
+          "answer": "C",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_a9etni",
+          "_subject": "grammar",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "fear",
+            "bravery",
+            "confidence",
+            "strength"
+          ],
+          "answer": "A",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_ekoujj",
+          "_subject": "vocabulary",
+          "_correctText": "fear"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "dull",
+            "slow",
+            "foolish",
+            "clever"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_gddvlc",
+          "_subject": "vocabulary",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "on",
+            "at",
+            "in",
+            "for"
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_r364wj",
+          "_subject": "grammar",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "narrow",
+            "huge",
+            "tiny",
+            "small"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_dgpqfu",
+          "_subject": "vocabulary",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The information are correct.",
+            "The information is correct.",
+            "The informations are correct.",
+            "The informations is correct."
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "medium",
+          "_sourceId": "q_phikcz",
+          "_subject": "grammar",
+          "_correctText": "The information is correct."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "success",
+            "win",
+            "progress",
+            "defeat"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_fk86lt",
+          "_subject": "vocabulary",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nq",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "detailed",
+            "short",
+            "lengthy",
+            "long"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_egbpn8",
+          "_subject": "vocabulary",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day,",
+            "What a beautiful day?",
+            "What a beautiful day.",
+            "What a beautiful day!"
+          ],
+          "answer": "D",
+          "subject": "punctuation",
+          "difficulty": "easy",
+          "_sourceId": "q_kl98d1",
+          "_subject": "punctuation",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "unwilling",
+            "eager",
+            "hesitant",
+            "doubtful"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_wb99wz",
+          "_subject": "vocabulary",
+          "_correctText": "eager"
+        },
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "from",
+            "by",
+            "since",
+            "for"
+          ],
+          "answer": "C",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_n2kim3",
+          "_subject": "grammar",
+          "_correctText": "since"
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "on",
+            "in",
+            "at",
+            "with"
+          ],
+          "answer": "C",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_v1jnl0",
+          "_subject": "grammar",
+          "_correctText": "at"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "kindness",
+            "bravery",
+            "honesty",
+            "selfishness"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_y2j7o8",
+          "_subject": "vocabulary",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't like rice.",
+            "He don't likes rice.",
+            "He doesn't likes rice.",
+            "He don't like rice."
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_qtb5ug",
+          "_subject": "grammar",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "with",
+            "for",
+            "about",
+            "to"
+          ],
+          "answer": "D",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_kds5h4",
+          "_subject": "grammar",
+          "_correctText": "to"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "past",
+            "modern",
+            "old",
+            "aged"
+          ],
+          "answer": "B",
+          "subject": "vocabulary",
+          "difficulty": "easy",
+          "_sourceId": "q_pgiy5",
+          "_subject": "vocabulary",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoyed reading books.",
+            "She enjoys reading books.",
+            "She enjoying reading books.",
+            "She enjoy reading books."
+          ],
+          "answer": "B",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_2tsqai",
+          "_subject": "grammar",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "",
+          "options": [],
+          "answer": "",
+          "subject": "General",
+          "difficulty": "Medium",
+          "_sourceId": "q_1c93nr",
+          "_subject": "General",
+          "_correctText": ""
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "limited",
+            "rare",
+            "plentiful",
+            "scarce"
+          ],
+          "answer": "C",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_xqig2y",
+          "_subject": "vocabulary",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "of",
+            "about",
+            "for",
+            "with"
+          ],
+          "answer": "A",
+          "subject": "grammar",
+          "difficulty": "easy",
+          "_sourceId": "q_dborvk",
+          "_subject": "grammar",
+          "_correctText": "of"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "aid",
+            "support",
+            "help",
+            "barrier"
+          ],
+          "answer": "D",
+          "subject": "vocabulary",
+          "difficulty": "medium",
+          "_sourceId": "q_knuxmj",
+          "_subject": "vocabulary",
+          "_correctText": "barrier"
+        }
+      ],
+      "currentIndex": 21,
+      "examStarted": true,
+      "startedAt": "2026-04-28T22:06:35.410Z",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 0,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "102.89.32.28",
+        "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 17,
+      "percent": 77,
+      "correctCount": 17,
+      "wrongCount": 3,
+      "attemptedCount": 20,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Pass",
+      "timeSpent": 383.32,
+      "submittedAt": "2026-04-28T22:12:58.730Z"
+    },
+    {
+      "name": "John Lewis",
+      "email": "Lewis@gmail.com",
+      "registrationNo": "",
+      "answers": {},
+      "flagged": {},
+      "quizId": "334891",
+      "allQuestions": [
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "by",
+            "since",
+            "from",
+            "for"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_s93w9w",
+          "_subject": "General",
+          "_correctText": "since"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "lengthy",
+            "long",
+            "short",
+            "detailed"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_nnexyq",
+          "_subject": "General",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "win",
+            "success",
+            "progress",
+            "defeat"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_zbm4er",
+          "_subject": "General",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "with",
+            "on",
+            "at",
+            "in"
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_o95nk5",
+          "_subject": "General",
+          "_correctText": "at"
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "for",
+            "with",
+            "about",
+            "to"
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_iz7rmh",
+          "_subject": "General",
+          "_correctText": "to"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoy reading books.",
+            "She enjoyed reading books.",
+            "She enjoying reading books.",
+            "She enjoys reading books."
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_6y7u2v",
+          "_subject": "General",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "small",
+            "huge",
+            "narrow",
+            "tiny"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_yy7b60",
+          "_subject": "General",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "dull",
+            "slow",
+            "clever",
+            "foolish"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_rypsj2",
+          "_subject": "General",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't like rice.",
+            "He don't like rice.",
+            "He don't likes rice.",
+            "He doesn't likes rice."
+          ],
+          "answer": "A",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ao26sn",
+          "_subject": "General",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "aged",
+            "modern",
+            "past",
+            "old"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fnszyj",
+          "_subject": "General",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "bravery",
+            "honesty",
+            "kindness",
+            "selfishness"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_hqlnau",
+          "_subject": "General",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The informations are correct.",
+            "The information is correct.",
+            "The informations is correct.",
+            "The information are correct."
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_lzvn90",
+          "_subject": "General",
+          "_correctText": "The information is correct."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "hesitant",
+            "unwilling",
+            "doubtful",
+            "eager"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_aigeuj",
+          "_subject": "General",
+          "_correctText": "eager"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I has eaten the food.",
+            "I have eating the food.",
+            "I have eaten the food.",
+            "I have ate the food."
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fhfseb",
+          "_subject": "General",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "for",
+            "in",
+            "at",
+            "on"
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_n2qsmq",
+          "_subject": "General",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "bravery",
+            "confidence",
+            "strength",
+            "fear"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_8nvuwz",
+          "_subject": "General",
+          "_correctText": "fear"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "rare",
+            "scarce",
+            "plentiful",
+            "limited"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_cgkvn8",
+          "_subject": "General",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day.",
+            "What a beautiful day,",
+            "What a beautiful day!",
+            "What a beautiful day?"
+          ],
+          "answer": "C",
+          "topic": "punctuation",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_v9t4sd",
+          "_subject": "General",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "about",
+            "for",
+            "with",
+            "of"
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ocb6m9",
+          "_subject": "General",
+          "_correctText": "of"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "aid",
+            "barrier",
+            "help",
+            "support"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_bgrpb1",
+          "_subject": "General",
+          "_correctText": "barrier"
+        }
+      ],
+      "currentIndex": 0,
+      "examStarted": false,
+      "startedAt": "",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 2,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "102.89.32.28",
+        "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 0,
+      "percent": 0,
+      "correctCount": 0,
+      "wrongCount": 0,
+      "attemptedCount": 0,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Fail",
+      "timeSpent": 0,
+      "submittedAt": "2026-04-28T22:53:57.288Z"
+    },
+    {
+      "name": "John",
+      "email": "John@gmail.com",
+      "registrationNo": "",
+      "answers": {
+        "0": "C",
+        "1": "B",
+        "2": "C",
+        "3": "B",
+        "4": "C",
+        "5": "B",
+        "6": "A",
+        "7": "C",
+        "8": "B",
+        "9": "C",
+        "10": "C",
+        "11": "D",
+        "12": "B",
+        "13": "D",
+        "14": "C",
+        "15": "D",
+        "16": "C",
+        "17": "D",
+        "18": "C",
+        "19": "C"
+      },
+      "flagged": {},
+      "quizId": "334891",
+      "allQuestions": [
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day,",
+            "What a beautiful day.",
+            "What a beautiful day!",
+            "What a beautiful day?"
+          ],
+          "answer": "C",
+          "topic": "punctuation",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_v9t4sd",
+          "_subject": "General",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoy reading books.",
+            "She enjoys reading books.",
+            "She enjoying reading books.",
+            "She enjoyed reading books."
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_6y7u2v",
+          "_subject": "General",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "huge",
+            "tiny",
+            "small",
+            "narrow"
+          ],
+          "answer": "A",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_yy7b60",
+          "_subject": "General",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "bravery",
+            "fear",
+            "strength",
+            "confidence"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_8nvuwz",
+          "_subject": "General",
+          "_correctText": "fear"
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "about",
+            "to",
+            "with",
+            "for"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_iz7rmh",
+          "_subject": "General",
+          "_correctText": "to"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "about",
+            "of",
+            "with",
+            "for"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ocb6m9",
+          "_subject": "General",
+          "_correctText": "of"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "defeat",
+            "win",
+            "success",
+            "progress"
+          ],
+          "answer": "A",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_zbm4er",
+          "_subject": "General",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "with",
+            "in",
+            "at",
+            "on"
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_o95nk5",
+          "_subject": "General",
+          "_correctText": "at"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "foolish",
+            "clever",
+            "slow",
+            "dull"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_rypsj2",
+          "_subject": "General",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "by",
+            "from",
+            "since",
+            "for"
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_s93w9w",
+          "_subject": "General",
+          "_correctText": "since"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "aid",
+            "help",
+            "barrier",
+            "support"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_bgrpb1",
+          "_subject": "General",
+          "_correctText": "barrier"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I have eating the food.",
+            "I have ate the food.",
+            "I has eaten the food.",
+            "I have eaten the food."
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fhfseb",
+          "_subject": "General",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "hesitant",
+            "eager",
+            "doubtful",
+            "unwilling"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_aigeuj",
+          "_subject": "General",
+          "_correctText": "eager"
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "in",
+            "for",
+            "at",
+            "on"
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_n2qsmq",
+          "_subject": "General",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "kindness",
+            "honesty",
+            "selfishness",
+            "bravery"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_hqlnau",
+          "_subject": "General",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "aged",
+            "old",
+            "past",
+            "modern"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fnszyj",
+          "_subject": "General",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't likes rice.",
+            "He don't like rice.",
+            "He doesn't like rice.",
+            "He don't likes rice."
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ao26sn",
+          "_subject": "General",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "scarce",
+            "rare",
+            "limited",
+            "plentiful"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_cgkvn8",
+          "_subject": "General",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "detailed",
+            "long",
+            "short",
+            "lengthy"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_nnexyq",
+          "_subject": "General",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The information are correct.",
+            "The informations are correct.",
+            "The informations is correct.",
+            "The information is correct."
+          ],
+          "answer": "D",
+          "topic": "grammar",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_lzvn90",
+          "_subject": "General",
+          "_correctText": "The information is correct."
+        }
+      ],
+      "currentIndex": 19,
+      "examStarted": true,
+      "startedAt": "2026-04-28T23:00:03.450Z",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 0,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "102.89.32.28",
+        "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 17,
+      "percent": 85,
+      "correctCount": 17,
+      "wrongCount": 3,
+      "attemptedCount": 20,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Pass",
+      "timeSpent": 278.132,
+      "submittedAt": "2026-04-28T23:04:41.582Z",
+      "_correctionDownloaded": true,
+      "updatedAt": "2026-04-29T15:32:41.288Z"
+    },
+    {
+      "name": "ije",
+      "email": "ije@gmail.com",
+      "registrationNo": "",
+      "answers": {
+        "0": "C",
+        "1": "B"
+      },
+      "flagged": {},
+      "quizId": "334891",
+      "allQuestions": [
+        {
+          "question": "Choose the option nearest in meaning to \"ABUNDANT\".",
+          "options": [
+            "rare",
+            "plentiful",
+            "scarce",
+            "limited"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_cgkvn8",
+          "_subject": "General",
+          "_correctText": "plentiful"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "He doesn't likes rice.",
+            "He doesn't like rice.",
+            "He don't like rice.",
+            "He don't likes rice."
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ao26sn",
+          "_subject": "General",
+          "_correctText": "He doesn't like rice."
+        },
+        {
+          "question": "Fill in the blank: The teacher spoke ___ the students.",
+          "options": [
+            "with",
+            "to",
+            "for",
+            "about"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_iz7rmh",
+          "_subject": "General",
+          "_correctText": "to"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "The information is correct.",
+            "The informations are correct.",
+            "The information are correct.",
+            "The informations is correct."
+          ],
+          "answer": "A",
+          "topic": "grammar",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_lzvn90",
+          "_subject": "General",
+          "_correctText": "The information is correct."
+        },
+        {
+          "question": "Fill in the blank: They have lived here ___ 2010.",
+          "options": [
+            "by",
+            "from",
+            "since",
+            "for"
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_s93w9w",
+          "_subject": "General",
+          "_correctText": "since"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"RELUCTANT\".",
+          "options": [
+            "eager",
+            "unwilling",
+            "hesitant",
+            "doubtful"
+          ],
+          "answer": "A",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_aigeuj",
+          "_subject": "General",
+          "_correctText": "eager"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "I has eaten the food.",
+            "I have ate the food.",
+            "I have eaten the food.",
+            "I have eating the food."
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fhfseb",
+          "_subject": "General",
+          "_correctText": "I have eaten the food."
+        },
+        {
+          "question": "Choose the correctly punctuated sentence.",
+          "options": [
+            "What a beautiful day,",
+            "What a beautiful day.",
+            "What a beautiful day!",
+            "What a beautiful day?"
+          ],
+          "answer": "C",
+          "topic": "punctuation",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_v9t4sd",
+          "_subject": "General",
+          "_correctText": "What a beautiful day!"
+        },
+        {
+          "question": "Fill in the blank: She is afraid ___ snakes.",
+          "options": [
+            "for",
+            "with",
+            "of",
+            "about"
+          ],
+          "answer": "C",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_ocb6m9",
+          "_subject": "General",
+          "_correctText": "of"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"GENEROSITY\".",
+          "options": [
+            "honesty",
+            "selfishness",
+            "bravery",
+            "kindness"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_hqlnau",
+          "_subject": "General",
+          "_correctText": "selfishness"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"OBSTACLE\".",
+          "options": [
+            "support",
+            "barrier",
+            "help",
+            "aid"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "medium",
+          "subject": "General",
+          "_sourceId": "q_bgrpb1",
+          "_subject": "General",
+          "_correctText": "barrier"
+        },
+        {
+          "question": "Fill in the blank: She insisted ___ paying the bill.",
+          "options": [
+            "at",
+            "on",
+            "in",
+            "for"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_n2qsmq",
+          "_subject": "General",
+          "_correctText": "on"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"VICTORY\".",
+          "options": [
+            "success",
+            "progress",
+            "defeat",
+            "win"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_zbm4er",
+          "_subject": "General",
+          "_correctText": "defeat"
+        },
+        {
+          "question": "Choose the correct sentence.",
+          "options": [
+            "She enjoys reading books.",
+            "She enjoyed reading books.",
+            "She enjoy reading books.",
+            "She enjoying reading books."
+          ],
+          "answer": "A",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_6y7u2v",
+          "_subject": "General",
+          "_correctText": "She enjoys reading books."
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"ANCIENT\".",
+          "options": [
+            "past",
+            "modern",
+            "old",
+            "aged"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_fnszyj",
+          "_subject": "General",
+          "_correctText": "modern"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"ENORMOUS\".",
+          "options": [
+            "tiny",
+            "narrow",
+            "huge",
+            "small"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_yy7b60",
+          "_subject": "General",
+          "_correctText": "huge"
+        },
+        {
+          "question": "Choose the option opposite in meaning to \"COURAGE\".",
+          "options": [
+            "confidence",
+            "strength",
+            "fear",
+            "bravery"
+          ],
+          "answer": "C",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_8nvuwz",
+          "_subject": "General",
+          "_correctText": "fear"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"BRIEF\".",
+          "options": [
+            "detailed",
+            "short",
+            "lengthy",
+            "long"
+          ],
+          "answer": "B",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_nnexyq",
+          "_subject": "General",
+          "_correctText": "short"
+        },
+        {
+          "question": "Choose the option nearest in meaning to \"INTELLIGENT\".",
+          "options": [
+            "foolish",
+            "dull",
+            "slow",
+            "clever"
+          ],
+          "answer": "D",
+          "topic": "vocabulary",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_rypsj2",
+          "_subject": "General",
+          "_correctText": "clever"
+        },
+        {
+          "question": "Fill in the blank: He is good ___ mathematics.",
+          "options": [
+            "in",
+            "at",
+            "on",
+            "with"
+          ],
+          "answer": "B",
+          "topic": "grammar",
+          "difficulty": "easy",
+          "subject": "General",
+          "_sourceId": "q_o95nk5",
+          "_subject": "General",
+          "_correctText": "at"
+        }
+      ],
+      "currentIndex": 2,
+      "examStarted": true,
+      "startedAt": "2026-04-29T15:27:03.468Z",
+      "snapshots": [],
+      "attemptNo": 1,
+      "monitoring": {
+        "tabSwitches": 0,
+        "fullscreenExits": 0,
+        "copyAttempts": 0,
+        "screenshotAttempts": 0,
+        "webcamEnabled": false,
+        "ipAddress": "98.97.77.52",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+        "timezone": "Africa/Lagos"
+      },
+      "webcamRequested": false,
+      "score": 1,
+      "percent": 5,
+      "correctCount": 1,
+      "wrongCount": 1,
+      "attemptedCount": 2,
+      "negativePenalty": 0,
+      "passMark": 70,
+      "resultStatus": "Fail",
+      "timeSpent": 73.262,
+      "submittedAt": "2026-04-29T15:28:16.730Z",
+      "_correctionDownloaded": true,
+      "updatedAt": "2026-04-29T16:05:35.243Z"
+    }
+  ],
+  "teachers": {
+    "prosperogidiaka@gmail.com": {
+      "teacherId": "prosperogidiaka@gmail.com",
+      "email": "prosperogidiaka@gmail.com",
+      "password": "7767737Prosper",
+      "role": "super_admin",
+      "createdAt": "2026-04-09T23:35:00.318Z",
+      "updatedAt": "2026-04-29T16:17:39.908Z"
+    },
+    "jillmichae@gmail.com": {
+      "teacherId": "jillmichae@gmail.com",
+      "email": "jillmichae@gmail.com",
+      "password": "12345",
+      "role": "teacher",
+      "createdAt": "2026-04-28T22:24:28.667Z",
+      "licenseRequestedAt": "2026-04-28T22:40:13.566Z",
+      "licenseRequestStatus": "approved",
+      "licenseStopped": false,
+      "licenseUpdatedAt": "2026-04-28T22:47:20.845Z",
+      "updatedAt": "2026-04-28T22:47:20.845Z",
+      "licenseEndsAt": "2026-05-08T22:47:20.845Z"
+    }
+  },
+  "students": {}
+}
