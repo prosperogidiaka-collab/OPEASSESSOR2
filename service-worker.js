@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v23';
+const CACHE_NAME = 'ope-assessor-v24';
 const urlsToCache = [
   './',
   './index.html',

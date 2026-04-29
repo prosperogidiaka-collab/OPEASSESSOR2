@@ -406,11 +406,11 @@ async function copyQuizAccessCode(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
   if (sharedSyncOk) {
-    await copyTextToClipboard(quiz.id, 'Quiz ID copied');
+    await copyTextToClipboard(quiz.id, 'Student code copied');
     return true;
   }
-  await copyTextToClipboard(encodeQuizToPortableCode(quiz), 'Portable access code copied');
-  showNotification('Shared sync is down, so a portable access code was copied. Students can paste it into the Quiz Code / Magic Link box.', 'warning', 9000);
+  await copyTextToClipboard(encodeQuizToPortableCode(quiz), 'Portable student code copied');
+  showNotification('Shared sync is down, so a portable student code was copied. Students can paste it into the Quiz Code / Magic Link box.', 'warning', 9000);
   return true;
 }
 
@@ -1430,7 +1430,7 @@ function renderTeacherQuizzes() {
   const container = document.createElement('div');
   const portableMode = networkSyncFailed && !networkSyncReady;
   const syncNotice = networkSyncFailed && !networkSyncReady
-    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Do not send the visible 6-digit quiz number by itself. Use the Copy Link or Copy ID button so the app can send a portable student link/code that still works on other devices.</div>`
+    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Do not send the visible 6-digit quiz number by itself. Use Copy Student Code or Copy Portable Link so the app can send a cross-device version that still works.</div>`
     : '';
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
@@ -1449,8 +1449,8 @@ function renderTeacherQuizzes() {
           <div class="small">${(q.subjects || []).length} subject(s)   ${q.timeLimit}m   ${q.maxGrade} points</div>
         </div>
         <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">${portableMode ? 'Copy Access Code' : 'Copy ID'}</button>
-          <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">Copy Link</button>
+          <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy Student Code</button>
+          <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
           <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
           <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
         </div>
@@ -1538,13 +1538,13 @@ function showQuizSetDetails(quizId) {
       <div>
         <div class="h2">${escapeHtml(quiz.title)}</div>
         <div class="small">Quiz ID: ${quiz.id}</div>
-        <div class="small">${isSharedSyncAvailable() ? `Student link: ${escapeHtml(encodeQuizToLink(quiz))}` : 'Student link: use Copy Link for the portable cross-device version'}</div>
+        <div class="small">${isSharedSyncAvailable() ? `Student code: ${escapeHtml(quiz.id)}` : 'Student code: use Copy Student Code for the portable cross-device version'}</div>
       </div>
       <button id="closeQuizSetDetails" class="btn btn-ghost">Close</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-      <button id="copyQuizSetId" class="btn btn-ghost btn-sm">${portableMode ? 'Copy Access Code' : 'Copy ID'}</button>
-      <button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>
+      <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>
+      <button id="copyQuizSetLink" class="btn btn-primary btn-sm">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
     </div>
     <div class="table-wrap">
       <table class="table-dense">
@@ -4850,7 +4850,7 @@ function renderStudentEntry() {
       let quiz = await resolveQuizFromAccessWithSync(access);
       if (!quiz) {
         const syncHelp = canUseNetworkSync()
-          ? 'Ask the teacher to resend the student link or the portable access code from the Copy Link / Copy ID button.'
+          ? 'Ask the teacher to resend the student link or portable student code from the Copy Portable Link / Copy Student Code button.'
           : 'This deployment is not connected to shared sync, so students must use the student link or portable access code instead of only the 6-digit number.';
         return showNotification(`Quiz not found or invalid code/link. ${syncHelp}`, 'error', 8000);
       }
