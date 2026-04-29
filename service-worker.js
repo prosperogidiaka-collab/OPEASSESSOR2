@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v21';
+const CACHE_NAME = 'ope-assessor-v22';
 const urlsToCache = [
   './',
   './index.html',
@@ -42,13 +42,28 @@ self.addEventListener('fetch', (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
+  const isApiRequest = requestUrl.origin === self.location.origin && requestUrl.pathname.startsWith('/api/');
   const isAppShellAsset = requestUrl.origin === self.location.origin && (
     requestUrl.pathname.endsWith('/config.js') ||
     requestUrl.pathname.endsWith('/app.js') ||
     requestUrl.pathname.endsWith('/style.css') ||
-    requestUrl.pathname.endsWith('/index.html') ||
-    requestUrl.pathname.startsWith('/api/')
+    requestUrl.pathname.endsWith('/index.html')
   );
+
+  if (isApiRequest) {
+    event.respondWith(
+      fetch(event.request).catch(() => new Response(JSON.stringify({
+        error: 'Network unavailable'
+      }), {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'no-store'
+        }
+      }))
+    );
+    return;
+  }
 
   if (isAppShellAsset) {
     event.respondWith(

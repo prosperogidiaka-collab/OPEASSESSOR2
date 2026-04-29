@@ -72,6 +72,8 @@ let _didCompactSubmissions = false;
 let networkSyncReady = false;
 let networkSyncTimer = null;
 let networkSyncInFlight = null;
+let networkSyncFailed = false;
+let networkSyncFailureMessage = '';
 const pendingNetworkWrites = new Set();
 let _historyApplying = false;
 let _lastHistoryView = '';
@@ -270,9 +272,15 @@ async function pullNetworkState(force = false) {
       const snapshot = await res.json();
       const changed = applyNetworkSnapshot(snapshot);
       networkSyncReady = true;
+      networkSyncFailed = false;
+      networkSyncFailureMessage = '';
       return changed;
     })
-    .catch(() => false)
+    .catch((error) => {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = error && error.message ? error.message : 'Network sync unavailable';
+      return false;
+    })
     .finally(() => { networkSyncInFlight = null; });
   return networkSyncInFlight;
 }
@@ -287,13 +295,50 @@ async function pushNetworkValue(key, value) {
       body: JSON.stringify({ value })
     });
     if (!res.ok) throw new Error('Failed to save shared state');
+    networkSyncReady = true;
+    networkSyncFailed = false;
+    networkSyncFailureMessage = '';
     return true;
   } catch (err) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = err && err.message ? err.message : 'Failed to save shared state';
     console.error('Network sync save failed for', key, err);
     return false;
   } finally {
     pendingNetworkWrites.delete(key);
   }
+}
+
+function isSharedSyncAvailable() {
+  return canUseNetworkSync() && networkSyncReady;
+}
+
+function getSharedSyncWarningMessage() {
+  if (!canUseNetworkSync()) return 'Shared sync is not available in this browser session.';
+  return networkSyncFailureMessage || 'Shared sync is not active on this deployment.';
+}
+
+async function syncSharedKeys(keys = []) {
+  if (!canUseNetworkSync()) return false;
+  const targetKeys = [...new Set((Array.isArray(keys) ? keys : []).filter((key) => NETWORK_SYNC_KEYS.includes(key)))];
+  if (!targetKeys.length) return isSharedSyncAvailable();
+  let ok = true;
+  for (const key of targetKeys) {
+    const saved = await pushNetworkValue(key, readLocalStorageValue(key));
+    if (!saved) ok = false;
+  }
+  if (ok) await pullNetworkState(true);
+  return ok;
+}
+
+async function copyQuizAccessLink(quiz) {
+  if (!quiz || !quiz.id) return false;
+  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
+  await copyTextToClipboard(encodeQuizToLink(quiz), 'Quiz link copied');
+  if (!sharedSyncOk) {
+    showNotification(`${getSharedSyncWarningMessage()} Students on other devices may still see "quiz not found" until the shared backend is connected.`, 'warning', 8000);
+  }
+  return true;
 }
 
 function startNetworkSyncLoop() {
@@ -703,6 +748,36 @@ function decodeQuizFromString(encoded) {
   try {
     return JSON.parse(atob(decodeURIComponent(encoded)));
   } catch(e) { return null; }
+}
+
+function resolveQuizFromAccess(access) {
+  const all = getAllQuizzes();
+  if (access && access.link) {
+    try {
+      const params = new URLSearchParams((new URL(access.link)).search);
+      if (params.has('q')) return all[params.get('q')] || null;
+      if (params.has('import')) {
+        const importedQuiz = decodeQuizFromString(params.get('import'));
+        if (importedQuiz) {
+          all[importedQuiz.id] = importedQuiz;
+          saveAllQuizzes(all);
+          return importedQuiz;
+        }
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+  if (access && access.code) return all[access.code] || null;
+  return null;
+}
+
+async function resolveQuizFromAccessWithSync(access) {
+  let quiz = resolveQuizFromAccess(access);
+  if (quiz || !canUseNetworkSync()) return quiz;
+  await pullNetworkState(true);
+  quiz = resolveQuizFromAccess(access);
+  return quiz;
 }
 
 // ============================================================================
@@ -1261,7 +1336,10 @@ function showTeacherAccessModal() {
 
 function renderTeacherQuizzes() {
   const container = document.createElement('div');
-  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div><div id="teacherQuizzesList" style="margin-top:16px"></div>`;
+  const syncNotice = networkSyncFailed && !networkSyncReady
+    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Quiz IDs and links may work only on this device until the backend connection is fixed.</div>`
+    : '';
+  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
     const all = getAllQuizzes();
     const keys = Object.keys(all).filter(k => isSuperAdmin() || all[k].teacherId === state.teacherId).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
@@ -1288,7 +1366,7 @@ function renderTeacherQuizzes() {
     // wire actions
     setTimeout(()=> {
       document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=(e)=>{copyTextToClipboard(e.currentTarget.dataset.id, 'ID copied');});
-      document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=(e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; copyTextToClipboard(encodeQuizToLink(q), 'Link copied');});
+      document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessLink(q);});
       document.querySelectorAll('.btnEditQuiz').forEach(b=>b.onclick=(e)=>{ canSetQuestions() ? showCreateQuizModal(e.currentTarget.dataset.id) : showLicenseRequired(); });
       document.querySelectorAll('.btnView').forEach(b=>b.onclick=(e)=>{state.currentQuiz=getAllQuizzes()[e.currentTarget.dataset.id]; state.view='results'; render();});
     },0);
@@ -1384,7 +1462,7 @@ function showQuizSetDetails(quizId) {
   modal.appendChild(inner); document.body.appendChild(modal);
   document.getElementById('closeQuizSetDetails').onclick = () => modal.remove();
   document.getElementById('copyQuizSetId').onclick = () => { copyTextToClipboard(quiz.id, 'Quiz ID copied'); };
-  document.getElementById('copyQuizSetLink').onclick = () => { copyTextToClipboard(encodeQuizToLink(quiz), 'Short link copied'); };
+  document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(quiz); };
 }
 
 function renderStudentsView() {
@@ -1672,9 +1750,9 @@ function showAdminTeacherExams(teacherId) {
     render();
   });
   document.querySelectorAll('.adminContentQuiz').forEach(btn => btn.onclick = (ev) => showQuizSetDetails(ev.currentTarget.dataset.id));
-  document.querySelectorAll('.adminCopyQuizLink').forEach(btn => btn.onclick = (ev) => {
+  document.querySelectorAll('.adminCopyQuizLink').forEach(btn => btn.onclick = async (ev) => {
     const q = getAllQuizzes()[ev.currentTarget.dataset.id];
-    copyTextToClipboard(encodeQuizToLink(q), 'Quiz link copied');
+    await copyQuizAccessLink(q);
   });
 }
 
@@ -3144,6 +3222,46 @@ function buildCertificateBrandMarkup() {
   `;
 }
 
+function buildCertificateSignatureSvg(item, index = 0) {
+  const seedSource = `${item?.name || ''}|${item?.title || ''}|${index}`;
+  const seed = seedSource.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) || (index + 1) * 97;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const vary = (step, amplitude, shift = 0) => Math.round(Math.sin(seed * 0.137 + step * 0.91 + shift) * amplitude);
+  const points = [
+    [10, clamp(33 + vary(0, 3), 16, 44)],
+    [28, clamp(18 + vary(1, 6), 8, 36)],
+    [50, clamp(37 + vary(2, 4), 20, 48)],
+    [74, clamp(22 + vary(3, 7), 10, 38)],
+    [104, clamp(34 + vary(4, 5), 16, 46)],
+    [136, clamp(19 + vary(5, 6), 8, 36)],
+    [168, clamp(36 + vary(6, 5), 18, 48)],
+    [198, clamp(22 + vary(7, 7), 10, 38)],
+    [214, clamp(28 + vary(8, 4), 14, 40)]
+  ];
+  let path = `M ${points[0][0]} ${points[0][1]}`;
+  for (let i = 1; i < points.length; i++) {
+    const [prevX, prevY] = points[i - 1];
+    const [x, y] = points[i];
+    const span = x - prevX;
+    const cp1x = prevX + span * 0.32;
+    const cp1y = clamp(prevY + vary(i, 10, 0.4) - (i % 2 ? 8 : -4), 4, 52);
+    const cp2x = prevX + span * 0.76;
+    const cp2y = clamp(y + vary(i + 2, 9, 1.2) + (i % 2 ? 5 : -7), 4, 52);
+    path += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${x} ${y}`;
+  }
+  const flourishY = clamp(40 + vary(9, 3), 34, 46);
+  const flourish = `M 24 ${flourishY} C 58 ${clamp(flourishY + vary(10, 4), 30, 48)}, 124 ${clamp(flourishY + vary(11, 5) + 2, 30, 50)}, 196 ${clamp(34 + vary(12, 6), 24, 44)}`;
+  const accentStartX = 96 + vary(13, 6);
+  const accent = `M ${accentStartX} ${clamp(27 + vary(14, 4), 16, 34)} C ${accentStartX + 6} ${clamp(11 + vary(15, 3), 6, 20)}, ${accentStartX + 18} ${clamp(10 + vary(16, 4), 4, 20)}, ${accentStartX + 16} ${clamp(28 + vary(17, 5), 18, 38)}`;
+  return `
+    <svg class="cert-signature-svg" viewBox="0 0 224 56" aria-hidden="true" focusable="false">
+      <path d="${path}" fill="none" stroke="#101821" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="${flourish}" fill="none" stroke="#101821" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>
+      <path d="${accent}" fill="none" stroke="#101821" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/>
+    </svg>
+  `;
+}
+
 function renderCertificateSignatories(signatories = []) {
   const items = normalizeCertificateSignatories(signatories);
   if (!items.length) return '';
@@ -3154,10 +3272,9 @@ function renderCertificateSignatories(signatories = []) {
         const tilt = (((seed + index * 17) % 11) - 5) * 0.6;
         return `
           <div class="cert-signature-card">
-            <div class="cert-signature-script" style="transform:rotate(${tilt}deg)">${escapeHtml(item.name)}</div>
+            <div class="cert-signature-script" style="transform:rotate(${tilt}deg)">${buildCertificateSignatureSvg(item, index)}</div>
             <span></span>
-            <p>${escapeHtml(item.title || item.name)}</p>
-            ${item.title ? `<div class="cert-signature-name">${escapeHtml(item.name)}</div>` : ''}
+            ${item.title ? `<p>${escapeHtml(item.title)}</p>` : ''}
           </div>
         `;
       }).join('')}
@@ -3338,11 +3455,11 @@ function getCertificateResultCss() {
     .cert-detail-subline{font-size:12px;color:#B45309;margin-top:8px}
     .cert-correction-card{grid-column:1/-1}
     .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
-    .cert-signature-card{padding-top:12px}
-    .cert-signature-script{font-family:'Brush Script MT','Segoe Script','Lucida Handwriting',cursive;font-size:36px;line-height:1;color:#111827;min-height:46px;margin-bottom:10px;transform-origin:center bottom}
-    .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 10px;width:min(220px,100%)}
+    .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
+    .cert-signature-script{width:min(220px,100%);min-height:40px;margin:0 auto -4px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
+    .cert-signature-svg{display:block;width:min(196px,100%);height:44px;overflow:visible}
+    .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
     .cert-signatures p{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#101821}
-    .cert-signature-name{margin-top:6px;font-size:13px;color:#6B7280}
     .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
     .cert-footer-sub{text-align:center;color:#6B7280;margin-top:8px}
     .cert-result .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
@@ -3354,7 +3471,7 @@ function getCertificateResultCss() {
     .student-topic-item strong{display:block;color:#0F172A;font-size:14px;line-height:1.35}
     .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
     .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
-    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-correction-card{grid-column:auto}.cert-signatures{gap:20px}.cert-signature-script{font-size:30px;min-height:38px}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
+    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-correction-card{grid-column:auto}.cert-signatures{gap:20px}.cert-signature-script{min-height:34px;margin-bottom:-3px}.cert-signature-svg{height:38px}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
     @media print{.cert-result{box-shadow:none;border-color:#D9B45A}.cert-result .result-actions{display:none!important}}
   `;
 }
@@ -3872,7 +3989,7 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="form-group">
             <div id="signatoriesList" class="signatories-list"></div>
             <button type="button" id="btnAddSignatory" class="btn-secondary subject-add-btn">+ Add Signatory</button>
-            <p class="helper-text">Each signatory generates its own styled signature from the signatory name. The title or label is optional.</p>
+            <p class="helper-text">Each signatory shows a drawn signature mark above the line. Only the title or label is printed on the certificate.</p>
           </div>
         </section>
 
@@ -4072,7 +4189,7 @@ function showCreateQuizModal(editQuizId = '') {
       }; inp.click();
     };
 
-    document.getElementById('btnCreateSave').onclick = ()=>{
+    document.getElementById('btnCreateSave').onclick = async ()=>{
       const examName = document.getElementById('cqExamName').value.trim();
       const title = document.getElementById('cqTitle').value.trim();
       const password = document.getElementById('cqPassword').value || '';
@@ -4119,10 +4236,19 @@ function showCreateQuizModal(editQuizId = '') {
       const importedWhitelist = window._importedWhitelist || editingQuiz?.whitelist || [];
       const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: editingQuiz?.teacherId || state.teacherId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist: importedWhitelist, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
       const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
-      regradeSubmissionsForQuiz(qobj);
+      const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       addStudentsToTeacher(importedWhitelist, id);
-      showNotification((editingQuiz ? 'Quiz updated' : 'Quiz saved') + '   ID: '+id,'success');
+      const sharedSyncOk = await syncSharedKeys([
+        STORAGE_KEYS.quizzes,
+        STORAGE_KEYS.students,
+        ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
+      ]);
+      if (sharedSyncOk) {
+        showNotification((editingQuiz ? 'Quiz updated' : 'Quiz saved') + '   ID: '+id,'success');
+      } else {
+        showNotification(`${editingQuiz ? 'Quiz updated' : 'Quiz saved'}   ID: ${id}. ${getSharedSyncWarningMessage()} Quiz IDs may not open on other devices yet.`, 'warning', 8000);
+      }
       window._importedWhitelist = [];
       m.remove(); render();
     };
@@ -4601,27 +4727,15 @@ function renderStudentEntry() {
       const access = parseQuizAccessInput(document.getElementById('stuAccess').value || '');
       const email = studentKey.includes('@') ? studentKey : '';
       const registrationNo = studentKey.includes('@') ? '' : studentKey;
-      const code = access.code;
-      const link = access.link;
       if (!name || !studentKey) return showNotification('Please enter name and email or registration number','error');
-      let quiz = null; let qid = null;
-      if (link) {
-        try {
-          const params = new URLSearchParams((new URL(link)).search);
-          if (params.has('q')) {
-            const all = getAllQuizzes();
-            quiz = all[params.get('q')];
-          } else if (params.has('import')) {
-            const q = decodeQuizFromString(params.get('import'));
-            if (q) { const all = getAllQuizzes(); all[q.id]=q; saveAllQuizzes(all); quiz = q; }
-          }
-        } catch(e) { /* invalid link */ }
+      let quiz = await resolveQuizFromAccessWithSync(access);
+      if (!quiz) {
+        const syncHelp = canUseNetworkSync()
+          ? 'The teacher should confirm shared sync is working, then resend the quiz ID or link.'
+          : 'This deployment is not connected to shared sync, so quiz IDs work only on the device that created them.';
+        return showNotification(`Quiz not found or invalid code/link. ${syncHelp}`, 'error', 8000);
       }
-      if (!quiz && code) {
-        const all = getAllQuizzes();
-        if (all[code]) quiz = all[code];
-      }
-      if (!quiz) return showNotification('Quiz not found or invalid code/link','error');
+      let qid = null;
       qid = quiz.id;
       const schedule = getQuizScheduleStatus(quiz);
       if (!schedule.ok) return showNotification(schedule.message, 'error', 6000);
@@ -4657,10 +4771,10 @@ function renderStudentEntry() {
       getClientIpAddress().then(ip => { if (state.currentSubmission && state.currentSubmission.quizId === quiz.id) state.currentSubmission.monitoring.ipAddress = ip; });
       render();
     };
-    document.getElementById('previewLink').onclick = ()=>{
-      const qid = parseQuizAccessInput(document.getElementById('stuAccess').value || '').code;
-      const q = getAllQuizzes()[qid]; if (!q) return;
-      copyTextToClipboard(encodeQuizToLink(q), 'Link copied to clipboard');
+    document.getElementById('previewLink').onclick = async ()=>{
+      const q = await resolveQuizFromAccessWithSync(parseQuizAccessInput(document.getElementById('stuAccess').value || ''));
+      if (!q) return showNotification('Quiz not found or invalid code/link', 'error');
+      await copyQuizAccessLink(q);
     };
     document.getElementById('checkResultBtn').onclick = ()=>{
       const id = prompt('Enter Quiz ID to check'); if (!id) return;

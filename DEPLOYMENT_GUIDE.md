@@ -60,30 +60,32 @@ Important note:
 - This keeps the current app sync contract, so teacher records still follow the current browser-driven login model
 - For a stronger auth model, the next step would be moving teacher login to server-side auth or Supabase Auth
 
-### 3. Vercel (Static-Only Mode)
-Use Vercel when you want to deploy only the frontend files.
+### 3. Vercel (Recommended with Supabase)
+Vercel now works for shared sync when you use the included `api/` routes with Supabase storage.
 
 1. Push this project to GitHub
 2. Import the repository into Vercel
-3. Deploy it as a static project
+3. Set these environment variables in Vercel:
+   - `STORAGE_BACKEND=supabase`
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - Optional: `SUPABASE_TABLE_PREFIX`
+4. Run `supabase/schema.sql` in your Supabase project
+5. Deploy
 
 Important notes for Vercel:
-- `server.js` is a long-running Node server, not a Vercel Function
-- Shared-sync mode writes to `ope-shared-state.json`
-- Vercel Functions use a read-only filesystem except for temporary `/tmp` scratch space
-- Result: Vercel is suitable for static-only mode here, but not for the current shared-sync backend
+- `server.js` is still for traditional Node hosting and is not used by Vercel
+- The new `api/health`, `api/state`, and `api/state/[stateKey]` serverless routes provide the same shared-sync API for the browser
+- `STORAGE_BACKEND=file` is not suitable on Vercel because the filesystem is not persistent across serverless executions
 
-What works on Vercel:
-- `index.html`
-- `app.js`
-- `style.css`
-- `manifest.json`
-- `service-worker.js`
-
-What will not work on Vercel without a backend rewrite:
+What works on Vercel with Supabase mode:
 - Shared quizzes across devices
 - Shared submissions across devices
-- File-based persistence through `server.js`
+- Shared teacher/student records across devices
+- The normal frontend files: `index.html`, `app.js`, `style.css`, `manifest.json`, `service-worker.js`
+
+What will not work on Vercel:
+- File-based shared persistence through `ope-shared-state.json`
 
 ### 4. Netlify
 1. Create a free Netlify account
@@ -193,7 +195,8 @@ You can still modify these app values in `app.js`:
 - Shared quizzes, teachers, uploaded students, and submissions are stored on your deployed backend
 - No third-party API key is required
 - Use persistent storage on the host so data survives restarts
-- Vercel Functions are not a good fit for the current file-based backend because the filesystem is read-only except for temporary scratch space
+- On Vercel, use the included serverless `api/` routes together with `STORAGE_BACKEND=supabase`
+- Do not use `STORAGE_BACKEND=file` on Vercel because the filesystem is read-only except for temporary scratch space
 - When using Supabase mode, keep `SUPABASE_SERVICE_ROLE_KEY` on the server only and never expose it to the browser
 
 ### Exam Integrity
@@ -239,9 +242,11 @@ You can still modify these app values in `app.js`:
 - Confirm the table prefix in `SUPABASE_TABLE_PREFIX` matches the tables you created
 
 #### "This Serverless Function has crashed" on Vercel
-- This usually means Vercel tried to run backend code as a function
-- In this project, `server.js` uses `server.listen(...)` and writes to a local JSON file, which is not how Vercel Functions are meant to run
-- Fix: deploy this repo to Vercel as a static site only, or move shared-sync hosting to a traditional Node host with persistent storage
+- This usually means the Vercel function is missing required storage configuration
+- Confirm `STORAGE_BACKEND=supabase`
+- Confirm `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set in Vercel
+- Confirm you ran `supabase/schema.sql`
+- If you want file-based persistence instead, use `npm start` on a traditional Node host instead of Vercel
 
 ### Performance Tips
 - For large quizzes (1000+ questions), consider batching
