@@ -708,11 +708,16 @@ function makeQuestionId(question, index = 0) {
   return 'q_' + Math.abs(hash).toString(36);
 }
 
+function normalizeRichText(value) {
+  return (value == null ? '' : String(value)).replace(/\r\n?/g, '\n');
+}
+
 function normalizeQuestionForStorage(question, index = 0, subjectName = 'General') {
   const normalized = {
     ...question,
+    question: normalizeRichText(question.question || ''),
     subject: question.subject || subjectName,
-    options: Array.isArray(question.options) ? question.options.slice() : [],
+    options: Array.isArray(question.options) ? question.options.map((option) => normalizeRichText(option)) : [],
     answer: (question.answer || '').toString().trim().toUpperCase(),
     difficulty: question.difficulty || 'Medium'
   };
@@ -1574,7 +1579,7 @@ function showQuizSetDetails(quizId) {
     <div class="table-wrap">
       <table class="table-dense">
         <thead><tr><th>#</th><th>Subject</th><th>Question</th><th>Options</th><th>Answer</th></tr></thead>
-        <tbody>${questions.map(q => `<tr><td>${q.idx}</td><td>${escapeHtml(q.subject)}</td><td>${escapeHtml(q.question)}</td><td>${(q.options || []).map((o,i)=>`${String.fromCharCode(65+i)}. ${escapeHtml(o)}`).join('<br>')}</td><td>${escapeHtml(q.answer)}</td></tr>`).join('') || '<tr><td colspan="5">No questions found.</td></tr>'}</tbody>
+        <tbody>${questions.map(q => `<tr><td>${q.idx}</td><td>${escapeHtml(q.subject)}</td><td style="white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(q.question)}</td><td style="white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${(q.options || []).map((o,i)=>`${String.fromCharCode(65+i)}. ${escapeHtml(o)}`).join('\n')}</td><td>${escapeHtml(q.answer)}</td></tr>`).join('') || '<tr><td colspan="5">No questions found.</td></tr>'}</tbody>
       </table>
     </div>
   `;
@@ -2065,12 +2070,12 @@ function renderQuizTake() {
         const opts = (qq.options||[]).map((opt,i)=>{
           const letter = String.fromCharCode(65+i);
           const checked = sub.answers[idx] === letter ? 'checked' : '';
-          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span style="margin-left:8px">${letter}. ${escapeHtml(opt)}</span></label>`;
+          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
         }).join('');
         return `
           <div class="question-card" style="margin-bottom:12px">
             <div class="h3">Question ${idx+1} of ${sub.allQuestions.length}</div>
-            <div style="margin-top:8px" class="body">${escapeHtml(qq.question)}</div>
+            <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
             <div class="options" id="optionsList-${idx}">${opts}</div>
           </div>
         `;
@@ -2092,13 +2097,13 @@ function renderQuizTake() {
         const opts = (qq.options || []).map((opt, i) => {
           const letter = String.fromCharCode(65 + i);
           const checked = sub.answers[idx] === letter ? 'checked' : '';
-          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span style="margin-left:8px">${letter}. ${escapeHtml(opt)}</span></label>`;
+          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
         }).join('');
 
         qa.innerHTML = `
           <div class="question-card" style="margin-bottom:12px">
             <div class="h3">Question ${idx + 1} of ${sub.allQuestions.length}</div>
-            <div style="margin-top:8px" class="body">${escapeHtml(qq.question)}</div>
+            <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
             <div class="options" id="optionsList-${idx}">${opts}</div>
             <div class="question-inline-actions" style="display:flex;justify-content:space-between;margin-top:12px">
               <div>
@@ -2628,9 +2633,9 @@ function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
     return `
       <tr>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">Q${idx + 1}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">${escapeHtml(question.question || '')}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">${escapeHtml(optionText(question, chosen))}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">${escapeHtml(optionText(question, correct))}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(question.question || '')}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(optionText(question, chosen))}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(optionText(question, correct))}</td>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;color:${isCorrect ? '#047857' : '#B91C1C'};font-weight:700">${isCorrect ? 'Correct' : 'Incorrect'}</td>
       </tr>
     `;
@@ -3963,7 +3968,7 @@ function showExamAnalysisModal(q) {
             const isCorrect = (r.answer || '').toString().toUpperCase() === item.letter;
             return `<li style="list-style:none;margin:6px 0;padding:8px;border-radius:8px;display:flex;justify-content:space-between;gap:12px;${isCorrect ? 'background:#ecfdf5;border:1px solid #10b981;font-weight:700;' : 'background:#fbfdff;border:1px solid #e6eef6;'}"><span>${item.letter}. ${escapeHtml(item.option)} ${isCorrect ? '<span style="color:#059669;margin-left:8px">Correct answer</span>' : ''}</span><strong>${item.count} student(s)</strong></li>`;
           }).join('');
-          html += `<div class="p-4 mb-4" style="border-bottom:1px solid rgba(2,6,23,0.06);"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;"><div style="font-weight:700">Q${r.index}   <span style="font-weight:600">${escapeHtml(r.subject)}</span></div><div style="color:#475569">Facility: ${fi} &nbsp;   &nbsp; ${interp}</div></div><div style="margin-top:8px;white-space:normal;word-break:break-word;font-size:1rem;color:#0b1220">${escapeHtml(r.question)}</div><div class="small" style="margin-top:8px">Seen by ${r.seen} student(s), attempted by ${r.attempted}, correct ${r.correct}, unanswered ${r.unanswered}, not seen by ${r.notSeen}</div><ul style="margin-top:12px;padding:0">${opts}</ul></div>`;
+          html += `<div class="p-4 mb-4" style="border-bottom:1px solid rgba(2,6,23,0.06);"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;"><div style="font-weight:700">Q${r.index}   <span style="font-weight:600">${escapeHtml(r.subject)}</span></div><div style="color:#475569">Facility: ${fi} &nbsp;   &nbsp; ${interp}</div></div><div style="margin-top:8px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font-size:1rem;color:#0b1220">${escapeHtml(r.question)}</div><div class="small" style="margin-top:8px">Seen by ${r.seen} student(s), attempted by ${r.attempted}, correct ${r.correct}, unanswered ${r.unanswered}, not seen by ${r.notSeen}</div><ul style="margin-top:12px;padding:0">${opts}</ul></div>`;
         }
       }
       content.innerHTML = `<div style="max-height:60vh;overflow:auto;padding-right:8px">${html}</div>`;
