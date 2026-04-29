@@ -29,6 +29,7 @@ const NETWORK_STATE_KEY_MAP = {
   [STORAGE_KEYS.students]: 'students'
 };
 const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
+const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
 
 function normalizeApiBaseUrl(value) {
   return (value || '').toString().trim().replace(/\/+$/, '');
@@ -331,13 +332,85 @@ async function syncSharedKeys(keys = []) {
   return ok;
 }
 
+function encodeTextToBase64(value) {
+  try {
+    const bytes = new TextEncoder().encode((value || '').toString());
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary);
+  } catch (error) {
+    return btoa(unescape(encodeURIComponent((value || '').toString())));
+  }
+}
+
+function decodeTextFromBase64(value) {
+  try {
+    const binary = atob((value || '').toString());
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    return decodeURIComponent(escape(atob((value || '').toString())));
+  }
+}
+
+function buildPortableQuizSnapshot(quiz) {
+  if (!quiz || typeof quiz !== 'object') return {};
+  return {
+    id: quiz.id,
+    examName: quiz.examName || '',
+    title: quiz.title || '',
+    timeLimit: quiz.timeLimit || 0,
+    maxGrade: quiz.maxGrade || 100,
+    attemptLimit: quiz.attemptLimit || 1,
+    passMark: quiz.passMark || 50,
+    negativeMarkEnabled: !!quiz.negativeMarkEnabled,
+    negativeMarkValue: quiz.negativeMarkValue || 0,
+    showInstantResult: quiz.showInstantResult !== false,
+    showTopicsAfterSubmission: !!quiz.showTopicsAfterSubmission,
+    shuffleQs: quiz.shuffleQs !== false,
+    shuffleOpts: quiz.shuffleOpts !== false,
+    verticalLayout: !!quiz.verticalLayout,
+    rankingEnabled: !!quiz.rankingEnabled,
+    whitelist: Array.isArray(quiz.whitelist) ? quiz.whitelist : [],
+    certificateSignatories: Array.isArray(quiz.certificateSignatories) ? quiz.certificateSignatories : [],
+    scheduleStart: quiz.scheduleStart || '',
+    scheduleEnd: quiz.scheduleEnd || '',
+    subjects: (quiz.subjects || []).map((subject) => ({
+      name: subject && subject.name ? subject.name : 'General',
+      questionCount: subject && subject.questionCount != null ? subject.questionCount : null,
+      questions: ((subject && Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject && subject.questions) || []).map((question) => ({ ...question }))
+    }))
+  };
+}
+
+function encodeQuizToPortablePayload(quiz) {
+  return encodeURIComponent(encodeTextToBase64(JSON.stringify(buildPortableQuizSnapshot(quiz))));
+}
+
+function encodeQuizToPortableCode(quiz) {
+  return `${PORTABLE_QUIZ_CODE_PREFIX}${encodeQuizToPortablePayload(quiz)}`;
+}
+
 async function copyQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  await copyTextToClipboard(encodeQuizToLink(quiz), 'Quiz link copied');
+  const portableFallback = !sharedSyncOk;
+  await copyTextToClipboard(encodeQuizToLink(quiz, { portable: portableFallback }), portableFallback ? 'Portable student link copied' : 'Quiz link copied');
   if (!sharedSyncOk) {
-    showNotification(`${getSharedSyncWarningMessage()} Students on other devices may still see "quiz not found" until the shared backend is connected.`, 'warning', 8000);
+    showNotification(`Portable student link copied because shared sync is down. Students can open that link on another device right now. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
   }
+  return true;
+}
+
+async function copyQuizAccessCode(quiz) {
+  if (!quiz || !quiz.id) return false;
+  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
+  if (sharedSyncOk) {
+    await copyTextToClipboard(quiz.id, 'Quiz ID copied');
+    return true;
+  }
+  await copyTextToClipboard(encodeQuizToPortableCode(quiz), 'Portable access code copied');
+  showNotification('Shared sync is down, so a portable access code was copied. Students can paste it into the Quiz Code / Magic Link box.', 'warning', 9000);
   return true;
 }
 
@@ -730,8 +803,12 @@ function getQuizQuestionsForTaking(quiz) {
   return allQuestions.map(question => prepareQuestionForStudent(question, !!quiz.shuffleOpts));
 }
 
-function encodeQuizToLink(q) {
+function encodeQuizToLink(q, options = {}) {
   const base = window.location.href.split('?')[0];
+  if (!q || !q.id) return base;
+  if (options.portable) {
+    return `${base}?q=${encodeURIComponent(q.id)}&import=${encodeQuizToPortablePayload(q)}`;
+  }
   return `${base}?q=${encodeURIComponent(q.id)}`;
 }
 
@@ -739,6 +816,7 @@ function parseQuizAccessInput(value) {
   const raw = (value || '').trim();
   if (!raw) return { code: '', link: '' };
   if (/^https?:\/\//i.test(raw)) return { code: '', link: raw };
+  if (raw.toUpperCase().startsWith(PORTABLE_QUIZ_CODE_PREFIX)) return { code: `${PORTABLE_QUIZ_CODE_PREFIX}${raw.slice(PORTABLE_QUIZ_CODE_PREFIX.length).replace(/\s+/g, '')}`, link: '' };
   const qMatch = raw.match(/[?&]q=([^&]+)/i);
   if (qMatch) return { code: decodeURIComponent(qMatch[1]), link: raw };
   return { code: raw.replace(/\s+/g, ''), link: '' };
@@ -746,7 +824,7 @@ function parseQuizAccessInput(value) {
 
 function decodeQuizFromString(encoded) {
   try {
-    return JSON.parse(atob(decodeURIComponent(encoded)));
+    return JSON.parse(decodeTextFromBase64(decodeURIComponent(encoded)));
   } catch(e) { return null; }
 }
 
@@ -755,7 +833,10 @@ function resolveQuizFromAccess(access) {
   if (access && access.link) {
     try {
       const params = new URLSearchParams((new URL(access.link)).search);
-      if (params.has('q')) return all[params.get('q')] || null;
+      if (params.has('q')) {
+        const matchedQuiz = all[params.get('q')] || null;
+        if (matchedQuiz) return matchedQuiz;
+      }
       if (params.has('import')) {
         const importedQuiz = decodeQuizFromString(params.get('import'));
         if (importedQuiz) {
@@ -768,7 +849,18 @@ function resolveQuizFromAccess(access) {
       return null;
     }
   }
-  if (access && access.code) return all[access.code] || null;
+  if (access && access.code) {
+    if (access.code.toUpperCase().startsWith(PORTABLE_QUIZ_CODE_PREFIX)) {
+      const importedQuiz = decodeQuizFromString(access.code.slice(PORTABLE_QUIZ_CODE_PREFIX.length));
+      if (importedQuiz) {
+        all[importedQuiz.id] = importedQuiz;
+        saveAllQuizzes(all);
+        return importedQuiz;
+      }
+      return null;
+    }
+    return all[access.code] || null;
+  }
   return null;
 }
 
@@ -1336,8 +1428,9 @@ function showTeacherAccessModal() {
 
 function renderTeacherQuizzes() {
   const container = document.createElement('div');
+  const portableMode = networkSyncFailed && !networkSyncReady;
   const syncNotice = networkSyncFailed && !networkSyncReady
-    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Quiz IDs and links may work only on this device until the backend connection is fixed.</div>`
+    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Do not send the visible 6-digit quiz number by itself. Use the Copy Link or Copy ID button so the app can send a portable student link/code that still works on other devices.</div>`
     : '';
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
@@ -1356,7 +1449,7 @@ function renderTeacherQuizzes() {
           <div class="small">${(q.subjects || []).length} subject(s)   ${q.timeLimit}m   ${q.maxGrade} points</div>
         </div>
         <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy ID</button>
+          <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">${portableMode ? 'Copy Access Code' : 'Copy ID'}</button>
           <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">Copy Link</button>
           <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
           <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
@@ -1365,7 +1458,7 @@ function renderTeacherQuizzes() {
     }).join('');
     // wire actions
     setTimeout(()=> {
-      document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=(e)=>{copyTextToClipboard(e.currentTarget.dataset.id, 'ID copied');});
+      document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessCode(q);});
       document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessLink(q);});
       document.querySelectorAll('.btnEditQuiz').forEach(b=>b.onclick=(e)=>{ canSetQuestions() ? showCreateQuizModal(e.currentTarget.dataset.id) : showLicenseRequired(); });
       document.querySelectorAll('.btnView').forEach(b=>b.onclick=(e)=>{state.currentQuiz=getAllQuizzes()[e.currentTarget.dataset.id]; state.view='results'; render();});
@@ -1431,6 +1524,7 @@ function renderQuestionBankView() {
 function showQuizSetDetails(quizId) {
   const quiz = getAllQuizzes()[quizId];
   if (!quiz || (quiz.teacherId !== state.teacherId && !isSuperAdmin())) return showNotification('Quiz set not found', 'error');
+  const portableMode = networkSyncFailed && !networkSyncReady;
   let modal = document.getElementById('quizSetDetails'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='quizSetDetails'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(0,0,0,0.45)'; modal.style.zIndex=20000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const questions = [];
@@ -1444,12 +1538,12 @@ function showQuizSetDetails(quizId) {
       <div>
         <div class="h2">${escapeHtml(quiz.title)}</div>
         <div class="small">Quiz ID: ${quiz.id}</div>
-        <div class="small">Short link: ${escapeHtml(encodeQuizToLink(quiz))}</div>
+        <div class="small">${isSharedSyncAvailable() ? `Student link: ${escapeHtml(encodeQuizToLink(quiz))}` : 'Student link: use Copy Link for the portable cross-device version'}</div>
       </div>
       <button id="closeQuizSetDetails" class="btn btn-ghost">Close</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-      <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy ID</button>
+      <button id="copyQuizSetId" class="btn btn-ghost btn-sm">${portableMode ? 'Copy Access Code' : 'Copy ID'}</button>
       <button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>
     </div>
     <div class="table-wrap">
@@ -1461,7 +1555,7 @@ function showQuizSetDetails(quizId) {
   `;
   modal.appendChild(inner); document.body.appendChild(modal);
   document.getElementById('closeQuizSetDetails').onclick = () => modal.remove();
-  document.getElementById('copyQuizSetId').onclick = () => { copyTextToClipboard(quiz.id, 'Quiz ID copied'); };
+  document.getElementById('copyQuizSetId').onclick = async () => { await copyQuizAccessCode(quiz); };
   document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(quiz); };
 }
 
@@ -3223,41 +3317,66 @@ function buildCertificateBrandMarkup() {
 }
 
 function buildCertificateSignatureSvg(item, index = 0) {
-  const seedSource = `${item?.name || ''}|${item?.title || ''}|${index}`;
-  const seed = seedSource.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) || (index + 1) * 97;
+  const rawName = ((item && item.name) || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'Signature';
+  const chars = rawName.slice(0, 28).split('');
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-  const vary = (step, amplitude, shift = 0) => Math.round(Math.sin(seed * 0.137 + step * 0.91 + shift) * amplitude);
-  const points = [
-    [10, clamp(33 + vary(0, 3), 16, 44)],
-    [28, clamp(18 + vary(1, 6), 8, 36)],
-    [50, clamp(37 + vary(2, 4), 20, 48)],
-    [74, clamp(22 + vary(3, 7), 10, 38)],
-    [104, clamp(34 + vary(4, 5), 16, 46)],
-    [136, clamp(19 + vary(5, 6), 8, 36)],
-    [168, clamp(36 + vary(6, 5), 18, 48)],
-    [198, clamp(22 + vary(7, 7), 10, 38)],
-    [214, clamp(28 + vary(8, 4), 14, 40)]
-  ];
-  let path = `M ${points[0][0]} ${points[0][1]}`;
-  for (let i = 1; i < points.length; i++) {
-    const [prevX, prevY] = points[i - 1];
-    const [x, y] = points[i];
-    const span = x - prevX;
-    const cp1x = prevX + span * 0.32;
-    const cp1y = clamp(prevY + vary(i, 10, 0.4) - (i % 2 ? 8 : -4), 4, 52);
-    const cp2x = prevX + span * 0.76;
-    const cp2y = clamp(y + vary(i + 2, 9, 1.2) + (i % 2 ? 5 : -7), 4, 52);
-    path += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${x} ${y}`;
-  }
-  const flourishY = clamp(40 + vary(9, 3), 34, 46);
-  const flourish = `M 24 ${flourishY} C 58 ${clamp(flourishY + vary(10, 4), 30, 48)}, 124 ${clamp(flourishY + vary(11, 5) + 2, 30, 50)}, 196 ${clamp(34 + vary(12, 6), 24, 44)}`;
-  const accentStartX = 96 + vary(13, 6);
-  const accent = `M ${accentStartX} ${clamp(27 + vary(14, 4), 16, 34)} C ${accentStartX + 6} ${clamp(11 + vary(15, 3), 6, 20)}, ${accentStartX + 18} ${clamp(10 + vary(16, 4), 4, 20)}, ${accentStartX + 16} ${clamp(28 + vary(17, 5), 18, 38)}`;
+  let x = 10;
+  let path = 'M 10 36';
+  const accentParts = [];
+  let drawnLetters = 0;
+
+  chars.forEach((char, idx) => {
+    if (char === ' ') {
+      x += 7;
+      return;
+    }
+    const upper = char.toUpperCase();
+    const code = upper.charCodeAt(0);
+    const isWordStart = idx === 0 || chars[idx - 1] === ' ';
+    const hasAscender = /[BDFHKLT]/.test(upper);
+    const hasDescender = /[GJPQY]/.test(upper);
+    const rounded = /[COAESUG]/.test(upper);
+    const wide = /[MW]/.test(upper);
+    const narrow = /[IJT]/.test(upper);
+    const looped = /[ABDEGOPQR]/.test(upper);
+    const width = isWordStart ? 15 : wide ? 13 : narrow ? 8.5 : 10.5;
+    const topY = isWordStart ? 8 + (code % 3) : hasAscender ? 12 + (code % 4) : rounded ? 19 + (code % 3) : 16 + (code % 4);
+    const midY = 28 + ((code + idx) % 5) - 2;
+    const baseY = hasDescender ? 43 + (code % 2) : 33 + (code % 4);
+
+    if (isWordStart) {
+      path += ` C ${x + 1.5} 31, ${x + 1.5} ${topY}, ${x + 5} ${topY}`;
+      path += ` C ${x + 8.5} ${topY + 1.5}, ${x + 7.2} ${midY}, ${x + 4.8} ${baseY - 1}`;
+      accentParts.push(`M ${x + 4} ${midY - 5} C ${x + 6} ${topY + 1}, ${x + 10} ${topY + 2}, ${x + 10.5} ${midY - 1}`);
+    } else {
+      path += ` C ${x + width * 0.18} ${midY - 6}, ${x + width * 0.2} ${topY}, ${x + width * 0.34} ${topY + 1}`;
+    }
+
+    path += ` C ${x + width * 0.5} ${topY + 8}, ${x + width * 0.42} ${baseY}, ${x + width * 0.62} ${baseY - 1}`;
+    path += ` C ${x + width * 0.82} ${baseY - 2}, ${x + width * 0.78} ${midY - 2}, ${x + width} ${midY + ((code % 3) - 1)}`;
+
+    if (looped && !isWordStart) {
+      accentParts.push(`M ${x + width * 0.28} ${midY - 1} C ${x + width * 0.4} ${topY + 4}, ${x + width * 0.58} ${topY + 5}, ${x + width * 0.58} ${midY + 1}`);
+    }
+
+    x += width;
+    drawnLetters += 1;
+  });
+
+  const flourishEndX = clamp(x + 18, 158, 208);
+  const flourishStartX = clamp(18 + drawnLetters * 1.5, 28, 74);
+  const flourish = `M ${flourishStartX} 39 C ${clamp(flourishStartX + 26, 40, 92)} 43, ${clamp(flourishEndX - 42, 92, 164)} 43, ${flourishEndX} ${clamp(29 + ((index + drawnLetters) % 4), 28, 34)}`;
+  const accent = accentParts.join(' ');
   return `
     <svg class="cert-signature-svg" viewBox="0 0 224 56" aria-hidden="true" focusable="false">
       <path d="${path}" fill="none" stroke="#101821" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="${flourish}" fill="none" stroke="#101821" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>
-      <path d="${accent}" fill="none" stroke="#101821" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.72"/>
+      ${accent ? `<path d="${accent}" fill="none" stroke="#101821" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" opacity="0.62"/>` : ''}
     </svg>
   `;
 }
@@ -3456,8 +3575,8 @@ function getCertificateResultCss() {
     .cert-correction-card{grid-column:1/-1}
     .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
     .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
-    .cert-signature-script{width:min(220px,100%);min-height:40px;margin:0 auto -4px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
-    .cert-signature-svg{display:block;width:min(196px,100%);height:44px;overflow:visible}
+    .cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
+    .cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
     .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
     .cert-signatures p{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#101821}
     .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
@@ -3471,7 +3590,7 @@ function getCertificateResultCss() {
     .student-topic-item strong{display:block;color:#0F172A;font-size:14px;line-height:1.35}
     .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
     .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
-    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-correction-card{grid-column:auto}.cert-signatures{gap:20px}.cert-signature-script{min-height:34px;margin-bottom:-3px}.cert-signature-svg{height:38px}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
+    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-correction-card{grid-column:auto}.cert-signatures{gap:20px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
     @media print{.cert-result{box-shadow:none;border-color:#D9B45A}.cert-result .result-actions{display:none!important}}
   `;
 }
@@ -4705,7 +4824,7 @@ function renderStudentEntry() {
         <input id="stuIdentity" class="input-beautiful" placeholder="Email or registration number" />
         <div style="height:8px"></div>
         <label class="small">Quiz Code / Magic Link</label>
-        <input id="stuAccess" class="input-beautiful" placeholder="123456 or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
+        <input id="stuAccess" class="input-beautiful" placeholder="123456, OPEQUIZ:..., or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
         <div style="height:8px"></div>
         <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="stuWebcamToggle" /> Enable webcam (optional)</label>
         <div style="height:12px"></div>
@@ -4714,7 +4833,7 @@ function renderStudentEntry() {
       </div>
       <div class="info-card">
           <h3 class="display-font">Quick Info</h3>
-          <p class="text-muted">Enter the Quiz Code provided by your teacher, or paste the Magic Link you received.</p>
+          <p class="text-muted">Enter the Quiz Code provided by your teacher, paste the student link, or paste the portable access code that starts with OPEQUIZ:</p>
           <p class="text-muted">The app will not show other teachers' quizzes.</p>
       </div>
     </div>
@@ -4731,8 +4850,8 @@ function renderStudentEntry() {
       let quiz = await resolveQuizFromAccessWithSync(access);
       if (!quiz) {
         const syncHelp = canUseNetworkSync()
-          ? 'The teacher should confirm shared sync is working, then resend the quiz ID or link.'
-          : 'This deployment is not connected to shared sync, so quiz IDs work only on the device that created them.';
+          ? 'Ask the teacher to resend the student link or the portable access code from the Copy Link / Copy ID button.'
+          : 'This deployment is not connected to shared sync, so students must use the student link or portable access code instead of only the 6-digit number.';
         return showNotification(`Quiz not found or invalid code/link. ${syncHelp}`, 'error', 8000);
       }
       let qid = null;

@@ -380,8 +380,8 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .cert-correction-card{grid-column:1/-1}
 .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
 .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
-.cert-signature-script{width:min(220px,100%);min-height:40px;margin:0 auto -4px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
-.cert-signature-svg{display:block;width:min(196px,100%);height:44px;overflow:visible}
+.cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
+.cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
 .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
 .cert-signatures p{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#101821}
 .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
@@ -575,8 +575,8 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 	.cert-details-grid{grid-template-columns:1fr;gap:12px}
 	.cert-correction-card{grid-column:auto}
 	.cert-signatures{gap:20px}
-	.cert-signature-script{min-height:34px;margin-bottom:-3px}
-	.cert-signature-svg{height:38px}
+	.cert-signature-script{min-height:30px;margin-bottom:-6px}
+	.cert-signature-svg{height:36px}
 	.student-topic-grid{grid-template-columns:1fr}
 	.cert-footer{font-size:14px}
 }
