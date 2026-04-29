@@ -1,0 +1,11 @@
+server.js
+ope-shared-state.json
+ope-server.log
+allow-ope-firewall.ps1
+debug.html
+summary-preview.html
+summary-preview.png
+test.html
+test-all-features.html
+*.md
+*.txt

@@ -35,18 +35,43 @@ Shared-sync mode does not require any third-party API key.
 ### 2. Static Deployment
 Use this only when you do not need shared syncing.
 
-### 3. Vercel / Netlify / GitHub Pages
+### 3. Vercel (Static-Only Mode)
+Use Vercel when you want to deploy only the frontend files.
+
+1. Push this project to GitHub
+2. Import the repository into Vercel
+3. Deploy it as a static project
+
+Important notes for Vercel:
+- `server.js` is a long-running Node server, not a Vercel Function
+- Shared-sync mode writes to `ope-shared-state.json`
+- Vercel Functions use a read-only filesystem except for temporary `/tmp` scratch space
+- Result: Vercel is suitable for static-only mode here, but not for the current shared-sync backend
+
+What works on Vercel:
+- `index.html`
+- `app.js`
+- `style.css`
+- `manifest.json`
+- `service-worker.js`
+
+What will not work on Vercel without a backend rewrite:
+- Shared quizzes across devices
+- Shared submissions across devices
+- File-based persistence through `server.js`
+
+### 4. Netlify
 1. Create a free Netlify account
 2. Drag & drop the files or connect Git
 3. Site will be live at `random-name.netlify.app`
 
-### 4. GitHub Pages
+### 5. GitHub Pages
 1. Upload files to a GitHub repository
 2. Go to Settings > Pages
 3. Select main branch and save
 4. Site will be live at `username.github.io/repository-name`
 
-### 5. Any Static Hosting
+### 6. Any Static Hosting
 The app works on any static hosting service that supports:
 - HTML/CSS/JavaScript files
 - HTTPS (required for some features like clipboard API)
@@ -139,6 +164,7 @@ You can still modify these app values in `app.js`:
 - Shared quizzes, teachers, uploaded students, and submissions are stored on your deployed backend
 - No third-party API key is required
 - Use persistent storage on the host so data survives restarts
+- Vercel Functions are not a good fit for the current file-based backend because the filesystem is read-only except for temporary scratch space
 
 ### Exam Integrity
 - Multiple screenshot detection methods
@@ -174,6 +200,11 @@ You can still modify these app values in `app.js`:
 - Confirm every device is opening the same deployed backend URL
 - If frontend and backend are on different domains, update `config.js` and `ALLOWED_ORIGINS`
 - Check that the host keeps the shared data file on persistent storage
+
+#### "This Serverless Function has crashed" on Vercel
+- This usually means Vercel tried to run backend code as a function
+- In this project, `server.js` uses `server.listen(...)` and writes to a local JSON file, which is not how Vercel Functions are meant to run
+- Fix: deploy this repo to Vercel as a static site only, or move shared-sync hosting to a traditional Node host with persistent storage
 
 ### Performance Tips
 - For large quizzes (1000+ questions), consider batching
