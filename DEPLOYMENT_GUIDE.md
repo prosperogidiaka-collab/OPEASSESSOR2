@@ -35,6 +35,31 @@ Shared-sync mode does not require any third-party API key.
 ### 2. Static Deployment
 Use this only when you do not need shared syncing.
 
+### Supabase Database Backend
+The server can now store shared data in Supabase instead of `ope-shared-state.json`.
+
+Setup steps:
+1. Run `supabase/schema.sql` in your Supabase SQL editor
+2. Set `STORAGE_BACKEND=supabase`
+3. Set `SUPABASE_URL`
+4. Set `SUPABASE_SERVICE_ROLE_KEY`
+5. Optionally change `SUPABASE_TABLE_PREFIX` if you want table names other than `ope_*`
+
+To migrate existing local shared data into Supabase:
+1. Keep `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` set
+2. Run `npm run migrate:supabase`
+3. If your local file is somewhere else, set `SOURCE_DATA_FILE=/absolute/path/to/ope-shared-state.json`
+
+What moves into Supabase:
+- quizzes
+- submissions
+- teachers
+- uploaded student lists
+
+Important note:
+- This keeps the current app sync contract, so teacher records still follow the current browser-driven login model
+- For a stronger auth model, the next step would be moving teacher login to server-side auth or Supabase Auth
+
 ### 3. Vercel (Static-Only Mode)
 Use Vercel when you want to deploy only the frontend files.
 
@@ -125,7 +150,11 @@ The app works out-of-the-box when frontend and backend are served together by `s
 
 ### Optional Customizations
 You can modify these values for deployment:
+- `STORAGE_BACKEND`: `file`, `supabase`, or `auto`
 - `DATA_DIR` or `DATA_FILE`: where shared synced data is stored
+- `SUPABASE_URL`: your Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY`: server-only Supabase key
+- `SUPABASE_TABLE_PREFIX`: prefix for the shared-state tables
 - `ALLOWED_ORIGINS`: comma-separated frontend origins when frontend and backend are on different domains
 - `PUBLIC_BASE_URL`: optional public URL for logging/health visibility
 - `config.js`: set `apiBaseUrl` only when using a separate backend origin
@@ -165,6 +194,7 @@ You can still modify these app values in `app.js`:
 - No third-party API key is required
 - Use persistent storage on the host so data survives restarts
 - Vercel Functions are not a good fit for the current file-based backend because the filesystem is read-only except for temporary scratch space
+- When using Supabase mode, keep `SUPABASE_SERVICE_ROLE_KEY` on the server only and never expose it to the browser
 
 ### Exam Integrity
 - Multiple screenshot detection methods
@@ -199,7 +229,14 @@ You can still modify these app values in `app.js`:
 #### "Devices are not syncing"
 - Confirm every device is opening the same deployed backend URL
 - If frontend and backend are on different domains, update `config.js` and `ALLOWED_ORIGINS`
-- Check that the host keeps the shared data file on persistent storage
+- If using file mode, check that the host keeps the shared data file on persistent storage
+- If using Supabase mode, confirm `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and the tables from `supabase/schema.sql` are in place
+
+#### "Supabase upsert/select failed"
+- Confirm you ran `supabase/schema.sql`
+- Confirm `STORAGE_BACKEND=supabase`
+- Confirm the service-role key is correct and loaded on the server
+- Confirm the table prefix in `SUPABASE_TABLE_PREFIX` matches the tables you created
 
 #### "This Serverless Function has crashed" on Vercel
 - This usually means Vercel tried to run backend code as a function
