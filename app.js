@@ -414,6 +414,26 @@ async function copyQuizAccessCode(quiz) {
   return true;
 }
 
+async function syncAllLocalDataToCloud() {
+  if (!canUseNetworkSync()) {
+    showNotification('Shared sync is not available on this deployment.', 'error');
+    return false;
+  }
+  const ok = await syncSharedKeys([
+    STORAGE_KEYS.quizzes,
+    STORAGE_KEYS.students,
+    STORAGE_KEYS.submissions,
+    STORAGE_KEYS.teachers
+  ]);
+  if (ok) {
+    const quizCount = Object.keys(getAllQuizzes() || {}).length;
+    showNotification(`Cloud sync completed. ${quizCount} quiz(es) are now uploaded from this device.`, 'success', 7000);
+  } else {
+    showNotification(`Cloud sync failed. ${getSharedSyncWarningMessage()}`, 'error', 8000);
+  }
+  return ok;
+}
+
 function startNetworkSyncLoop() {
   if (!canUseNetworkSync() || networkSyncTimer) return;
   networkSyncTimer = setInterval(() => {
@@ -1429,11 +1449,16 @@ function showTeacherAccessModal() {
 function renderTeacherQuizzes() {
   const container = document.createElement('div');
   const portableMode = networkSyncFailed && !networkSyncReady;
+  const syncButton = canUseNetworkSync()
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px"><button id="syncLocalToCloudBtn" class="btn btn-primary btn-sm">Sync To Cloud</button></div>`
+    : '';
   const syncNotice = networkSyncFailed && !networkSyncReady
     ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Do not send the visible 6-digit quiz number by itself. Use Copy Student Code or Copy Portable Link so the app can send a cross-device version that still works.</div>`
     : '';
-  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
+  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncButton}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
+    const syncBtn = document.getElementById('syncLocalToCloudBtn');
+    if (syncBtn) syncBtn.onclick = async () => { await syncAllLocalDataToCloud(); };
     const all = getAllQuizzes();
     const keys = Object.keys(all).filter(k => isSuperAdmin() || all[k].teacherId === state.teacherId).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
     const listEl = document.getElementById('teacherQuizzesList');

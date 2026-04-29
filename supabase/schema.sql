@@ -52,3 +52,4 @@ create table if not exists public.ope_submissions (
 create index if not exists ope_submissions_quiz_id_idx on public.ope_submissions (quiz_id);
 create index if not exists ope_submissions_student_email_idx on public.ope_submissions (student_email);
 create index if not exists ope_submissions_submitted_at_idx on public.ope_submissions (submitted_at desc);
+how can i redeploy? that is where i am stuck
