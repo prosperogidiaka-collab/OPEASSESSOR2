@@ -187,6 +187,10 @@ function isDeletedSubmission(item) {
   return !!(item && item.deletedAt);
 }
 
+function isDeletedQuiz(item) {
+  return !!(item && item.deletedAt);
+}
+
 function sortSubmissionRecords(left, right) {
   const leftStamp = new Date(left?.submittedAt || left?.updatedAt || left?.startedAt || 0).getTime();
   const rightStamp = new Date(right?.submittedAt || right?.updatedAt || right?.startedAt || 0).getTime();
@@ -370,10 +374,11 @@ function getSubmissionCorrectionContact(submission = {}) {
 }
 
 function buildCorrectionShareMessage(submission, quiz) {
+  const subjectLinks = buildCorrectionShareLinksText(quiz, submission);
   const requestLine = submission.correctionRequested
-    ? `\nStudent request: ${submission.correctionMessage || 'Correction review requested.'}\nRequested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
-    : '\n';
-  return `Hi ${submission.name || 'Student'},\n\nPlease find the correction for ${quiz.title || submission.quizId}.${requestLine}\nBest regards,`;
+    ? `Requested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
+    : '';
+  return `Hi ${submission.name || 'Student'},\n\nYour correction for ${quiz.title || submission.quizId} is ready.\n${requestLine}${subjectLinks}\nBest regards,`;
 }
 
 function formatCorrectionActivityStamp(timestamp = '') {
@@ -816,7 +821,9 @@ async function initializeApp() {
   if (params.has('resultQuiz') && params.has('resultKey')) {
     state.pendingResultLookup = {
       quizId: params.get('resultQuiz') || '',
-      submissionId: params.get('resultKey') || ''
+      submissionId: params.get('resultKey') || '',
+      downloadCorrection: ['1', 'true', 'yes'].includes((params.get('downloadCorrection') || '').toLowerCase()),
+      correctionSubject: params.get('correctionSubject') || ''
     };
     state.view = 'student';
   }
@@ -833,7 +840,16 @@ function load(key) {
   return readLocalStorageValue(key);
 }
 
-function getAllQuizzes() { return load(STORAGE_KEYS.quizzes) || {}; }
+function getAllStoredQuizzes() { return load(STORAGE_KEYS.quizzes) || {}; }
+function getAllQuizzes(options = {}) {
+  const includeDeleted = !!options.includeDeleted;
+  const quizzes = getAllStoredQuizzes();
+  if (includeDeleted) return quizzes;
+  return Object.keys(quizzes).reduce((visible, key) => {
+    if (!isDeletedQuiz(quizzes[key])) visible[key] = quizzes[key];
+    return visible;
+  }, {});
+}
 function getAllStoredSubmissions() { return load(STORAGE_KEYS.submissions) || []; }
 function getAllSubmissions(options = {}) {
   const includeDeleted = !!options.includeDeleted;
@@ -842,7 +858,20 @@ function getAllSubmissions(options = {}) {
 }
 function getAllTeachers() { return load(STORAGE_KEYS.teachers) || {}; }
 function getAllTeacherStudents() { return load(STORAGE_KEYS.students) || {}; }
-function saveAllQuizzes(q) { save(STORAGE_KEYS.quizzes, q); }
+function saveAllQuizzes(q, options = {}) {
+  const keepDeleted = options.keepDeleted !== false;
+  const nextVisible = (q && typeof q === 'object' && !Array.isArray(q)) ? { ...q } : {};
+  if (!keepDeleted) {
+    save(STORAGE_KEYS.quizzes, nextVisible);
+    return;
+  }
+  const deletedRecords = {};
+  const stored = getAllStoredQuizzes();
+  Object.keys(stored).forEach((key) => {
+    if (isDeletedQuiz(stored[key]) && !Object.prototype.hasOwnProperty.call(nextVisible, key)) deletedRecords[key] = stored[key];
+  });
+  save(STORAGE_KEYS.quizzes, { ...deletedRecords, ...nextVisible });
+}
 function saveAllSubmissions(submissions, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
   const nextVisible = Array.isArray(submissions) ? submissions : [];
