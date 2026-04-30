@@ -219,6 +219,12 @@ function getTeacherClassNames(teacherId = state.teacherId) {
   return Array.from(classes).sort((left, right) => left.localeCompare(right));
 }
 
+function getQuizCalculatorType(quiz) {
+  const raw = (quiz && quiz.calculatorType ? quiz.calculatorType : '').toString().trim().toLowerCase();
+  if (raw === 'none' || raw === 'basic' || raw === 'scientific') return raw;
+  return 'basic';
+}
+
 function getSupportSettings() {
   const admin = getAllTeachers()[normalizeEmail(SUPER_ADMIN_EMAIL)] || {};
   return {
@@ -446,6 +452,7 @@ function buildPortableQuizSnapshot(quiz) {
     verticalLayout: !!quiz.verticalLayout,
     rankingEnabled: !!quiz.rankingEnabled,
     webcamRequired: !!quiz.webcamRequired,
+    calculatorType: getQuizCalculatorType(quiz),
     audienceMode: quiz.audienceMode || 'public',
     assignedClassName: quiz.assignedClassName || '',
     whitelist: Array.isArray(quiz.whitelist) ? quiz.whitelist : [],
@@ -1068,18 +1075,36 @@ function isTeacherWorkspaceView(view = state.view) {
 function buildTeacherMobileNav() {
   const wrapper = document.createElement('div');
   wrapper.className = 'mobile-teacher-nav';
-  const items = [
-    { view: 'teacher', label: 'Overview' },
-    { view: 'teacher.bank', label: 'Question Bank' },
-    { view: 'teacher.students', label: 'Students' },
-    { view: 'teacher.settings', label: 'Settings' },
-    { view: 'teacher.guide', label: 'User Guide' },
-    { view: 'teacher.support', label: 'Support' }
+  const sections = [
+    {
+      title: 'Navigation',
+      items: [
+        { view: 'teacher', label: 'Overview' },
+        { view: 'teacher.bank', label: 'Question Bank' }
+      ]
+    },
+    {
+      title: 'Manage',
+      items: [
+        { view: 'teacher.students', label: 'Students' },
+        { view: 'teacher.settings', label: 'Settings' }
+      ]
+    },
+    {
+      title: 'Help',
+      items: [
+        { view: 'teacher.guide', label: 'User Guide' },
+        { view: 'teacher.support', label: 'Support' }
+      ]
+    }
   ];
-  wrapper.innerHTML = items.map((item) => `
-    <button type="button" class="mobile-teacher-nav-btn ${state.view === item.view ? 'active' : ''}" data-view="${item.view}">
-      ${escapeHtml(item.label)}
-    </button>
+  wrapper.innerHTML = sections.map((section) => `
+    <div class="mobile-teacher-nav-label">${escapeHtml(section.title)}</div>
+    ${section.items.map((item) => `
+      <button type="button" class="mobile-teacher-nav-btn ${state.view === item.view ? 'active' : ''}" data-view="${item.view}">
+        ${escapeHtml(item.label)}
+      </button>
+    `).join('')}
   `).join('');
   setTimeout(() => {
     wrapper.querySelectorAll('.mobile-teacher-nav-btn').forEach((button) => {
@@ -1800,12 +1825,178 @@ function showQuizSetDetails(quizId) {
   const portableMode = networkSyncFailed && !networkSyncReady;
   let modal = document.getElementById('quizSetDetails'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='quizSetDetails'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(0,0,0,0.45)'; modal.style.zIndex=20000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
-  const questions = [];
-  (quiz.subjects || []).forEach(subject => {
-    const source = Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions;
-    (source || []).filter(isMeaningfulQuestion).forEach((q, idx) => questions.push({ ...q, subject: subject.name || q.subject || 'General', idx: questions.length + 1 }));
-  });
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='94%'; inner.style.maxWidth='1000px'; inner.style.maxHeight='86vh'; inner.style.overflow='auto';
+  const draftQuiz = JSON.parse(JSON.stringify(quiz));
+  let selectedSubjectIndex = 0;
+  const ensureSubjectQuestions = (subject) => {
+    const source = Array.isArray(subject?.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject?.questions;
+    return (source || []).map((question, index) => normalizeQuestionForStorage(question, index, subject?.name || 'General'));
+  };
+  const getSubjectLabel = (subject, index) => escapeHtml(subject?.name || `Subject ${index + 1}`);
+  const renumberQuestionCards = () => {
+    inner.querySelectorAll('.quiz-editor-question-card').forEach((card, index) => {
+      const label = card.querySelector('.quiz-editor-question-title');
+      if (label) label.textContent = `Question ${index + 1}`;
+    });
+    const count = inner.querySelector('#quizSubjectQuestionCount');
+    if (count) count.textContent = `${inner.querySelectorAll('.quiz-editor-question-card').length} question(s) in this subject`;
+  };
+  const captureCurrentSubjectDraft = () => {
+    const editor = inner.querySelector('[data-quiz-subject-index]');
+    if (!editor) return;
+    const subjectIndex = parseInt(editor.dataset.quizSubjectIndex || '0', 10) || 0;
+    const subject = (draftQuiz.subjects || [])[subjectIndex];
+    if (!subject) return;
+    const questions = Array.from(inner.querySelectorAll('.quiz-editor-question-card')).map((card, questionIndex) => {
+      const optionValues = Array.from(card.querySelectorAll('.quiz-editor-option'))
+        .map((field) => normalizeRichText(field.value || ''))
+        .filter((value) => value.trim());
+      const rawAnswer = (card.querySelector('.quiz-editor-answer').value || 'A').toUpperCase();
+      const rawIndex = rawAnswer.charCodeAt(0) - 65;
+      const answerIndex = optionValues.length ? Math.max(0, Math.min(optionValues.length - 1, rawIndex)) : 0;
+      return normalizeQuestionForStorage({
+        _sourceId: card.dataset.sourceId || '',
+        question: normalizeRichText(card.querySelector('.quiz-editor-question').value || ''),
+        options: optionValues,
+        answer: String.fromCharCode(65 + answerIndex),
+        topic: normalizeRichText(card.querySelector('.quiz-editor-topic').value || ''),
+        difficulty: card.querySelector('.quiz-editor-difficulty').value || 'Medium'
+      }, questionIndex, subject.name || 'General');
+    }).filter(isMeaningfulQuestion);
+    subject.questions = questions.slice();
+    subject.bankQuestions = questions.slice();
+  };
+  const renderEditor = () => {
+    const subjects = Array.isArray(draftQuiz.subjects) ? draftQuiz.subjects : [];
+    if (!subjects.length) {
+      inner.querySelector('#quizSetDetailsBody').innerHTML = '<div class="card-beautiful"><div class="h3">No subjects found</div><div class="small" style="margin-top:8px">Ask the teacher to save questions into this quiz first.</div></div>';
+      return;
+    }
+    selectedSubjectIndex = Math.max(0, Math.min(subjects.length - 1, selectedSubjectIndex));
+    const subject = subjects[selectedSubjectIndex];
+    const questions = ensureSubjectQuestions(subject);
+    subject.questions = questions.slice();
+    subject.bankQuestions = questions.slice();
+    const questionCards = questions.map((question, questionIndex) => {
+      const optionCount = Math.max(4, (question.options || []).length || 0);
+      const optionFields = Array.from({ length: optionCount }, (_, optionIndex) => {
+        const letter = String.fromCharCode(65 + optionIndex);
+        return `
+          <div class="subject-field">
+            <label class="small">Option ${letter}</label>
+            <textarea class="input-beautiful quiz-editor-option preserve-format" rows="2">${escapeHtml((question.options || [])[optionIndex] || '')}</textarea>
+          </div>
+        `;
+      }).join('');
+      return `
+        <div class="card quiz-editor-question-card" data-source-id="${escapeHtml(question._sourceId || '')}">
+          <div class="page-heading" style="margin-bottom:12px">
+            <div class="h3 quiz-editor-question-title">Question ${questionIndex + 1}</div>
+            <button type="button" class="btn btn-ghost btn-sm btnRemoveEditorQuestion">Remove</button>
+          </div>
+          <div class="subject-field">
+            <label class="small">Question text</label>
+            <textarea class="input-beautiful quiz-editor-question preserve-format" rows="4">${escapeHtml(question.question || '')}</textarea>
+          </div>
+          <div class="quiz-editor-options-grid">${optionFields}</div>
+          <div class="field-grid-2" style="margin-top:12px">
+            <div class="subject-field">
+              <label class="small">Correct answer</label>
+              <select class="input-beautiful quiz-editor-answer">
+                ${Array.from({ length: optionCount }, (_, optionIndex) => {
+                  const letter = String.fromCharCode(65 + optionIndex);
+                  return `<option value="${letter}" ${letter === (question.answer || 'A') ? 'selected' : ''}>${letter}</option>`;
+                }).join('')}
+              </select>
+            </div>
+            <div class="subject-field">
+              <label class="small">Difficulty</label>
+              <select class="input-beautiful quiz-editor-difficulty">
+                ${['Easy', 'Medium', 'Hard'].map((level) => `<option value="${level}" ${level === (question.difficulty || 'Medium') ? 'selected' : ''}>${level}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="subject-field" style="margin-top:12px">
+            <label class="small">Topic</label>
+            <input class="input-beautiful quiz-editor-topic" value="${escapeHtml(question.topic || '')}" />
+          </div>
+        </div>
+      `;
+    }).join('');
+    inner.querySelector('#quizSetDetailsBody').innerHTML = `
+      <div class="quiz-content-toolbar">
+        <div>
+          <div class="small">Choose subject</div>
+          <select id="quizContentSubjectSelect" class="input-beautiful" style="min-width:220px">
+            ${subjects.map((item, index) => `<option value="${index}" ${index === selectedSubjectIndex ? 'selected' : ''}>${getSubjectLabel(item, index)} (${ensureSubjectQuestions(item).length})</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" id="prevQuizContentSubject" class="btn btn-ghost btn-sm" ${selectedSubjectIndex === 0 ? 'disabled' : ''}>Previous Subject</button>
+          <button type="button" id="nextQuizContentSubject" class="btn btn-ghost btn-sm" ${selectedSubjectIndex === subjects.length - 1 ? 'disabled' : ''}>Next Subject</button>
+          <button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>
+        </div>
+      </div>
+      <div class="small" style="margin-bottom:12px;line-height:1.7">Spacing, line breaks, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.</div>
+      <div class="card" style="padding:14px;margin-bottom:14px">
+        <div class="h3">${getSubjectLabel(subject, selectedSubjectIndex)}</div>
+        <div id="quizSubjectQuestionCount" class="small" style="margin-top:6px">${questions.length} question(s) in this subject</div>
+      </div>
+      <div data-quiz-subject-index="${selectedSubjectIndex}" class="quiz-editor-list">
+        ${questionCards || '<div class="card-beautiful"><div class="small">No questions found in this subject yet.</div></div>'}
+      </div>
+    `;
+    inner.querySelectorAll('.btnRemoveEditorQuestion').forEach((button) => {
+      button.onclick = () => {
+        if (!confirmTeacherAction('Remove this question from the subject?')) return;
+        button.closest('.quiz-editor-question-card')?.remove();
+        renumberQuestionCards();
+      };
+    });
+    const subjectSelect = inner.querySelector('#quizContentSubjectSelect');
+    if (subjectSelect) subjectSelect.onchange = () => {
+      captureCurrentSubjectDraft();
+      selectedSubjectIndex = parseInt(subjectSelect.value || '0', 10) || 0;
+      renderEditor();
+    };
+    const prevSubject = inner.querySelector('#prevQuizContentSubject');
+    if (prevSubject) prevSubject.onclick = () => {
+      captureCurrentSubjectDraft();
+      selectedSubjectIndex = Math.max(0, selectedSubjectIndex - 1);
+      renderEditor();
+    };
+    const nextSubject = inner.querySelector('#nextQuizContentSubject');
+    if (nextSubject) nextSubject.onclick = () => {
+      captureCurrentSubjectDraft();
+      selectedSubjectIndex = Math.min(subjects.length - 1, selectedSubjectIndex + 1);
+      renderEditor();
+    };
+    const saveBtn = inner.querySelector('#saveQuizContentChanges');
+    if (saveBtn) saveBtn.onclick = async () => {
+      captureCurrentSubjectDraft();
+      const updatedQuiz = {
+        ...draftQuiz,
+        updatedAt: new Date().toISOString(),
+        editedAt: new Date().toISOString()
+      };
+      const quizzes = getAllQuizzes();
+      quizzes[updatedQuiz.id] = updatedQuiz;
+      saveAllQuizzes(quizzes);
+      const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
+      if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
+      const sharedSyncOk = await syncSharedKeys([
+        STORAGE_KEYS.quizzes,
+        ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
+      ]);
+      if (sharedSyncOk) {
+        markQuizzesCloudSynced([updatedQuiz.id]);
+        showNotification('Quiz content updated', 'success');
+      } else {
+        showNotification(`Quiz content updated on this device. ${getSharedSyncWarningMessage()}`, 'warning', 7000);
+      }
+      renderEditor();
+    };
+  };
   inner.innerHTML = `
     <div class="page-heading">
       <div>
@@ -1819,87 +2010,33 @@ function showQuizSetDetails(quizId) {
       <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>
       <button id="copyQuizSetLink" class="btn btn-primary btn-sm">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
     </div>
-    <div class="table-wrap">
-      <table class="table-dense">
-        <thead><tr><th>#</th><th>Subject</th><th>Question</th><th>Options</th><th>Answer</th></tr></thead>
-        <tbody>${questions.map(q => `<tr><td>${q.idx}</td><td>${escapeHtml(q.subject)}</td><td style="white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(q.question)}</td><td style="white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${(q.options || []).map((o,i)=>`${String.fromCharCode(65+i)}. ${escapeHtml(o)}`).join('\n')}</td><td>${escapeHtml(q.answer)}</td></tr>`).join('') || '<tr><td colspan="5">No questions found.</td></tr>'}</tbody>
-      </table>
-    </div>
+    <div id="quizSetDetailsBody"></div>
   `;
   modal.appendChild(inner); document.body.appendChild(modal);
   document.getElementById('closeQuizSetDetails').onclick = () => modal.remove();
-  document.getElementById('copyQuizSetId').onclick = async () => { await copyQuizAccessCode(quiz); };
-  document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(quiz); };
+  document.getElementById('copyQuizSetId').onclick = async () => { await copyQuizAccessCode(getAllQuizzes()[quizId] || draftQuiz); };
+  document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
+  renderEditor();
 }
 
 function renderStudentsView() {
-  const students = getTeacherStudents().sort((a,b) => (a.name || '').localeCompare(b.name || ''));
-
   const container = document.createElement('div');
   container.innerHTML = `
     <div class="page-heading">
       <div>
         <div class="h1">Students</div>
-        <div class="small">Only students uploaded by ${escapeHtml(state.teacherId)} are shown here.</div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button id="studentsTemplate" class="btn btn-ghost">Student Template</button>
-        <button id="studentsExport" class="btn btn-ghost">Export Excel</button>
-        <button id="studentsImport" class="btn btn-primary">Import Students</button>
+        <div class="small">Manage uploaded classes first, then open one class to add, edit, remove, export, or import students.</div>
       </div>
     </div>
-    <div class="card">
-      <div class="table-wrap">
-        <table class="table-dense">
-          <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Class</th><th>Source Quiz</th><th>Uploaded</th></tr></thead>
-          <tbody>
-            ${students.map(s => `
-              <tr>
-                <td>${escapeHtml(s.name)}</td>
-                <td>${escapeHtml(s.email)}</td>
-                <td>${escapeHtml(s.registrationNo || s.id)}</td>
-                <td>${escapeHtml(normalizeClassName(s.className || s.class || ''))}</td>
-                <td>${escapeHtml(s.sourceQuizId || 'General upload')}</td>
-                <td>${s.uploadedAt ? new Date(s.uploadedAt).toLocaleString() : ''}</td>
-              </tr>
-            `).join('') || '<tr><td colspan="6">No uploaded students yet.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <div id="teacherStudentManagerHost" class="card"></div>
   `;
   setTimeout(() => {
-    document.getElementById('studentsImport').onclick = () => {
-      const inp = document.createElement('input');
-      inp.type = 'file';
-      inp.accept = '.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
-      inp.onchange = (ev) => {
-        const f = ev.target.files[0]; if (!f) return;
-        parseQuestionsFile(f, true).then(list => {
-          addStudentsToTeacher(list);
-          showNotification('Students uploaded (' + list.length + ')', 'success');
-          render();
-        }).catch(err => { console.error(err); showNotification('Could not import students', 'error'); });
-      };
-      inp.click();
-    };
-    document.getElementById('studentsTemplate').onclick = () => {
-      if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
-      const rows = [['Name','Email (optional if Reg No is provided)','Registration No / ID','Class'], ['Ada Okafor', '', 'REG001', 'SS1A']];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
-      XLSX.writeFile(wb, 'ope-student-template.xlsx');
-      showNotification('Student template exported', 'success');
-    };
-    document.getElementById('studentsExport').onclick = () => {
-      if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
-      const rows = [['Name','Email','Registration No / ID','Class','Source Quiz','Uploaded']];
-      students.forEach(s => rows.push([s.name, s.email, s.registrationNo || s.id, normalizeClassName(s.className || s.class || ''), s.sourceQuizId || '', s.uploadedAt || '']));
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
-      XLSX.writeFile(wb, 'ope-students.xlsx');
-      showNotification('Students exported', 'success');
-    };
+    renderStudentClassManager(document.getElementById('teacherStudentManagerHost'), state.teacherId, {
+      scope: 'teacher',
+      includeImport: true,
+      includeExport: true,
+      includeTemplate: true
+    });
   }, 0);
   return container;
 }
@@ -2136,9 +2273,11 @@ function renderTeacherGuideView() {
       description: 'Set up a teacher account and sign in.',
       steps: [
         'Open the Teacher page from the top navigation.',
-        'Type your teacher email ID and a password.',
-        'Use Create Teacher ID the first time, or Login if the account already exists.',
-        'After login, open Settings if you want to copy your teacher ID or change your password.'
+        'Type your teacher email ID and choose the password you want to use for this account.',
+        'Click Create Teacher ID the first time you are entering the app with that email.',
+        'Wait for the success message, then use the same email ID and password any time you want to log in again.',
+        'If the account already exists, type the same email ID and password and click Login.',
+        'After login, open Settings if you want to copy your teacher ID, change your password, or download a backup.'
       ]
     },
     {
@@ -2147,11 +2286,25 @@ function renderTeacherGuideView() {
       description: 'Upload class lists step by step.',
       steps: [
         'Open Students from the teacher menu.',
-        'Click Student Template to download the import file.',
-        'Fill in Name, Email or Registration No / ID, and Class.',
-        'Save the file and click Import Students.',
-        'Choose the file, then wait for the success message.',
-        'Use the class filter to confirm that the right students are inside the right class.'
+        'Click Student Template to download the import file first.',
+        'Open the file and fill in Name, Email or Registration No / ID, and the Class column for every student.',
+        'Save the file as Excel or CSV after you finish entering the class list.',
+        'Return to Students and click Import Students.',
+        'Choose the saved file and wait for the upload confirmation message.',
+        'Open the class selector or class cards to confirm that each student entered the correct class.',
+        'If a row was uploaded without a class, open that student and edit the class immediately so quiz assignment stays accurate.'
+      ]
+    },
+    {
+      id: 'manage-classes',
+      title: 'Manage Classes and Students',
+      description: 'Open one class at a time and manage students inside it.',
+      steps: [
+        'Open Students and select the class card or class dropdown you want to manage.',
+        'Review only the students inside that selected class.',
+        'Use the row action dropdown to edit a student or remove a student from that class list.',
+        'Use Add Student Manually when one student needs to be added without re-uploading the whole file.',
+        'Save changes and stay on the same class so you can confirm the class list is correct before setting a quiz for that class.'
       ]
     },
     {
@@ -2159,10 +2312,12 @@ function renderTeacherGuideView() {
       title: 'Exports and Templates',
       description: 'Download templates, student lists, and result files.',
       steps: [
-        'Open Students and use Student Template when you want the student import sheet.',
-        'Use Export Excel in Students to download the current student list.',
-        'Open Results for a quiz and choose Excel or PDF Summary to export results.',
-        'Open Create Quiz and use Export Quiz Template before adding subject files.'
+        'Open Students and click Student Template when you want the import sheet for class uploads.',
+        'Use Export Excel in Students when you want the currently uploaded student register.',
+        'Open Create Quiz and click Export Quiz Template before preparing question files for upload.',
+        'Open Results for a quiz and use Export Excel when you need the raw result sheet.',
+        'Use PDF Summary in Results when you need the broadsheet in printable form.',
+        'Confirm the institution name is filled in the quiz settings first if you want it to appear on the broadsheet PDF.'
       ]
     },
     {
@@ -2174,9 +2329,11 @@ function renderTeacherGuideView() {
         'Choose who can take the quiz first: Public or Uploaded class.',
         'If you choose Uploaded class, select the class that already exists in Students.',
         'Enter the institution name, quiz title, timing, grading rules, and schedule.',
-        'Choose calculator access and camera requirement if needed.',
+        'Choose calculator access if you want no calculator, a basic calculator, or a scientific calculator during the test.',
+        'Turn on camera requirement only when monitoring is compulsory for that quiz.',
         'Add each subject and upload one file per subject, or paste CSV for a single-subject quiz.',
-        'Save the quiz, then use Sync To Cloud if you edited it on this device.'
+        'Add certificate signatories only if you need them, and decide whether each signatory name should show or stay hidden on the certificate.',
+        'Save the quiz, then use Sync To Cloud if the quiz still shows Pending cloud sync.'
       ]
     },
     {
@@ -2185,10 +2342,12 @@ function renderTeacherGuideView() {
       description: 'Review subject content and edit it from View Content.',
       steps: [
         'Open Question Bank and click View Content for the quiz.',
-        'If the quiz has many subjects, choose the subject from the subject selector.',
-        'Edit the question text, options, answer, topic, or difficulty inside the content editor.',
-        'Use Save Content Changes when you finish editing.',
-        'After saving, the quiz is updated and the shared cloud copy is refreshed when sync is available.'
+        'If the quiz has more than one subject, choose the subject from the subject selector or move with Previous Subject and Next Subject.',
+        'Edit the question text directly in the question box. Line breaks and spacing stay visible while you edit.',
+        'Update options, answer, topic, or difficulty for any question that needs correction.',
+        'Use Remove on a question only when you truly want that question deleted from the subject.',
+        'Click Save Content Changes when you finish editing the current subject.',
+        'If shared sync is active, the cloud copy is refreshed after save so other devices use the updated content too.'
       ]
     },
     {
@@ -2199,7 +2358,20 @@ function renderTeacherGuideView() {
         'Open View Results for the quiz.',
         'Use the action dropdown on any student row to edit score, download correction, email, or delete.',
         'When you edit a score, save it so the new score appears in teacher exports and student result views.',
-        'When you delete a result, confirm the warning so the result is removed and stays removed.'
+        'When you delete a result, confirm the warning so the result is removed and stays removed.',
+        'Use End Test when you want to stop the quiz before the scheduled end time.'
+      ]
+    },
+    {
+      id: 'teacher-settings',
+      title: 'Settings and Password',
+      description: 'Update your own access without waiting for admin help.',
+      steps: [
+        'Open Settings from the teacher navigation.',
+        'Use Teacher Identity if you want to copy your teacher email ID quickly.',
+        'Use Change Password to enter your current password, then your new password twice.',
+        'Click Update Password and confirm when the warning message appears.',
+        'Use Download Backup when you want a local copy of quizzes and submissions from this device.'
       ]
     },
     {
@@ -2210,7 +2382,8 @@ function renderTeacherGuideView() {
         'Check the status on each quiz card. Cloud synced means the quiz is ready across devices.',
         'If the quiz says Pending cloud sync, click Sync To Cloud first.',
         'Use Copy Student Code or Copy Link after sync.',
-        'If shared sync is temporarily unavailable, use the portable student code or portable link instead.'
+        'If shared sync is temporarily unavailable, use the portable student code or portable link instead.',
+        'When a quiz was created on one phone before cloud sync was fixed, reopen it on that original device and save or sync it once so the shared copy is uploaded.'
       ]
     },
     {
@@ -2359,7 +2532,7 @@ function openStudentEditorModal(teacherId, student = null, onSaved = null, optio
     <input id="studentEditorReg" class="input-beautiful" value="${escapeHtml(student?.registrationNo || student?.id || '')}" />
     <div style="height:10px"></div>
     <label class="small">Class</label>
-    <input id="studentEditorClass" class="input-beautiful" value="${escapeHtml(normalizeClassName(student?.className || student?.class || ''))}" placeholder="e.g. SS1A" />
+    <input id="studentEditorClass" class="input-beautiful" value="${escapeHtml(normalizeClassName(student?.className || student?.class || options.defaultClassName || ''))}" placeholder="e.g. SS1A" />
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
       <button id="cancelStudentEditor" class="btn btn-ghost">Cancel</button>
       <button id="saveStudentEditor" class="btn btn-primary">${isEditing ? 'Save Changes' : 'Add Student'}</button>
@@ -2382,6 +2555,7 @@ function openStudentEditorModal(teacherId, student = null, onSaved = null, optio
     };
     if (!payload.name) return showNotification('Enter the student name', 'error');
     if (!payload.email && !payload.registrationNo) return showNotification('Enter at least email or registration number', 'error');
+    if (!payload.className) return showNotification('Enter the class name for this student', 'error');
     if (!confirmTeacherAction(`${isEditing ? 'Save changes for' : 'Add'} ${payload.name}?`)) return;
     if (!upsertStudentForTeacher(teacherId, payload, payload.sourceQuizId || 'General upload')) return showNotification('Could not save student information', 'error');
     modal.remove();
@@ -2475,7 +2649,7 @@ function renderStudentClassManager(container, teacherId, options = {}) {
   if (addBtn) addBtn.onclick = () => openStudentEditorModal(teacherId, null, () => {
     if (selectedClass) setSelectedClassFilter(teacherId, selectedClass, scope);
     rerender();
-  }, options);
+  }, { ...options, defaultClassName: selectedClass });
   const importBtn = container.querySelector(`#${scope}StudentsImport`);
   if (importBtn) importBtn.onclick = () => {
     const inp = document.createElement('input');
@@ -2485,8 +2659,17 @@ function renderStudentClassManager(container, teacherId, options = {}) {
       const file = event.target.files[0];
       if (!file) return;
       parseQuestionsFile(file, true).then((list) => {
-        addStudentsToTeacher(list);
+        list.forEach((student) => upsertStudentForTeacher(teacherId, {
+          ...student,
+          sourceQuizId: student.sourceQuizId || 'General upload'
+        }, student.sourceQuizId || 'General upload'));
+        const firstClass = normalizeClassName((list[0] && (list[0].className || list[0].class)) || '');
+        if (firstClass) setSelectedClassFilter(teacherId, firstClass, scope);
+        const missingClassCount = list.filter((student) => !normalizeClassName(student.className || student.class || '')).length;
         showNotification(`Students uploaded (${list.length})`, 'success');
+        if (missingClassCount) {
+          showNotification(`${missingClassCount} imported student(s) had no class and were placed under Unassigned.`, 'warning', 7000);
+        }
         rerender();
       }).catch((error) => { console.error(error); showNotification('Could not import students', 'error'); });
     };
@@ -2604,7 +2787,6 @@ function showAdminTeacherExams(teacherId) {
 function showAdminTeacherStudents(teacherId) {
   if (!isSuperAdmin()) return showNotification('Admin access required', 'error');
   const id = normalizeEmail(teacherId);
-  const students = (getAllTeacherStudents()[id] || []).sort((a,b) => (a.name || '').localeCompare(b.name || ''));
   let modal = document.getElementById('adminTeacherStudentsModal'); if (modal) modal.remove();
   modal = document.createElement('div');
   modal.id = 'adminTeacherStudentsModal';
@@ -2619,25 +2801,18 @@ function showAdminTeacherStudents(teacherId) {
       </div>
       <button id="closeAdminTeacherStudents" class="btn btn-ghost">Close</button>
     </div>
-    <div class="table-wrap">
-      <table class="table-dense">
-        <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Source Quiz</th><th>Uploaded</th></tr></thead>
-        <tbody>
-          ${students.map(s => `<tr>
-            <td>${escapeHtml(s.name || '')}</td>
-            <td>${escapeHtml(s.email || '')}</td>
-            <td>${escapeHtml(s.registrationNo || s.id || '')}</td>
-            <td>${escapeHtml(s.sourceQuizId || 'General upload')}</td>
-            <td>${s.uploadedAt ? new Date(s.uploadedAt).toLocaleString() : ''}</td>
-          </tr>`).join('') || '<tr><td colspan="5">No uploaded students for this teacher yet.</td></tr>'}
-        </tbody>
-      </table>
-    </div>
+    <div id="adminTeacherStudentsHost"></div>
   `;
   modal.appendChild(inner);
   document.body.appendChild(modal);
   modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
   document.getElementById('closeAdminTeacherStudents').onclick = () => modal.remove();
+  renderStudentClassManager(document.getElementById('adminTeacherStudentsHost'), id, {
+    scope: 'admin',
+    includeImport: true,
+    includeExport: true,
+    includeTemplate: true
+  });
 }
 
 // ============================================================================
@@ -2648,6 +2823,7 @@ function renderQuizWelcome(quiz, questions) {
   const wrapper = document.createElement('div');
   wrapper.className = 'exam-shell quiz-welcome-shell';
   const totalMinutes = parseInt(quiz.timeLimit || 0, 10) || 0;
+  const calculatorType = getQuizCalculatorType(quiz);
   wrapper.innerHTML = `
     <div class="card-beautiful quiz-welcome-card">
       <div class="small">OPE Assessor</div>
@@ -2661,6 +2837,7 @@ function renderQuizWelcome(quiz, questions) {
       <div class="quiz-instructions">
         <p><strong>Before you start:</strong> you may still leave this screen without penalty.</p>
         <p><strong>After Start Quiz:</strong> leaving the exam tab, exiting fullscreen, refreshing, closing the page, or using copy/screenshot shortcuts may be recorded and can submit the quiz automatically.</p>
+        ${calculatorType !== 'none' ? `<p><strong>Calculator:</strong> this quiz allows a ${escapeHtml(calculatorType)} calculator from the Calc button during the test.</p>` : ''}
         ${quiz.webcamRequired ? '<p><strong>Camera requirement:</strong> this quiz needs camera monitoring. The camera window can be moved during the test.</p>' : ''}
         <p><strong>Desktop keys:</strong> A/B/C/D choose options, N moves next, P moves previous, and S submits.</p>
         <p>Click Start Quiz only when you are ready to begin.</p>
@@ -2763,7 +2940,17 @@ function evaluateCalculatorExpression(expression) {
   }
 }
 
-function getCalculatorButtonLayout() {
+function getCalculatorButtonLayout(calculatorType = getQuizCalculatorType(state.currentQuiz)) {
+  if (calculatorType === 'basic') {
+    return [
+      [{ label: 'MC', action: 'mc' }, { label: 'MR', action: 'mr' }, { label: 'M+', action: 'mplus' }, { label: 'M-', action: 'mminus' }, { label: 'AC', action: 'clear' }],
+      [{ label: 'C', action: 'backspace' }, { label: '(', value: '(' }, { label: ')', value: ')' }, { label: 'a b/c', value: 'frac(' }, { label: '%', value: '%' }],
+      [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '÷', value: '÷' }, { label: '√', value: 'sqrt(' }],
+      [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '×', value: '×' }, { label: 'x²', value: '^2' }],
+      [{ label: '1', value: '1' }, { label: '2', value: '2' }, { label: '3', value: '3' }, { label: '-', value: '-' }, { label: '1/x', value: 'inv(' }],
+      [{ label: '+/-', action: 'sign' }, { label: '0', value: '0' }, { label: '.', value: '.' }, { label: '+', value: '+' }, { label: '=', action: 'equals' }]
+    ];
+  }
   return [
     [{ label: _calculatorMode, action: 'mode' }, { label: 'MC', action: 'mc' }, { label: 'MR', action: 'mr' }, { label: 'M+', action: 'mplus' }, { label: 'M-', action: 'mminus' }],
     [{ label: 'AC', action: 'clear' }, { label: 'C', action: 'backspace' }, { label: '(', value: '(' }, { label: ')', value: ')' }, { label: 'a b/c', value: 'frac(' }],
@@ -2828,6 +3015,13 @@ function handleCalculatorAction(action, value) {
 }
 
 function renderExamCalculatorWidget(open = false) {
+  const calculatorType = getQuizCalculatorType(state.currentQuiz);
+  if (calculatorType === 'none') {
+    const existingPanel = document.getElementById('examCalculatorPanel');
+    if (existingPanel) existingPanel.style.display = 'none';
+    if (open) showNotification('Calculator is not enabled for this quiz', 'error');
+    return;
+  }
   let panel = document.getElementById('examCalculatorPanel');
   if (!panel && !open) return;
   if (!panel) {
@@ -2847,15 +3041,15 @@ function renderExamCalculatorWidget(open = false) {
   }
   panel.innerHTML = `
     <div class="exam-calculator-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
-      <div class="webcam-drag-handle" style="font-weight:800;color:#0F172A;user-select:none">Calculator</div>
+      <div class="webcam-drag-handle" style="font-weight:800;color:#0F172A;user-select:none">${calculatorType === 'scientific' ? 'Scientific Calculator' : 'Basic Calculator'}</div>
       <button type="button" id="closeExamCalculator" class="btn btn-ghost btn-sm">Close</button>
     </div>
     <div class="exam-calculator-screen" style="border:1px solid #CBD5E1;border-radius:14px;padding:12px 14px;background:#0F172A;color:#F8FAFC;margin-bottom:12px">
-      <div style="font-size:12px;letter-spacing:.08em;color:#CBD5E1">${_calculatorMode} • MEM ${formatCalculatorValue(_calculatorMemory)}</div>
+      <div style="font-size:12px;letter-spacing:.08em;color:#CBD5E1">${calculatorType === 'scientific' ? `${_calculatorMode} • ` : ''}MEM ${formatCalculatorValue(_calculatorMemory)}</div>
       <div style="font-size:24px;font-weight:800;line-height:1.25;word-break:break-all;min-height:32px">${escapeHtml(_calculatorExpression || '0')}</div>
     </div>
     <div class="exam-calculator-grid" style="display:grid;gap:8px">
-      ${getCalculatorButtonLayout().map((row) => `
+      ${getCalculatorButtonLayout(calculatorType).map((row) => `
         <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px">
           ${row.map((button) => `
             <button
@@ -2883,6 +3077,11 @@ function renderExamCalculatorWidget(open = false) {
 function renderQuizTake() {
   const q = state.currentQuiz;
   if (!q) return document.createElement('div');
+  const calculatorType = getQuizCalculatorType(q);
+  if (calculatorType === 'none') {
+    const calculatorPanel = document.getElementById('examCalculatorPanel');
+    if (calculatorPanel) calculatorPanel.style.display = 'none';
+  }
   const preparedQuestions = getQuizQuestionsForTaking(q);
   if (!preparedQuestions.length) {
     const empty = document.createElement('div');
@@ -2924,7 +3123,7 @@ function renderQuizTake() {
         <div class="small" id="examAnswered">0 answered</div>
         <div class="small" id="examPercent">0.0%</div>
         <div class="timer" id="examTimer">--:--</div>
-        <button id="openExamCalculator" class="btn btn-ghost btn-sm" type="button">Calc</button>
+        ${calculatorType !== 'none' ? '<button id="openExamCalculator" class="btn btn-ghost btn-sm" type="button">Calc</button>' : ''}
       </div>
     </div>
     <div class="exam-progress"><span id="examProgress"></span></div>
@@ -4213,12 +4412,13 @@ function clampPercent(value) {
 
 function normalizeCertificateSignatories(signatories = []) {
   return (Array.isArray(signatories) ? signatories : []).map((item) => {
-    if (typeof item === 'string') return { name: item.trim(), title: '' };
+    if (typeof item === 'string') return { name: item.trim(), title: '', showNameOnCertificate: true };
     return {
       name: (item && item.name ? item.name : '').toString().trim(),
-      title: (item && item.title ? item.title : '').toString().trim()
+      title: (item && item.title ? item.title : '').toString().trim(),
+      showNameOnCertificate: item && item.showNameOnCertificate === false ? false : true
     };
-  }).filter((item) => item.name);
+  }).filter((item) => item.name || item.title);
 }
 
 function hasManualScoreOverride(submission) {
@@ -4389,7 +4589,7 @@ function renderCertificateSignatories(signatories = []) {
           <div class="cert-signature-card">
             <div class="cert-signature-script" style="transform:rotate(${tilt}deg)">${buildCertificateSignatureSvg(item, index)}</div>
             <span></span>
-            <p class="cert-signatory-name">${escapeHtml(item.name)}</p>
+            ${item.showNameOnCertificate && item.name ? `<p class="cert-signatory-name">${escapeHtml(item.name)}</p>` : ''}
             ${item.title ? `<div class="cert-signatory-title">${escapeHtml(item.title)}</div>` : ''}
           </div>
         `;
@@ -5023,7 +5223,8 @@ function showCreateQuizModal(editQuizId = '') {
   if (!canSetQuestions()) return showLicenseRequired();
   const editingQuiz = editQuizId ? getAllQuizzes()[editQuizId] : null;
   if (editingQuiz && editingQuiz.teacherId !== state.teacherId && !isSuperAdmin()) return showNotification('Access denied: this quiz belongs to another teacher', 'error');
-  const classNames = getTeacherClassNames();
+  const quizOwnerId = editingQuiz?.teacherId || state.teacherId;
+  const classNames = getTeacherClassNames(quizOwnerId);
   const classOptionsMarkup = classNames.map((className) => `<option value="${escapeHtml(className)}">${escapeHtml(className)}</option>`).join('');
   let m = document.getElementById('createQuizModal'); if (m) m.remove();
   m = document.createElement('div'); m.id = 'createQuizModal'; m.style.position='fixed'; m.style.inset='0'; m.style.zIndex=20000; m.style.background='rgba(0,0,0,0.35)'; m.style.overflowY='auto'; m.style.padding='24px 12px';
@@ -5159,7 +5360,7 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="form-group">
             <div id="signatoriesList" class="signatories-list"></div>
             <button type="button" id="btnAddSignatory" class="btn-secondary subject-add-btn">+ Add Signatory</button>
-            <p class="helper-text">Each signatory shows a drawn signature mark above the line, the person&apos;s name below it, and the office/title below the name.</p>
+            <p class="helper-text">Each signatory shows a drawn signature mark above the line. The name line is optional, and the office/title is also optional.</p>
           </div>
         </section>
 
@@ -5216,6 +5417,16 @@ function showCreateQuizModal(editQuizId = '') {
         <div class="advanced-block">
           <label class="check-row"><input type="checkbox" id="cqVertical" /> <span>Vertical UI</span></label>
           <p class="helper-text">Display questions on one page instead of the step-by-step layout.</p>
+        </div>
+
+        <div class="advanced-block">
+          <label class="form-label" for="cqCalculatorType">Calculator access</label>
+          <select id="cqCalculatorType" class="input-beautiful">
+            <option value="none">No calculator</option>
+            <option value="basic">Basic calculator</option>
+            <option value="scientific">Scientific calculator</option>
+          </select>
+          <p class="helper-text">Basic gives standard arithmetic, percentage, fractions, and memory keys. Scientific adds trigonometry, logs, powers, and advanced functions.</p>
         </div>
 
         <div class="advanced-block">
@@ -5297,6 +5508,7 @@ function showCreateQuizModal(editQuizId = '') {
           <label class="small">Title / label (optional)</label>
           <input type="text" class="input-beautiful signatory-title" placeholder="e.g. Principal" value="${escapeHtml(signatory.title || '')}" />
         </div>
+        <label class="check-row signatory-visibility-check"><input type="checkbox" class="signatory-show-name" ${signatory.showNameOnCertificate === false ? '' : 'checked'} /> <span>Show name on certificate</span></label>
         <button type="button" class="subject-remove-btn signatory-remove-btn" aria-label="Remove signatory">✕</button>
       `;
       row.querySelector('.signatory-remove-btn').onclick = () => row.remove();
@@ -5313,8 +5525,9 @@ function showCreateQuizModal(editQuizId = '') {
     }).filter(subject => subject.name);
     const getSignatoryRows = () => Array.from(signatoriesList.querySelectorAll('.signatory-row')).map((row) => ({
       name: row.querySelector('.signatory-name').value.trim(),
-      title: row.querySelector('.signatory-title').value.trim()
-    })).filter((item) => item.name);
+      title: row.querySelector('.signatory-title').value.trim(),
+      showNameOnCertificate: !!row.querySelector('.signatory-show-name').checked
+    })).filter((item) => item.name || item.title);
     const updateAudienceState = () => {
       const classMode = audienceSelect.value === 'class';
       assignedClassSelect.disabled = !classMode || !classNames.length;
@@ -5357,10 +5570,12 @@ function showCreateQuizModal(editQuizId = '') {
       document.getElementById('cqInstantResult').checked = editingQuiz.showInstantResult !== false;
       document.getElementById('cqShowTopicsAfter').checked = !!editingQuiz.showTopicsAfterSubmission;
       document.getElementById('cqVertical').checked = !!editingQuiz.verticalLayout;
+      document.getElementById('cqCalculatorType').value = getQuizCalculatorType(editingQuiz);
       document.getElementById('cqWebcamRequired').checked = !!editingQuiz.webcamRequired;
       normalizeCertificateSignatories(editingQuiz.certificateSignatories).forEach(createSignatoryRow);
     } else {
       audienceSelect.value = 'public';
+      document.getElementById('cqCalculatorType').value = 'none';
     }
     if (!subjectsList.children.length) createSubjectRow();
     updateAudienceState();
@@ -5392,6 +5607,7 @@ function showCreateQuizModal(editQuizId = '') {
       const negativeMarkValue = parseFloat(document.getElementById('cqNegativeValue').value) || 0;
       const scheduleStart = document.getElementById('cqStart').value || '';
       const scheduleEnd = document.getElementById('cqEnd').value || '';
+      const calculatorType = getQuizCalculatorType({ calculatorType: document.getElementById('cqCalculatorType').value || 'none' });
       if (!audienceMode) return showNotification('Choose who can take this quiz', 'error');
       if (audienceMode === 'class' && !assignedClassName) return showNotification('Choose the uploaded class for this quiz', 'error');
       if (scheduleStart && scheduleEnd && new Date(scheduleStart) >= new Date(scheduleEnd)) return showNotification('End time must be after start time', 'error');
@@ -5427,7 +5643,7 @@ function showCreateQuizModal(editQuizId = '') {
       const id = editingQuiz ? editingQuiz.id : gen6DigitId();
       const now = new Date().toISOString();
       const selectedStudents = audienceMode === 'class'
-        ? getTeacherStudents().filter((student) => normalizeClassName(student.className || student.class || '') === assignedClassName)
+        ? getStudentsForTeacher(quizOwnerId).filter((student) => normalizeClassName(student.className || student.class || '') === assignedClassName)
         : [];
       if (audienceMode === 'class' && !selectedStudents.length) return showNotification('That class has no uploaded students yet. Open Students and import the class first.', 'error', 7000);
       const whitelist = selectedStudents.map((student) => ({
@@ -5437,11 +5653,11 @@ function showCreateQuizModal(editQuizId = '') {
         registrationNo: student.registrationNo || student.id || '',
         className: normalizeClassName(student.className || student.class || '')
       }));
-      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: editingQuiz?.teacherId || state.teacherId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
+      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: quizOwnerId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', calculatorType, webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
       const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
-      if (audienceMode === 'class') addStudentsToTeacher(selectedStudents, id);
+      if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
       const sharedSyncOk = await syncSharedKeys([
         STORAGE_KEYS.quizzes,
         STORAGE_KEYS.students,
@@ -5757,15 +5973,21 @@ function showNotification(msg, type = 'info', ttl = 3000) {
   } catch (e) { console.warn('notify', e); }
 }
 
-function showStudentResultModalByLookup(quizId, identifier, includeActions = true) {
+async function showStudentResultModalByLookup(quizId, identifier, includeActions = true) {
   const id = (quizId || '').trim();
   const key = normalizeEmail(identifier || '');
   if (!id || !key) return showNotification('Enter quiz ID and email or registration number', 'error');
+  if (canUseNetworkSync()) await pullNetworkState(true);
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
-  const subs = getAllSubmissions().filter(s=>s.quizId===id && normalizeEmail(s.email)===key);
+  const subs = getAllSubmissions().filter((submission) => {
+    if (submission.quizId !== id) return false;
+    const emailMatch = normalizeEmail(submission.email) === key;
+    const regMatch = normalizeEmail(submission.registrationNo || submission.id || '') === key;
+    return emailMatch || regMatch;
+  });
   if (!subs || subs.length===0) return showNotification('No submission found for that quiz/email or registration number','error');
-  const s = subs[subs.length-1];
+  const s = subs.slice().sort(sortSubmissionRecords)[subs.length - 1];
   const ranks = computeRankingForQuiz(id);
   let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
   modal = document.createElement('div');
@@ -5813,15 +6035,16 @@ function showStudentResultModalByLookup(quizId, identifier, includeActions = tru
   return s;
 }
 
-function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true) {
+async function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true) {
   const id = (quizId || '').trim();
   const key = (submissionKey || '').trim();
   if (!id || !key) return showNotification('Result link is incomplete', 'error');
+  if (canUseNetworkSync()) await pullNetworkState(true);
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
   const subs = getAllSubmissions().filter((item) => item.quizId === id && (item.submissionId || buildSubmissionIdentity(item)) === key);
   if (!subs.length) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
-  const submission = subs[subs.length - 1];
+  const submission = subs.slice().sort(sortSubmissionRecords)[subs.length - 1];
   const ranks = computeRankingForQuiz(id);
   let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
   modal = document.createElement('div');
@@ -6079,8 +6302,13 @@ function renderStudentEntry() {
 
 let _webcamStream = null;
 function makeFloatingPanelDraggable(panel, handle) {
-  if (!panel || panel.dataset.dragReady === 'true') return;
-  panel.dataset.dragReady = 'true';
+  if (!panel) return;
+  if (panel._dragBindings) {
+    const previous = panel._dragBindings;
+    previous.handle?.removeEventListener('mousedown', previous.startDrag);
+    previous.handle?.removeEventListener('touchstart', previous.startDrag);
+    previous.stopDrag?.();
+  }
   const dragHandle = handle || panel;
   let startX = 0, startY = 0, initialLeft = 0, initialTop = 0, dragging = false;
   const onMove = (event) => {
@@ -6119,6 +6347,7 @@ function makeFloatingPanelDraggable(panel, handle) {
   dragHandle.style.cursor = 'move';
   dragHandle.addEventListener('mousedown', startDrag);
   dragHandle.addEventListener('touchstart', startDrag, { passive: false });
+  panel._dragBindings = { handle: dragHandle, startDrag, stopDrag };
 }
 
 function startWebcam() {
