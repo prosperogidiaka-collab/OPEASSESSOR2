@@ -147,6 +147,8 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .row-action-select{min-width:170px;min-height:40px;padding:8px 12px}
 .webcam-feed{border:1px solid #CBD5E1;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(10px)}
 .webcam-drag-handle{cursor:move}
+.mobile-teacher-nav{display:none}
+.guide-topic-active{background:#EEF2FF!important;border-color:#C7D2FE!important}
 
 /* App shell polish and local utility fallbacks */
 .topbar{background:rgba(255,255,255,.92)!important;border-bottom:1px solid #E5E7EB!important;padding:14px 24px!important;backdrop-filter:blur(10px);box-shadow:0 1px 0 rgba(15,23,36,0.04)!important;position:sticky;top:0;z-index:100}
@@ -194,6 +196,15 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .license-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;border-radius:14px;margin-bottom:20px;border:1px solid #E5E7EB;background:#fff;box-shadow:0 8px 20px rgba(0,0,0,.04)}
 .license-active{border-left:4px solid #10B981;background:#F0FDF4}
 .license-inactive{border-left:4px solid #F59E0B;background:#FFFBEB}
+
+@media (max-width: 768px){
+	.mobile-teacher-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:16px}
+	.mobile-teacher-nav-btn{border:1px solid #D1D5DB;background:#fff;color:#0F172A;border-radius:12px;padding:12px 10px;font-weight:800;font-size:13px}
+	.mobile-teacher-nav-btn.active{background:linear-gradient(135deg,#4F46E5,#6366F1);color:#fff;border-color:#4F46E5}
+	.sidebar.card{display:none!important}
+	.layout.container{padding-top:12px}
+	.guide-layout{grid-template-columns:1fr!important}
+}
 
 .home-page{display:flex;flex-direction:column;gap:24px;width:100%}
 .hero{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center;background:linear-gradient(135deg,#EEF2FF,#F8FAFC);border:1px solid #E5E7EB;border-radius:24px;padding:56px 40px;margin:20px;overflow:hidden;position:relative;box-shadow:0 18px 45px rgba(79,70,229,.10)}

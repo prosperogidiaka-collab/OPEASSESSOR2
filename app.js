@@ -72,7 +72,9 @@ const state = {
   screenshotDetected: false,
   teacherId: getTeacherId(),
   prefillQuizCode: '',
-  pendingResultLookup: null
+  pendingResultLookup: null,
+  teacherGuideTopic: '',
+  classFilters: {}
 };
 let _didCompactSubmissions = false;
 let networkSyncReady = false;
@@ -739,6 +741,71 @@ function getTeacherStudents() {
   return getAllTeacherStudents()[normalizeEmail(state.teacherId)] || [];
 }
 
+function getStudentsForTeacher(teacherId = state.teacherId) {
+  return getAllTeacherStudents()[normalizeEmail(teacherId)] || [];
+}
+
+function saveStudentsForTeacher(teacherId, students = []) {
+  const all = getAllTeacherStudents();
+  all[normalizeEmail(teacherId)] = (students || []).slice();
+  saveAllTeacherStudents(all);
+}
+
+function getStudentClassGroups(teacherId = state.teacherId) {
+  const grouped = {};
+  getStudentsForTeacher(teacherId).forEach((student) => {
+    const className = normalizeClassName(student.className || student.class || '') || 'Unassigned';
+    if (!grouped[className]) grouped[className] = [];
+    grouped[className].push(student);
+  });
+  Object.keys(grouped).forEach((className) => {
+    grouped[className] = grouped[className].slice().sort((left, right) => (left.name || '').localeCompare(right.name || ''));
+  });
+  return grouped;
+}
+
+function getClassFilterKey(teacherId, scope = 'teacher') {
+  return `${scope}:${normalizeEmail(teacherId)}`;
+}
+
+function getSelectedClassFilter(teacherId, scope = 'teacher') {
+  return state.classFilters[getClassFilterKey(teacherId, scope)] || '';
+}
+
+function setSelectedClassFilter(teacherId, value, scope = 'teacher') {
+  state.classFilters[getClassFilterKey(teacherId, scope)] = normalizeClassName(value);
+}
+
+function upsertStudentForTeacher(teacherId, incomingStudent, sourceQuizId = '') {
+  const students = getStudentsForTeacher(teacherId).slice();
+  const student = {
+    name: (incomingStudent.name || '').toString().trim(),
+    email: (incomingStudent.email || '').toString().trim(),
+    id: (incomingStudent.id || incomingStudent.registrationNo || '').toString().trim(),
+    registrationNo: (incomingStudent.registrationNo || incomingStudent.id || '').toString().trim(),
+    className: normalizeClassName(incomingStudent.className || incomingStudent.class || ''),
+    sourceQuizId: incomingStudent.sourceQuizId || sourceQuizId || '',
+    uploadedAt: incomingStudent.uploadedAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const key = normalizeEmail(student.email || student.id || student.registrationNo || student.name);
+  if (!key) return false;
+  const index = students.findIndex((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) === key);
+  if (index >= 0) students[index] = { ...students[index], ...student };
+  else students.push(student);
+  saveStudentsForTeacher(teacherId, students);
+  return true;
+}
+
+function removeStudentForTeacher(teacherId, student) {
+  const students = getStudentsForTeacher(teacherId).slice();
+  const targetKey = normalizeEmail(student?.email || student?.id || student?.registrationNo || student?.name);
+  const next = students.filter((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) !== targetKey);
+  if (next.length === students.length) return false;
+  saveStudentsForTeacher(teacherId, next);
+  return true;
+}
+
 function ensureSuperAdminAccount() {
   const teachers = getAllTeachers();
   const id = normalizeEmail(SUPER_ADMIN_EMAIL);
@@ -994,6 +1061,37 @@ function resolveQuizFromAccess(access) {
   return null;
 }
 
+function isTeacherWorkspaceView(view = state.view) {
+  return !!view && view.startsWith('teacher') && view !== 'teacher.login';
+}
+
+function buildTeacherMobileNav() {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'mobile-teacher-nav';
+  const items = [
+    { view: 'teacher', label: 'Overview' },
+    { view: 'teacher.bank', label: 'Question Bank' },
+    { view: 'teacher.students', label: 'Students' },
+    { view: 'teacher.settings', label: 'Settings' },
+    { view: 'teacher.guide', label: 'User Guide' },
+    { view: 'teacher.support', label: 'Support' }
+  ];
+  wrapper.innerHTML = items.map((item) => `
+    <button type="button" class="mobile-teacher-nav-btn ${state.view === item.view ? 'active' : ''}" data-view="${item.view}">
+      ${escapeHtml(item.label)}
+    </button>
+  `).join('');
+  setTimeout(() => {
+    wrapper.querySelectorAll('.mobile-teacher-nav-btn').forEach((button) => {
+      button.onclick = () => {
+        state.view = button.dataset.view;
+        render();
+      };
+    });
+  }, 0);
+  return wrapper;
+}
+
 async function resolveQuizFromAccessWithSync(access) {
   let quiz = resolveQuizFromAccess(access);
   if (quiz || !canUseNetworkSync()) return quiz;
@@ -1112,6 +1210,10 @@ function render() {
   } else {
     // fallback: existing views
     // ...existing code...
+  }
+
+  if (isTeacherWorkspaceView()) {
+    main.prepend(buildTeacherMobileNav());
   }
 
   if (state.view !== 'teacher.login' && state.view !== 'student' && state.view !== 'home' && state.view !== 'take' && state.view !== 'admin') layout.appendChild(sidebar);
@@ -1817,6 +1919,17 @@ function renderSettingsView() {
         <button id="copyTeacherId" class="btn btn-ghost" style="margin-top:12px">Copy Teacher ID</button>
       </div>
       <div class="card">
+        <div class="h3">Change Password</div>
+        <div class="small">Teachers can update their own password from here.</div>
+        <label class="small" style="display:block;margin-top:12px">Current password</label>
+        <input id="selfCurrentPassword" class="input-beautiful" type="password" />
+        <label class="small" style="display:block;margin-top:10px">New password</label>
+        <input id="selfNewPassword" class="input-beautiful" type="password" />
+        <label class="small" style="display:block;margin-top:10px">Confirm new password</label>
+        <input id="selfConfirmPassword" class="input-beautiful" type="password" />
+        <button id="saveOwnPassword" class="btn btn-primary" style="margin-top:12px">Update Password</button>
+      </div>
+      <div class="card">
         <div class="h3">Data Backup</div>
         <div class="small">Download all quizzes and submissions stored in this browser.</div>
         <button id="downloadBackup" class="btn btn-primary" style="margin-top:12px">Download Backup</button>
@@ -1848,6 +1961,31 @@ function renderSettingsView() {
   setTimeout(() => {
     document.getElementById('copyTeacherId').onclick = () => {
       copyTextToClipboard(state.teacherId, 'Teacher ID copied');
+    };
+    const ownPasswordBtn = document.getElementById('saveOwnPassword');
+    if (ownPasswordBtn) ownPasswordBtn.onclick = () => {
+      const teacher = getCurrentTeacher();
+      if (!teacher) return showNotification('Teacher account not found', 'error');
+      const currentPassword = document.getElementById('selfCurrentPassword').value || '';
+      const newPassword = document.getElementById('selfNewPassword').value || '';
+      const confirmPassword = document.getElementById('selfConfirmPassword').value || '';
+      if (teacher.password !== currentPassword) return showNotification('Current password is incorrect', 'error');
+      if (!newPassword || newPassword.length < 4) return showNotification('New password must be at least 4 characters', 'error');
+      if (newPassword !== confirmPassword) return showNotification('New password and confirmation do not match', 'error');
+      if (!confirmTeacherAction('Save your new password now?')) return;
+      const teachersMap = getAllTeachers();
+      const id = normalizeEmail(state.teacherId);
+      teachersMap[id] = {
+        ...teachersMap[id],
+        password: newPassword,
+        passwordResetAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      saveAllTeachers(teachersMap);
+      showNotification('Password updated', 'success');
+      document.getElementById('selfCurrentPassword').value = '';
+      document.getElementById('selfNewPassword').value = '';
+      document.getElementById('selfConfirmPassword').value = '';
     };
     document.getElementById('downloadBackup').onclick = () => {
       const payload = {
@@ -1991,35 +2129,147 @@ function openSupportChooser() {
 }
 
 function renderTeacherGuideView() {
-  const container = document.createElement('div');
-  const sections = [
-    { title: 'Create Account', detail: 'Use the Teacher page to create or log into a teacher ID. Admin accounts can manage licences, teacher access, and support details.' },
-    { title: 'Student Management', detail: 'Open Students to download the template, prepare your class list, and import students before you build class-restricted quizzes.' },
-    { title: 'Create Quiz', detail: 'Start with the audience choice, then add the institution name, quiz title, timing, grading rules, subjects, and question files.' },
-    { title: 'Class or Public Access', detail: 'Choose Public when anyone with the code can take the quiz. Choose Uploaded class when the quiz should only open for one imported class.' },
-    { title: 'Question Import', detail: 'Use the quiz template before adding subjects. Upload one file per subject or paste CSV for a quick single-subject quiz.' },
-    { title: 'Cloud Sync', detail: 'Use Sync To Cloud after editing on a device. A quiz marked Cloud synced is ready to open across devices with the normal quiz code.' },
-    { title: 'Run and End Tests', detail: 'Share the student code or link, monitor submissions from Results, and use End Test when you want to stop new student entries immediately.' },
-    { title: 'Results and Exports', detail: 'Teachers can edit scores, delete results, download corrections, export Excel, print the broadsheet PDF, and verify student certificates.' },
-    { title: 'Facility Index', detail: 'Exam Analysis sorts the weakest items first so you can see the hardest questions and the strongest ones at the end.' },
-    { title: 'Help and Support', detail: 'Use the Support menu or the top Support button to contact the admin by email or WhatsApp. Admins can update those contacts inside the Support page.' }
+  const topics = [
+    {
+      id: 'create-account',
+      title: 'Create Teacher Account',
+      description: 'Set up a teacher account and sign in.',
+      steps: [
+        'Open the Teacher page from the top navigation.',
+        'Type your teacher email ID and a password.',
+        'Use Create Teacher ID the first time, or Login if the account already exists.',
+        'After login, open Settings if you want to copy your teacher ID or change your password.'
+      ]
+    },
+    {
+      id: 'import-students',
+      title: 'Import Students',
+      description: 'Upload class lists step by step.',
+      steps: [
+        'Open Students from the teacher menu.',
+        'Click Student Template to download the import file.',
+        'Fill in Name, Email or Registration No / ID, and Class.',
+        'Save the file and click Import Students.',
+        'Choose the file, then wait for the success message.',
+        'Use the class filter to confirm that the right students are inside the right class.'
+      ]
+    },
+    {
+      id: 'export-items',
+      title: 'Exports and Templates',
+      description: 'Download templates, student lists, and result files.',
+      steps: [
+        'Open Students and use Student Template when you want the student import sheet.',
+        'Use Export Excel in Students to download the current student list.',
+        'Open Results for a quiz and choose Excel or PDF Summary to export results.',
+        'Open Create Quiz and use Export Quiz Template before adding subject files.'
+      ]
+    },
+    {
+      id: 'create-quiz',
+      title: 'Create a Quiz',
+      description: 'Build a quiz from start to finish.',
+      steps: [
+        'Open Create Quiz from Overview or Question Bank.',
+        'Choose who can take the quiz first: Public or Uploaded class.',
+        'If you choose Uploaded class, select the class that already exists in Students.',
+        'Enter the institution name, quiz title, timing, grading rules, and schedule.',
+        'Choose calculator access and camera requirement if needed.',
+        'Add each subject and upload one file per subject, or paste CSV for a single-subject quiz.',
+        'Save the quiz, then use Sync To Cloud if you edited it on this device.'
+      ]
+    },
+    {
+      id: 'view-edit-content',
+      title: 'View and Edit Quiz Content',
+      description: 'Review subject content and edit it from View Content.',
+      steps: [
+        'Open Question Bank and click View Content for the quiz.',
+        'If the quiz has many subjects, choose the subject from the subject selector.',
+        'Edit the question text, options, answer, topic, or difficulty inside the content editor.',
+        'Use Save Content Changes when you finish editing.',
+        'After saving, the quiz is updated and the shared cloud copy is refreshed when sync is available.'
+      ]
+    },
+    {
+      id: 'results-management',
+      title: 'Results and Score Editing',
+      description: 'Manage submissions, edit scores, and delete results safely.',
+      steps: [
+        'Open View Results for the quiz.',
+        'Use the action dropdown on any student row to edit score, download correction, email, or delete.',
+        'When you edit a score, save it so the new score appears in teacher exports and student result views.',
+        'When you delete a result, confirm the warning so the result is removed and stays removed.'
+      ]
+    },
+    {
+      id: 'sync-sharing',
+      title: 'Cloud Sync and Sharing',
+      description: 'Make quizzes work across devices.',
+      steps: [
+        'Check the status on each quiz card. Cloud synced means the quiz is ready across devices.',
+        'If the quiz says Pending cloud sync, click Sync To Cloud first.',
+        'Use Copy Student Code or Copy Link after sync.',
+        'If shared sync is temporarily unavailable, use the portable student code or portable link instead.'
+      ]
+    },
+    {
+      id: 'support',
+      title: 'Support and Help',
+      description: 'Reach the admin from inside the app.',
+      steps: [
+        'Open Support from the teacher menu or the top Support button.',
+        'Choose Email or WhatsApp.',
+        'Admins can open Support and update the live support email and WhatsApp number from there.'
+      ]
+    }
   ];
+  const selectedTopic = topics.find((topic) => topic.id === state.teacherGuideTopic) || null;
+  const container = document.createElement('div');
   container.innerHTML = `
     <div class="page-heading">
       <div>
         <div class="h1">User Guide</div>
-        <div class="small">A quick teacher guide for setup, students, quizzes, sync, results, and support.</div>
+        <div class="small">Choose one topic, then read the step-by-step guide for that exact task.</div>
       </div>
     </div>
-    <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px">
-      ${sections.map((section) => `
-        <div class="card-beautiful">
-          <div class="h3">${escapeHtml(section.title)}</div>
-          <div class="small" style="margin-top:8px;line-height:1.7">${escapeHtml(section.detail)}</div>
+    <div class="guide-layout" style="display:grid;grid-template-columns:minmax(260px,.9fr) minmax(0,1.3fr);gap:16px">
+      <div class="card-beautiful">
+        <div class="h3">Guide Topics</div>
+        <div class="small" style="margin-top:6px">Tap any item below.</div>
+        <div style="display:grid;gap:10px;margin-top:14px">
+          ${topics.map((topic) => `
+            <button type="button" class="btn btn-ghost guideTopicBtn ${selectedTopic && selectedTopic.id === topic.id ? 'guide-topic-active' : ''}" data-topic="${topic.id}" style="justify-content:flex-start;text-align:left">
+              <span>
+                <strong style="display:block">${escapeHtml(topic.title)}</strong>
+                <span class="small">${escapeHtml(topic.description)}</span>
+              </span>
+            </button>
+          `).join('')}
         </div>
-      `).join('')}
+      </div>
+      <div class="card-beautiful">
+        ${selectedTopic ? `
+          <div class="h3">${escapeHtml(selectedTopic.title)}</div>
+          <div class="small" style="margin-top:8px">${escapeHtml(selectedTopic.description)}</div>
+          <ol class="guide-step-list" style="margin:18px 0 0;padding-left:18px;display:grid;gap:12px">
+            ${selectedTopic.steps.map((step) => `<li style="line-height:1.7;color:#334155">${escapeHtml(step)}</li>`).join('')}
+          </ol>
+        ` : `
+          <div class="h3">Choose a Guide Topic</div>
+          <div class="small" style="margin-top:8px;line-height:1.7">Nothing is opened yet. Choose one topic from the left to see the full step-by-step explanation for that task only.</div>
+        `}
+      </div>
     </div>
   `;
+  setTimeout(() => {
+    container.querySelectorAll('.guideTopicBtn').forEach((button) => {
+      button.onclick = () => {
+        state.teacherGuideTopic = button.dataset.topic || '';
+        render();
+      };
+    });
+  }, 0);
   return container;
 }
 
@@ -2079,6 +2329,207 @@ function renderTeacherSupportView() {
     };
   }, 0);
   return container;
+}
+
+function openStudentEditorModal(teacherId, student = null, onSaved = null, options = {}) {
+  let modal = document.getElementById('studentEditorModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'studentEditorModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(520px, 94vw)';
+  const isEditing = !!student;
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">${isEditing ? 'Edit Student' : 'Add Student'}</div>
+        <div class="small">${escapeHtml(normalizeEmail(teacherId))}</div>
+      </div>
+      <button id="closeStudentEditor" class="btn btn-ghost">Close</button>
+    </div>
+    <label class="small">Full name</label>
+    <input id="studentEditorName" class="input-beautiful" value="${escapeHtml(student?.name || '')}" />
+    <div style="height:10px"></div>
+    <label class="small">Email</label>
+    <input id="studentEditorEmail" class="input-beautiful" value="${escapeHtml(student?.email || '')}" />
+    <div style="height:10px"></div>
+    <label class="small">Registration No / ID</label>
+    <input id="studentEditorReg" class="input-beautiful" value="${escapeHtml(student?.registrationNo || student?.id || '')}" />
+    <div style="height:10px"></div>
+    <label class="small">Class</label>
+    <input id="studentEditorClass" class="input-beautiful" value="${escapeHtml(normalizeClassName(student?.className || student?.class || ''))}" placeholder="e.g. SS1A" />
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
+      <button id="cancelStudentEditor" class="btn btn-ghost">Cancel</button>
+      <button id="saveStudentEditor" class="btn btn-primary">${isEditing ? 'Save Changes' : 'Add Student'}</button>
+    </div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeStudentEditor').onclick = () => modal.remove();
+  document.getElementById('cancelStudentEditor').onclick = () => modal.remove();
+  document.getElementById('saveStudentEditor').onclick = () => {
+    const payload = {
+      name: (document.getElementById('studentEditorName').value || '').trim(),
+      email: (document.getElementById('studentEditorEmail').value || '').trim(),
+      registrationNo: (document.getElementById('studentEditorReg').value || '').trim(),
+      id: (document.getElementById('studentEditorReg').value || '').trim(),
+      className: normalizeClassName(document.getElementById('studentEditorClass').value || ''),
+      sourceQuizId: student?.sourceQuizId || '',
+      uploadedAt: student?.uploadedAt || new Date().toISOString()
+    };
+    if (!payload.name) return showNotification('Enter the student name', 'error');
+    if (!payload.email && !payload.registrationNo) return showNotification('Enter at least email or registration number', 'error');
+    if (!confirmTeacherAction(`${isEditing ? 'Save changes for' : 'Add'} ${payload.name}?`)) return;
+    if (!upsertStudentForTeacher(teacherId, payload, payload.sourceQuizId || 'General upload')) return showNotification('Could not save student information', 'error');
+    modal.remove();
+    showNotification(isEditing ? 'Student updated' : 'Student added', 'success');
+    if (typeof onSaved === 'function') onSaved(payload);
+  };
+}
+
+function buildStudentTableRows(students = []) {
+  return students.map((student) => `
+    <tr>
+      <td>${escapeHtml(student.name || '')}</td>
+      <td>${escapeHtml(student.email || '')}</td>
+      <td>${escapeHtml(student.registrationNo || student.id || '')}</td>
+      <td>${escapeHtml(normalizeClassName(student.className || student.class || ''))}</td>
+      <td>${escapeHtml(student.sourceQuizId || 'General upload')}</td>
+      <td>${student.uploadedAt ? new Date(student.uploadedAt).toLocaleString() : ''}</td>
+      <td class="text-right">
+        <div class="row-action-shell">
+          <select class="input-beautiful row-action-select studentRowActionSelect" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">
+            <option value="">Choose action</option>
+            <option value="edit">Edit Student</option>
+            <option value="remove">Remove Student</option>
+          </select>
+          <button class="btn btn-ghost btn-sm btnApplyStudentAction" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">Apply</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function renderStudentClassManager(container, teacherId, options = {}) {
+  if (!container) return;
+  const scope = options.scope || 'teacher';
+  const includeImport = !!options.includeImport;
+  const includeExport = !!options.includeExport;
+  const includeTemplate = !!options.includeTemplate;
+  const groups = getStudentClassGroups(teacherId);
+  const classNames = Object.keys(groups).sort((left, right) => left.localeCompare(right));
+  const preferred = getSelectedClassFilter(teacherId, scope);
+  const selectedClass = preferred && groups[preferred] ? preferred : (classNames[0] || '');
+  setSelectedClassFilter(teacherId, selectedClass, scope);
+  const visibleStudents = selectedClass ? (groups[selectedClass] || []) : [];
+  container.innerHTML = `
+    <div class="student-class-shell">
+      <div class="student-class-toolbar" style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <div class="small">Choose class</div>
+          <select id="${scope}StudentClassFilter" class="input-beautiful" style="min-width:220px">
+            ${classNames.map((className) => `<option value="${escapeHtml(className)}" ${selectedClass === className ? 'selected' : ''}>${escapeHtml(className)} (${groups[className].length})</option>`).join('') || '<option value="">No classes uploaded</option>'}
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${includeTemplate ? '<button type="button" id="' + scope + 'StudentsTemplate" class="btn btn-ghost">Student Template</button>' : ''}
+          ${includeExport ? '<button type="button" id="' + scope + 'StudentsExport" class="btn btn-ghost">Export Excel</button>' : ''}
+          ${includeImport ? '<button type="button" id="' + scope + 'StudentsImport" class="btn btn-primary">Import Students</button>' : ''}
+          <button type="button" id="${scope}StudentsAdd" class="btn btn-primary">Add Student Manually</button>
+        </div>
+      </div>
+      <div class="student-class-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
+        ${classNames.map((className) => `
+          <button type="button" class="card-beautiful studentClassCard ${selectedClass === className ? 'student-class-active' : ''}" data-class="${escapeHtml(className)}" style="text-align:left;border:${selectedClass === className ? '2px solid #4F46E5' : '1px solid #E2E8F0'}">
+            <div class="h3">${escapeHtml(className)}</div>
+            <div class="small" style="margin-top:6px">${groups[className].length} student(s)</div>
+          </button>
+        `).join('') || '<div class="card-beautiful"><div class="small">No class uploaded yet.</div></div>'}
+      </div>
+      <div class="table-wrap">
+        <table class="table-dense">
+          <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Class</th><th>Source Quiz</th><th>Uploaded</th><th class="text-right">Actions</th></tr></thead>
+          <tbody>
+            ${visibleStudents.length ? buildStudentTableRows(visibleStudents) : '<tr><td colspan="7">No students in this class yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  const rerender = () => renderStudentClassManager(container, teacherId, options);
+  container.querySelectorAll('.studentClassCard').forEach((button) => {
+    button.onclick = () => {
+      setSelectedClassFilter(teacherId, button.dataset.class || '', scope);
+      rerender();
+    };
+  });
+  const classFilter = container.querySelector(`#${scope}StudentClassFilter`);
+  if (classFilter) classFilter.onchange = () => {
+    setSelectedClassFilter(teacherId, classFilter.value || '', scope);
+    rerender();
+  };
+  const addBtn = container.querySelector(`#${scope}StudentsAdd`);
+  if (addBtn) addBtn.onclick = () => openStudentEditorModal(teacherId, null, () => {
+    if (selectedClass) setSelectedClassFilter(teacherId, selectedClass, scope);
+    rerender();
+  }, options);
+  const importBtn = container.querySelector(`#${scope}StudentsImport`);
+  if (importBtn) importBtn.onclick = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
+    inp.onchange = (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      parseQuestionsFile(file, true).then((list) => {
+        addStudentsToTeacher(list);
+        showNotification(`Students uploaded (${list.length})`, 'success');
+        rerender();
+      }).catch((error) => { console.error(error); showNotification('Could not import students', 'error'); });
+    };
+    inp.click();
+  };
+  const templateBtn = container.querySelector(`#${scope}StudentsTemplate`);
+  if (templateBtn) templateBtn.onclick = () => {
+    if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
+    const rows = [['Name','Email (optional if Reg No is provided)','Registration No / ID','Class'], ['Ada Okafor', '', 'REG001', 'SS1A']];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
+    XLSX.writeFile(wb, 'ope-student-template.xlsx');
+    showNotification('Student template exported', 'success');
+  };
+  const exportBtn = container.querySelector(`#${scope}StudentsExport`);
+  if (exportBtn) exportBtn.onclick = () => {
+    if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
+    const rows = [['Name','Email','Registration No / ID','Class','Source Quiz','Uploaded']];
+    getStudentsForTeacher(teacherId).forEach((student) => rows.push([student.name, student.email, student.registrationNo || student.id, normalizeClassName(student.className || student.class || ''), student.sourceQuizId || '', student.uploadedAt || '']));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
+    XLSX.writeFile(wb, `ope-students-${normalizeEmail(teacherId) || 'teacher'}.xlsx`);
+    showNotification('Students exported', 'success');
+  };
+  container.querySelectorAll('.btnApplyStudentAction').forEach((button) => {
+    button.onclick = () => {
+      const rowKey = button.dataset.key || '';
+      const actionSelect = button.parentElement.querySelector('.studentRowActionSelect');
+      const action = actionSelect ? actionSelect.value : '';
+      const student = getStudentsForTeacher(teacherId).find((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) === rowKey);
+      if (!student) return showNotification('Student not found', 'error');
+      if (!action) return showNotification('Choose a student action first', 'error');
+      if (action === 'edit') {
+        openStudentEditorModal(teacherId, student, rerender, options);
+      } else if (action === 'remove') {
+        if (!confirmTeacherAction(`Remove ${student.name || student.email || 'this student'} from the uploaded list?`)) return;
+        if (!removeStudentForTeacher(teacherId, student)) return showNotification('Could not remove student', 'error');
+        showNotification('Student removed', 'success');
+        rerender();
+      }
+      if (actionSelect) actionSelect.value = '';
+    };
+  });
 }
 
 function showAdminTeacherExams(teacherId) {
