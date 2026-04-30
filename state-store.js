@@ -31,12 +31,13 @@ function toIsoOrNull(value) {
 }
 
 function recordStamp(item) {
-  const raw = item && (item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
+  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
   const stamp = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(stamp) ? stamp : 0;
 }
 
 function submissionKey(item, index = 0) {
+  if (item && item.submissionId) return normalizeKey(item.submissionId, `submission-${index}`);
   const quizId = (item && item.quizId) || '';
   const email = ((item && item.email) || '').toString().trim().toLowerCase();
   const stamp = item && (item.submittedAt || item.updatedAt || item.startedAt || item.createdAt) || `idx-${index}`;
@@ -98,8 +99,15 @@ function mergeTeacherMaps(currentValue = {}, incomingValue = {}) {
 
 function mergeSubmissionLists(currentList, incomingList) {
   const merged = new Map();
-  (currentList || []).forEach((item, index) => merged.set(submissionKey(item, index), item));
-  (incomingList || []).forEach((item, index) => merged.set(submissionKey(item, index), item));
+  const add = (item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const normalized = item.submissionId ? item : { ...item, submissionId: submissionKey(item, index) };
+    const key = submissionKey(normalized, index);
+    const current = merged.get(key);
+    if (!current || recordStamp(normalized) >= recordStamp(current)) merged.set(key, normalized);
+  };
+  (currentList || []).forEach(add);
+  (incomingList || []).forEach(add);
   return Array.from(merged.values()).sort((a, b) => {
     const left = new Date(a.submittedAt || a.updatedAt || a.startedAt || 0).getTime();
     const right = new Date(b.submittedAt || b.updatedAt || b.startedAt || 0).getTime();
@@ -244,7 +252,7 @@ function buildSubmissionRows(stateValue) {
     student_email: normalizeLowerKey(item && item.email),
     submitted_at: toIsoOrNull(item && item.submittedAt),
     updated_at: toIsoOrNull(item && (item.updatedAt || item.submittedAt || item.startedAt || item.createdAt)),
-    payload: { ...(item || {}) }
+    payload: { ...(item || {}), submissionId: submissionKey(item, index) }
   }));
 }
 
@@ -300,6 +308,7 @@ function rowsToStudentMap(rows) {
 function rowsToSubmissionList(rows) {
   return (rows || []).map((row) => {
     const payload = isObject(row.payload) ? { ...row.payload } : {};
+    if (!payload.submissionId && row.submission_id) payload.submissionId = row.submission_id;
     if (!payload.quizId && row.quiz_id) payload.quizId = row.quiz_id;
     if (!payload.email && row.student_email) payload.email = row.student_email;
     if (!payload.submittedAt && row.submitted_at) payload.submittedAt = row.submitted_at;

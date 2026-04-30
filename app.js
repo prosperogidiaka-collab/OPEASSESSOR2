@@ -30,6 +30,10 @@ const NETWORK_STATE_KEY_MAP = {
 };
 const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
+const DEFAULT_SUPPORT_SETTINGS = {
+  email: ADMIN_CONTACT_EMAIL,
+  whatsapp: ''
+};
 
 function normalizeApiBaseUrl(value) {
   return (value || '').toString().trim().replace(/\/+$/, '');
@@ -67,7 +71,8 @@ const state = {
   inFullscreen: false,
   screenshotDetected: false,
   teacherId: getTeacherId(),
-  prefillQuizCode: ''
+  prefillQuizCode: '',
+  pendingResultLookup: null
 };
 let _didCompactSubmissions = false;
 let networkSyncReady = false;
@@ -78,6 +83,9 @@ let networkSyncFailureMessage = '';
 const pendingNetworkWrites = new Set();
 let _historyApplying = false;
 let _lastHistoryView = '';
+let _calculatorMemory = 0;
+let _calculatorMode = 'DEG';
+let _calculatorExpression = '';
 
 function canUseNetworkSync() {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
@@ -155,9 +163,82 @@ function isEmptySharedValue(value) {
 }
 
 function getRecordStamp(item) {
-  const raw = item && (item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
+  const raw = item && (item.deletedAt || item.updatedAt || item.editedAt || item.submittedAt || item.uploadedAt || item.licenseUpdatedAt || item.licenseRequestedAt || item.idChangedAt || item.createdAt || item.startedAt);
   const stamp = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(stamp) ? stamp : 0;
+}
+
+function buildSubmissionIdentity(item, index = 0) {
+  const quizId = item?.quizId || '';
+  const email = (item?.email || '').toString().trim().toLowerCase();
+  const stamp = item?.submittedAt || item?.startedAt || item?.createdAt || `idx-${index}`;
+  return item?.submissionId || `${quizId}::${email}::${stamp}`;
+}
+
+function isDeletedSubmission(item) {
+  return !!(item && item.deletedAt);
+}
+
+function sortSubmissionRecords(left, right) {
+  const leftStamp = new Date(left?.submittedAt || left?.updatedAt || left?.startedAt || 0).getTime();
+  const rightStamp = new Date(right?.submittedAt || right?.updatedAt || right?.startedAt || 0).getTime();
+  return leftStamp - rightStamp;
+}
+
+function mergeSubmissionRecordsForSync(primaryList = [], secondaryList = []) {
+  const merged = new Map();
+  const add = (item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const normalized = item.submissionId ? item : { ...item, submissionId: buildSubmissionIdentity(item, index) };
+    const key = normalized.submissionId || buildSubmissionIdentity(normalized, index);
+    const current = merged.get(key);
+    if (!current || getRecordStamp(normalized) >= getRecordStamp(current)) merged.set(key, normalized);
+  };
+  primaryList.forEach(add);
+  secondaryList.forEach(add);
+  return Array.from(merged.values()).sort(sortSubmissionRecords);
+}
+
+function confirmTeacherAction(message) {
+  return window.confirm(message);
+}
+
+function normalizeClassName(value) {
+  return (value || '').toString().trim();
+}
+
+function getTeacherClassNames(teacherId = state.teacherId) {
+  const key = normalizeEmail(teacherId);
+  const classes = new Set();
+  (getAllTeacherStudents()[key] || []).forEach((student) => {
+    const className = normalizeClassName(student.className || student.class || '');
+    if (className) classes.add(className);
+  });
+  return Array.from(classes).sort((left, right) => left.localeCompare(right));
+}
+
+function getSupportSettings() {
+  const admin = getAllTeachers()[normalizeEmail(SUPER_ADMIN_EMAIL)] || {};
+  return {
+    email: (admin.supportEmail || DEFAULT_SUPPORT_SETTINGS.email || ADMIN_CONTACT_EMAIL || '').toString().trim(),
+    whatsapp: (admin.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp || '').toString().trim()
+  };
+}
+
+function saveSupportSettings(nextSettings = {}) {
+  const teachers = getAllTeachers();
+  const adminId = normalizeEmail(SUPER_ADMIN_EMAIL);
+  teachers[adminId] = {
+    ...(teachers[adminId] || {}),
+    teacherId: adminId,
+    email: adminId,
+    role: 'super_admin',
+    supportEmail: (nextSettings.email || '').toString().trim(),
+    supportWhatsapp: (nextSettings.whatsapp || '').toString().trim(),
+    createdAt: teachers[adminId]?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  saveAllTeachers(teachers);
 }
 
 function getStudentRecordKey(item, index = 0) {
@@ -215,16 +296,7 @@ function mergeTeacherMapForSync(localValue = {}, remoteValue = {}) {
 }
 
 function mergeSubmissionListsForSync(localList, remoteList) {
-  const merged = new Map();
-  const makeKey = (item, index) => {
-    const quizId = item?.quizId || '';
-    const email = (item?.email || '').toString().trim().toLowerCase();
-    const stamp = item?.submittedAt || item?.updatedAt || item?.startedAt || `idx-${index}`;
-    return `${quizId}::${email}::${stamp}`;
-  };
-  (remoteList || []).forEach((item, index) => merged.set(makeKey(item, index), item));
-  (localList || []).forEach((item, index) => merged.set(makeKey(item, index), item));
-  return Array.from(merged.values());
+  return mergeSubmissionRecordsForSync(remoteList || [], localList || []);
 }
 
 function mergeSharedValue(storageKey, localValue, remoteValue) {
@@ -371,6 +443,9 @@ function buildPortableQuizSnapshot(quiz) {
     shuffleOpts: quiz.shuffleOpts !== false,
     verticalLayout: !!quiz.verticalLayout,
     rankingEnabled: !!quiz.rankingEnabled,
+    webcamRequired: !!quiz.webcamRequired,
+    audienceMode: quiz.audienceMode || 'public',
+    assignedClassName: quiz.assignedClassName || '',
     whitelist: Array.isArray(quiz.whitelist) ? quiz.whitelist : [],
     certificateSignatories: Array.isArray(quiz.certificateSignatories) ? quiz.certificateSignatories : [],
     scheduleStart: quiz.scheduleStart || '',
@@ -395,6 +470,7 @@ async function copyQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
   const portableFallback = !sharedSyncOk;
+  if (sharedSyncOk) markQuizzesCloudSynced([quiz.id]);
   await copyTextToClipboard(encodeQuizToLink(quiz, { portable: portableFallback }), portableFallback ? 'Portable student link copied' : 'Quiz link copied');
   if (!sharedSyncOk) {
     showNotification(`Portable student link copied because shared sync is down. Students can open that link on another device right now. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
@@ -406,6 +482,7 @@ async function copyQuizAccessCode(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
   if (sharedSyncOk) {
+    markQuizzesCloudSynced([quiz.id]);
     await copyTextToClipboard(quiz.id, 'Student code copied');
     return true;
   }
@@ -426,7 +503,9 @@ async function syncAllLocalDataToCloud() {
     STORAGE_KEYS.teachers
   ]);
   if (ok) {
-    const quizCount = Object.keys(getAllQuizzes() || {}).length;
+    const quizIds = Object.keys(getAllQuizzes() || {});
+    const quizCount = quizIds.length;
+    markQuizzesCloudSynced(quizIds);
     showNotification(`Cloud sync completed. ${quizCount} quiz(es) are now uploaded from this device.`, 'success', 7000);
   } else {
     showNotification(`Cloud sync failed. ${getSharedSyncWarningMessage()}`, 'error', 8000);
@@ -468,6 +547,13 @@ async function initializeApp() {
       state.view = 'take';
     }
   }
+  if (params.has('resultQuiz') && params.has('resultKey')) {
+    state.pendingResultLookup = {
+      quizId: params.get('resultQuiz') || '',
+      submissionId: params.get('resultKey') || ''
+    };
+    state.view = 'student';
+  }
   startNetworkSyncLoop();
   render();
 }
@@ -482,16 +568,28 @@ function load(key) {
 }
 
 function getAllQuizzes() { return load(STORAGE_KEYS.quizzes) || {}; }
-function getAllSubmissions() { return load(STORAGE_KEYS.submissions) || []; }
+function getAllStoredSubmissions() { return load(STORAGE_KEYS.submissions) || []; }
+function getAllSubmissions(options = {}) {
+  const includeDeleted = !!options.includeDeleted;
+  const submissions = getAllStoredSubmissions();
+  return includeDeleted ? submissions : submissions.filter((item) => !isDeletedSubmission(item));
+}
 function getAllTeachers() { return load(STORAGE_KEYS.teachers) || {}; }
 function getAllTeacherStudents() { return load(STORAGE_KEYS.students) || {}; }
 function saveAllQuizzes(q) { save(STORAGE_KEYS.quizzes, q); }
-function saveAllSubmissions(s) { save(STORAGE_KEYS.submissions, s); }
+function saveAllSubmissions(submissions, options = {}) {
+  const keepDeleted = options.keepDeleted !== false;
+  const nextVisible = Array.isArray(submissions) ? submissions : [];
+  const nextValue = keepDeleted
+    ? mergeSubmissionRecordsForSync(nextVisible, getAllStoredSubmissions().filter(isDeletedSubmission))
+    : mergeSubmissionRecordsForSync(nextVisible, []);
+  save(STORAGE_KEYS.submissions, nextValue);
+}
 function saveAllTeachers(t) { save(STORAGE_KEYS.teachers, t); }
 function saveAllTeacherStudents(s) { save(STORAGE_KEYS.students, s); }
 
 function compactStoredSubmissions() {
-  const submissions = getAllSubmissions();
+  const submissions = getAllSubmissions({ includeDeleted: true });
   let changed = false;
   submissions.forEach((sub) => {
     if (!sub || !Array.isArray(sub.snapshots)) return;
@@ -504,10 +602,11 @@ function compactStoredSubmissions() {
 }
 
 function updateLatestSubmissionByQuizAndEmail(quizId, email, updater) {
-  const submissions = getAllSubmissions();
+  const submissions = getAllSubmissions({ includeDeleted: true });
   let index = -1;
   for (let i = submissions.length - 1; i >= 0; i--) {
     const item = submissions[i];
+    if (isDeletedSubmission(item)) continue;
     if (item.quizId === quizId && normalizeEmail(item.email) === normalizeEmail(email)) {
       index = i;
       break;
@@ -517,8 +616,9 @@ function updateLatestSubmissionByQuizAndEmail(quizId, email, updater) {
   const next = { ...submissions[index] };
   updater(next);
   next.updatedAt = new Date().toISOString();
+  next.submissionId = next.submissionId || buildSubmissionIdentity(next, index);
   submissions[index] = next;
-  saveAllSubmissions(submissions);
+  save(STORAGE_KEYS.submissions, submissions);
   return next;
 }
 
@@ -623,8 +723,10 @@ function addStudentsToTeacher(list, sourceQuizId = '') {
       email: (item.email || '').toString().trim(),
       id: (item.id || item.registrationNo || '').toString().trim(),
       registrationNo: (item.registrationNo || item.id || '').toString().trim(),
+      className: normalizeClassName(item.className || item.class || ''),
       sourceQuizId,
-      uploadedAt: item.uploadedAt || new Date().toISOString()
+      uploadedAt: item.uploadedAt || new Date().toISOString(),
+      updatedAt: item.updatedAt || new Date().toISOString()
     };
     const studentKey = normalizeEmail(student.email || student.id || student.registrationNo || student.name);
     if (studentKey) byKey[studentKey] = { ...(byKey[studentKey] || {}), ...student };
@@ -646,6 +748,8 @@ function ensureSuperAdminAccount() {
     email: id,
     password: SUPER_ADMIN_PASSWORD,
     role: 'super_admin',
+    supportEmail: teachers[id]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
+    supportWhatsapp: teachers[id]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
     createdAt: teachers[id]?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -660,21 +764,22 @@ function normalizeEmail(email) {
 // Migrate existing submissions: normalize emails and deduplicate by quizId+email (keep latest)
 function migrateAndNormalizeSubmissions() {
   try {
-    const subs = getAllSubmissions() || [];
+    const subs = getAllSubmissions({ includeDeleted: true }) || [];
     const map = {};
-    for (const s of subs) {
-      const key = `${s.quizId}::${normalizeEmail(s.email)}`;
+    for (const rawSubmission of subs) {
+      const s = rawSubmission && rawSubmission.submissionId ? rawSubmission : { ...rawSubmission, submissionId: buildSubmissionIdentity(rawSubmission) };
+      const key = s.submissionId;
       if (!map[key]) map[key] = s;
       else {
         const a = map[key];
         const b = s;
-        const at = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
-        const bt = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+        const at = getRecordStamp(a);
+        const bt = getRecordStamp(b);
         if (bt >= at) map[key] = b; // keep latest
       }
     }
-    const out = Object.values(map);
-    if (out.length !== subs.length) saveAllSubmissions(out);
+    const out = Object.values(map).sort(sortSubmissionRecords);
+    if (JSON.stringify(out) !== JSON.stringify(subs)) save(STORAGE_KEYS.submissions, out);
   } catch (e) { console.warn('Migration error', e); }
 }
 
@@ -936,6 +1041,7 @@ function render() {
         </div>
         <div class="top-actions">
           <button id="openTeacherQuiz" class="btn btn-ghost btn-sm">Open Quiz</button>
+          ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topSupport" class="btn btn-ghost btn-sm" aria-label="Support">Support</button>' : ''}
           ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topAlerts" class="btn btn-ghost btn-sm" aria-label="Notifications">Alerts</button>' : ''}
           <div class="small" id="userBadge">${isSuperAdmin() ? 'Admin: ' + escapeHtml(SUPER_ADMIN_EMAIL) : isTeacherLoggedIn() ? 'Teacher' : 'Guest'}</div>
           ${isTeacherLoggedIn() ? '<button id="logoutTeacher" class="btn btn-ghost btn-sm">Logout</button>' : ''}
@@ -959,6 +1065,9 @@ function render() {
     <div class="section-title">Manage</div>
     <div id="navStudents" class="nav-item">Students</div>
     <div id="navSettings" class="nav-item">Settings</div>
+    <div class="section-title">Help</div>
+    <div id="navGuide" class="nav-item">User Guide</div>
+    <div id="navSupport" class="nav-item">Support</div>
   `;
 
   const main = document.createElement('main');
@@ -988,6 +1097,12 @@ function render() {
   } else if (state.view === 'teacher.settings') {
     if (!requireTeacher()) return render();
     main.appendChild(renderSettingsView());
+  } else if (state.view === 'teacher.guide') {
+    if (!requireTeacher()) return render();
+    main.appendChild(renderTeacherGuideView());
+  } else if (state.view === 'teacher.support') {
+    if (!requireTeacher()) return render();
+    main.appendChild(renderTeacherSupportView());
   } else if (state.view === 'student') {
     main.appendChild(renderStudentEntry());
   } else if (state.view === 'take') {
@@ -1011,6 +1126,7 @@ function render() {
     document.getElementById('topTeacher').onclick = () => { state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login'; render(); };
     document.getElementById('topStudent').onclick = () => { state.view = 'student'; render(); };
     const openBtn = document.getElementById('openTeacherQuiz'); if (openBtn) openBtn.onclick = ()=> showTeacherAccessModal();
+    const supportBtn = document.getElementById('topSupport'); if (supportBtn) supportBtn.onclick = () => openSupportChooser();
     const alertsBtn = document.getElementById('topAlerts'); if (alertsBtn) alertsBtn.onclick = () => showAlertsPanel();
     const logoutBtn = document.getElementById('logoutTeacher'); if (logoutBtn) logoutBtn.onclick = () => logoutTeacher();
 
@@ -1019,11 +1135,15 @@ function render() {
     const navBank = document.getElementById('navBank');
     const navStudents = document.getElementById('navStudents');
     const navSettings = document.getElementById('navSettings');
-    if (navOverview && navBank && navStudents && navSettings) {
+    const navGuide = document.getElementById('navGuide');
+    const navSupport = document.getElementById('navSupport');
+    if (navOverview && navBank && navStudents && navSettings && navGuide && navSupport) {
       navOverview.onclick = () => { state.view = 'teacher'; render(); };
       navBank.onclick = () => { state.view = 'teacher.bank' ; render(); };
       navStudents.onclick = () => { state.view = 'teacher.students' ; render(); };
       navSettings.onclick = () => { state.view = 'teacher.settings' ; render(); };
+      navGuide.onclick = () => { state.view = 'teacher.guide'; render(); };
+      navSupport.onclick = () => { state.view = 'teacher.support'; render(); };
 
       // set active classes robustly
       document.querySelectorAll('.sidebar .nav-item').forEach(n => n.classList.remove('active'));
@@ -1031,6 +1151,8 @@ function render() {
       if (state.view === 'teacher.bank') navBank.classList.add('active');
       if (state.view === 'teacher.students') navStudents.classList.add('active');
       if (state.view === 'teacher.settings') navSettings.classList.add('active');
+      if (state.view === 'teacher.guide') navGuide.classList.add('active');
+      if (state.view === 'teacher.support') navSupport.classList.add('active');
     }
 
     // header active style
@@ -1039,6 +1161,14 @@ function render() {
     if (state.view === 'teacher' || state.view.startsWith('teacher')) document.getElementById('topTeacher').classList.add('active');
     if (state.view === 'student') document.getElementById('topStudent').classList.add('active');
     enhancePasswordFields(app);
+    if (state.pendingResultLookup && state.view !== 'take') {
+      const pending = { ...state.pendingResultLookup };
+      state.pendingResultLookup = null;
+      setTimeout(async () => {
+        if (canUseNetworkSync()) await pullNetworkState(true);
+        showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false);
+      }, 50);
+    }
   }, 0);
 }
 
@@ -1463,7 +1593,10 @@ function renderTeacherQuizzes() {
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncButton}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
     const syncBtn = document.getElementById('syncLocalToCloudBtn');
-    if (syncBtn) syncBtn.onclick = async () => { await syncAllLocalDataToCloud(); };
+    if (syncBtn) syncBtn.onclick = async () => {
+      if (!confirmTeacherAction('Sync this device to the cloud now? Use this after editing quizzes on this browser.')) return;
+      await syncAllLocalDataToCloud();
+    };
     const all = getAllQuizzes();
     const keys = Object.keys(all).filter(k => isSuperAdmin() || all[k].teacherId === state.teacherId).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
     const listEl = document.getElementById('teacherQuizzesList');
@@ -1473,15 +1606,22 @@ function renderTeacherQuizzes() {
     }
     listEl.innerHTML = keys.map(k => {
       const q = all[k];
+      const syncStatus = getQuizSyncStatus(q);
+      const ended = q.scheduleEnd && new Date(q.scheduleEnd).getTime() <= Date.now();
       return `<div class="card quiz-list-card" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div>
           <div style="font-weight:700">${escapeHtml(q.title)} <span class="small" style="color:var(--muted);font-weight:500">(${q.id})</span></div>
           <div class="small">${(q.subjects || []).length} subject(s)   ${q.timeLimit}m   ${q.maxGrade} points</div>
+          <div class="small" style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
+            <span class="status-chip ${syncStatus.tone === 'success' ? 'status-success' : syncStatus.tone === 'warning' ? 'status-pending' : ''}">${escapeHtml(syncStatus.label)}</span>
+            ${ended ? '<span class="status-chip">Ended</span>' : '<span class="status-chip status-success">Open</span>'}
+          </div>
         </div>
         <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy Student Code</button>
           <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
           <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
+          <button class="btn btn-ghost btn-sm btnEndQuiz" data-id="${q.id}" ${ended ? 'disabled' : ''}>End Test</button>
           <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
         </div>
       </div>`;
@@ -1491,6 +1631,7 @@ function renderTeacherQuizzes() {
       document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessCode(q);});
       document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessLink(q);});
       document.querySelectorAll('.btnEditQuiz').forEach(b=>b.onclick=(e)=>{ canSetQuestions() ? showCreateQuizModal(e.currentTarget.dataset.id) : showLicenseRequired(); });
+      document.querySelectorAll('.btnEndQuiz').forEach(b=>b.onclick=async (e)=>{ await endQuizNow(e.currentTarget.dataset.id); });
       document.querySelectorAll('.btnView').forEach(b=>b.onclick=(e)=>{state.currentQuiz=getAllQuizzes()[e.currentTarget.dataset.id]; state.view='results'; render();});
     },0);
   },0);
@@ -1600,25 +1741,26 @@ function renderStudentsView() {
         <div class="small">Only students uploaded by ${escapeHtml(state.teacherId)} are shown here.</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button id="studentsImport" class="btn btn-primary">Upload Students</button>
         <button id="studentsTemplate" class="btn btn-ghost">Student Template</button>
         <button id="studentsExport" class="btn btn-ghost">Export Excel</button>
+        <button id="studentsImport" class="btn btn-primary">Import Students</button>
       </div>
     </div>
     <div class="card">
       <div class="table-wrap">
         <table class="table-dense">
-          <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Source Quiz</th><th>Uploaded</th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Class</th><th>Source Quiz</th><th>Uploaded</th></tr></thead>
           <tbody>
             ${students.map(s => `
               <tr>
                 <td>${escapeHtml(s.name)}</td>
                 <td>${escapeHtml(s.email)}</td>
                 <td>${escapeHtml(s.registrationNo || s.id)}</td>
+                <td>${escapeHtml(normalizeClassName(s.className || s.class || ''))}</td>
                 <td>${escapeHtml(s.sourceQuizId || 'General upload')}</td>
                 <td>${s.uploadedAt ? new Date(s.uploadedAt).toLocaleString() : ''}</td>
               </tr>
-            `).join('') || '<tr><td colspan="5">No uploaded students yet.</td></tr>'}
+            `).join('') || '<tr><td colspan="6">No uploaded students yet.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1641,7 +1783,7 @@ function renderStudentsView() {
     };
     document.getElementById('studentsTemplate').onclick = () => {
       if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
-      const rows = [['Name','Email (optional if Reg No is provided)','Registration No / ID'], ['Ada Okafor', '', 'REG001']];
+      const rows = [['Name','Email (optional if Reg No is provided)','Registration No / ID','Class'], ['Ada Okafor', '', 'REG001', 'SS1A']];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
       XLSX.writeFile(wb, 'ope-student-template.xlsx');
@@ -1649,8 +1791,8 @@ function renderStudentsView() {
     };
     document.getElementById('studentsExport').onclick = () => {
       if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
-      const rows = [['Name','Email','Registration No / ID','Source Quiz','Uploaded']];
-      students.forEach(s => rows.push([s.name, s.email, s.registrationNo || s.id, s.sourceQuizId || '', s.uploadedAt || '']));
+      const rows = [['Name','Email','Registration No / ID','Class','Source Quiz','Uploaded']];
+      students.forEach(s => rows.push([s.name, s.email, s.registrationNo || s.id, normalizeClassName(s.className || s.class || ''), s.sourceQuizId || '', s.uploadedAt || '']));
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Students');
       XLSX.writeFile(wb, 'ope-students.xlsx');
@@ -1696,7 +1838,7 @@ function renderSettingsView() {
             <tbody id="teacherAdminRows">${teacherRows.map(t => {
               const id = t.teacherId || t.email;
               const status = getTeacherLicenseStatus(t);
-              return `<tr data-teacher-row="${escapeHtml(id)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(status.detail || status.label)}</td><td>${t.licenseRequestedAt ? new Date(t.licenseRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><button class="btn btn-primary btn-sm btnViewTeacherExams" data-id="${escapeHtml(id)}">View Exams</button> <button class="btn btn-ghost btn-sm btnViewTeacherStudents" data-id="${escapeHtml(id)}">Students</button> <button class="btn btn-primary btn-sm btnGrantLicense" data-id="${escapeHtml(id)}">Grant</button> <button class="btn btn-ghost btn-sm btnStopLicense" data-id="${escapeHtml(id)}">Stop</button> <button class="btn btn-ghost btn-sm btnResetTeacher" data-id="${escapeHtml(id)}">Reset Password</button> <button class="btn btn-ghost btn-sm btnChangeTeacherId" data-id="${escapeHtml(id)}">Change ID</button></td></tr>`;
+              return `<tr data-teacher-row="${escapeHtml(id)}"><td>${escapeHtml(id)}</td><td>${escapeHtml(t.role || 'teacher')}</td><td>${escapeHtml(status.detail || status.label)}</td><td>${t.licenseRequestedAt ? new Date(t.licenseRequestedAt).toLocaleString() : '-'}</td><td>${t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}</td><td><div class="row-action-shell"><select class="input-beautiful row-action-select teacherAdminActionSelect" data-id="${escapeHtml(id)}"><option value="">Choose action</option><option value="view-exams">View Exams</option><option value="view-students">Students</option><option value="grant-license">Grant Licence</option><option value="stop-license">Stop Licence</option><option value="reset-password">Reset Password</option><option value="change-id">Change ID</option></select><button class="btn btn-ghost btn-sm btnApplyTeacherAdminAction" data-id="${escapeHtml(id)}">Apply</button></div></td></tr>`;
             }).join('') || '<tr><td colspan="6">No teachers yet.</td></tr>'}</tbody>
           </table>
         </div>
@@ -1736,77 +1878,205 @@ function renderSettingsView() {
         row.style.display = normalizeEmail(row.dataset.teacherRow).includes(term) ? '' : 'none';
       });
     };
-    document.querySelectorAll('.btnViewTeacherExams').forEach(btn => btn.onclick = (ev) => {
+    document.querySelectorAll('.btnApplyTeacherAdminAction').forEach(btn => btn.onclick = (ev) => {
       if (!isSuperAdmin()) return;
-      showAdminTeacherExams(ev.currentTarget.dataset.id);
-    });
-    document.querySelectorAll('.btnViewTeacherStudents').forEach(btn => btn.onclick = (ev) => {
-      if (!isSuperAdmin()) return;
-      showAdminTeacherStudents(ev.currentTarget.dataset.id);
-    });
-    document.querySelectorAll('.btnGrantLicense').forEach(btn => btn.onclick = (ev) => {
-      if (!isSuperAdmin()) return;
+      const actionSelect = ev.currentTarget.parentElement.querySelector('.teacherAdminActionSelect');
+      const action = actionSelect ? actionSelect.value : '';
       const id = normalizeEmail(ev.currentTarget.dataset.id);
-      if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence is unlimited', 'info');
-      const days = parseInt(prompt('Licence duration in days for ' + id, '30') || '', 10);
-      if (!days || days <= 0) return;
-      const all = getAllTeachers();
-      if (!all[id]) return showNotification('Teacher not found', 'error');
-      all[id].licenseEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-      all[id].licenseStopped = false;
-      all[id].licenseRequestStatus = 'approved';
-      all[id].licenseUpdatedAt = new Date().toISOString();
-      all[id].updatedAt = all[id].licenseUpdatedAt;
-      saveAllTeachers(all);
-      showNotification('Licence granted', 'success');
+      if (!action) return showNotification('Choose an admin action first', 'error');
+      if (action === 'view-exams') {
+        showAdminTeacherExams(id);
+      } else if (action === 'view-students') {
+        showAdminTeacherStudents(id);
+      } else if (action === 'grant-license') {
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence is unlimited', 'info');
+        const days = parseInt(prompt('Licence duration in days for ' + id, '30') || '', 10);
+        if (!days || days <= 0) return;
+        if (!confirmTeacherAction(`Grant ${days} day(s) of licence to ${id}?`)) return;
+        const all = getAllTeachers();
+        if (!all[id]) return showNotification('Teacher not found', 'error');
+        all[id].licenseEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+        all[id].licenseStopped = false;
+        all[id].licenseRequestStatus = 'approved';
+        all[id].licenseUpdatedAt = new Date().toISOString();
+        all[id].updatedAt = all[id].licenseUpdatedAt;
+        saveAllTeachers(all);
+        showNotification('Licence granted', 'success');
+        render();
+      } else if (action === 'stop-license') {
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence cannot be stopped', 'info');
+        if (!confirmTeacherAction(`Stop the licence for ${id}?`)) return;
+        const all = getAllTeachers();
+        if (!all[id]) return showNotification('Teacher not found', 'error');
+        all[id].licenseStopped = true;
+        all[id].licenseRequestStatus = 'stopped';
+        all[id].licenseUpdatedAt = new Date().toISOString();
+        all[id].updatedAt = all[id].licenseUpdatedAt;
+        saveAllTeachers(all);
+        showNotification('Licence stopped', 'success');
+        render();
+      } else if (action === 'reset-password') {
+        const next = prompt('Enter new password for ' + id);
+        if (!next) return;
+        if (!confirmTeacherAction(`Reset the password for ${id}?`)) return;
+        const all = getAllTeachers();
+        if (!all[id]) return showNotification('Teacher not found', 'error');
+        all[id].password = next;
+        all[id].passwordResetAt = new Date().toISOString();
+        all[id].updatedAt = all[id].passwordResetAt;
+        saveAllTeachers(all);
+        showNotification('Password reset', 'success');
+      } else if (action === 'change-id') {
+        const newId = normalizeEmail(prompt('Enter new teacher email ID for ' + id) || '');
+        if (!newId || newId === id) return;
+        if (!confirmTeacherAction(`Change teacher ID from ${id} to ${newId}?`)) return;
+        const teachersAll = getAllTeachers();
+        if (!teachersAll[id]) return showNotification('Teacher not found', 'error');
+        if (teachersAll[newId]) return showNotification('New teacher ID already exists', 'error');
+        teachersAll[newId] = { ...teachersAll[id], teacherId: newId, email: newId, idChangedFrom: id, idChangedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        delete teachersAll[id];
+        saveAllTeachers(teachersAll);
+        const quizzesAll = getAllQuizzes();
+        Object.values(quizzesAll).forEach(q => { if (normalizeEmail(q.teacherId) === id) q.teacherId = newId; });
+        saveAllQuizzes(quizzesAll);
+        const studentsAll = getAllTeacherStudents();
+        if (studentsAll[id]) { studentsAll[newId] = studentsAll[id]; delete studentsAll[id]; saveAllTeacherStudents(studentsAll); }
+        showNotification('Teacher ID changed', 'success');
+        render();
+      }
+      if (actionSelect) actionSelect.value = '';
+    });
+  }, 0);
+  return container;
+}
+
+function openSupportChooser() {
+  const settings = getSupportSettings();
+  let modal = document.getElementById('supportChooserModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'supportChooserModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(420px, 94vw)';
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Help and Support</div>
+        <div class="small">Choose how you want to contact the admin support line.</div>
+      </div>
+      <button id="closeSupportChooser" class="btn btn-ghost">Close</button>
+    </div>
+    <div style="display:grid;gap:12px;margin-top:14px">
+      <button id="supportByEmail" class="btn btn-primary">Email Support</button>
+      <button id="supportByWhatsapp" class="btn btn-ghost">WhatsApp Support</button>
+    </div>
+    <div class="small" style="margin-top:16px">Email: ${escapeHtml(settings.email || 'Not set')}</div>
+    <div class="small">WhatsApp: ${escapeHtml(settings.whatsapp || 'Not set')}</div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeSupportChooser').onclick = () => modal.remove();
+  document.getElementById('supportByEmail').onclick = () => {
+    if (!settings.email) return showNotification('Support email has not been set yet', 'error');
+    window.location.href = `mailto:${encodeURIComponent(settings.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}`;
+  };
+  document.getElementById('supportByWhatsapp').onclick = () => {
+    const phone = (settings.whatsapp || '').replace(/[^\d]/g, '');
+    if (!phone) return showNotification('Support WhatsApp number has not been set yet', 'error');
+    window.open(`https://wa.me/${phone}`, '_blank', 'noopener');
+  };
+}
+
+function renderTeacherGuideView() {
+  const container = document.createElement('div');
+  const sections = [
+    { title: 'Create Account', detail: 'Use the Teacher page to create or log into a teacher ID. Admin accounts can manage licences, teacher access, and support details.' },
+    { title: 'Student Management', detail: 'Open Students to download the template, prepare your class list, and import students before you build class-restricted quizzes.' },
+    { title: 'Create Quiz', detail: 'Start with the audience choice, then add the institution name, quiz title, timing, grading rules, subjects, and question files.' },
+    { title: 'Class or Public Access', detail: 'Choose Public when anyone with the code can take the quiz. Choose Uploaded class when the quiz should only open for one imported class.' },
+    { title: 'Question Import', detail: 'Use the quiz template before adding subjects. Upload one file per subject or paste CSV for a quick single-subject quiz.' },
+    { title: 'Cloud Sync', detail: 'Use Sync To Cloud after editing on a device. A quiz marked Cloud synced is ready to open across devices with the normal quiz code.' },
+    { title: 'Run and End Tests', detail: 'Share the student code or link, monitor submissions from Results, and use End Test when you want to stop new student entries immediately.' },
+    { title: 'Results and Exports', detail: 'Teachers can edit scores, delete results, download corrections, export Excel, print the broadsheet PDF, and verify student certificates.' },
+    { title: 'Facility Index', detail: 'Exam Analysis sorts the weakest items first so you can see the hardest questions and the strongest ones at the end.' },
+    { title: 'Help and Support', detail: 'Use the Support menu or the top Support button to contact the admin by email or WhatsApp. Admins can update those contacts inside the Support page.' }
+  ];
+  container.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h1">User Guide</div>
+        <div class="small">A quick teacher guide for setup, students, quizzes, sync, results, and support.</div>
+      </div>
+    </div>
+    <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px">
+      ${sections.map((section) => `
+        <div class="card-beautiful">
+          <div class="h3">${escapeHtml(section.title)}</div>
+          <div class="small" style="margin-top:8px;line-height:1.7">${escapeHtml(section.detail)}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  return container;
+}
+
+function renderTeacherSupportView() {
+  const support = getSupportSettings();
+  const container = document.createElement('div');
+  container.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h1">Help and Support</div>
+        <div class="small">Reach the admin quickly by email or WhatsApp. Admins can update the live support contacts here.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="supportPageEmail" class="btn btn-primary">Email</button>
+        <button id="supportPageWhatsapp" class="btn btn-ghost">WhatsApp</button>
+      </div>
+    </div>
+    <div class="settings-grid">
+      <div class="card">
+        <div class="h3">Current Support Contacts</div>
+        <div class="small" style="margin-top:12px">Email: ${escapeHtml(support.email || 'Not set')}</div>
+        <div class="small" style="margin-top:8px">WhatsApp: ${escapeHtml(support.whatsapp || 'Not set')}</div>
+      </div>
+      ${isSuperAdmin() ? `
+        <div class="card">
+          <div class="h3">Admin Contact Settings</div>
+          <div class="small" style="margin-bottom:12px">Update the support email and WhatsApp number that teachers will use.</div>
+          <label class="small">Support email</label>
+          <input id="supportEmailInput" class="input-beautiful" value="${escapeHtml(support.email || '')}" />
+          <div style="height:10px"></div>
+          <label class="small">WhatsApp number</label>
+          <input id="supportWhatsappInput" class="input-beautiful" value="${escapeHtml(support.whatsapp || '')}" placeholder="e.g. 2348012345678" />
+          <button id="saveSupportSettingsBtn" class="btn btn-primary" style="margin-top:12px">Save Support Settings</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+  setTimeout(() => {
+    document.getElementById('supportPageEmail').onclick = () => {
+      if (!support.email) return showNotification('Support email has not been set yet', 'error');
+      window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}`;
+    };
+    document.getElementById('supportPageWhatsapp').onclick = () => {
+      const phone = (support.whatsapp || '').replace(/[^\d]/g, '');
+      if (!phone) return showNotification('Support WhatsApp number has not been set yet', 'error');
+      window.open(`https://wa.me/${phone}`, '_blank', 'noopener');
+    };
+    const saveBtn = document.getElementById('saveSupportSettingsBtn');
+    if (saveBtn) saveBtn.onclick = () => {
+      const email = (document.getElementById('supportEmailInput').value || '').trim();
+      const whatsapp = (document.getElementById('supportWhatsappInput').value || '').trim();
+      if (!email) return showNotification('Enter a support email', 'error');
+      if (!confirmTeacherAction('Save these support contact settings?')) return;
+      saveSupportSettings({ email, whatsapp });
+      showNotification('Support settings saved', 'success');
       render();
-    });
-    document.querySelectorAll('.btnStopLicense').forEach(btn => btn.onclick = (ev) => {
-      if (!isSuperAdmin()) return;
-      const id = normalizeEmail(ev.currentTarget.dataset.id);
-      if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence cannot be stopped', 'info');
-      const all = getAllTeachers();
-      if (!all[id]) return showNotification('Teacher not found', 'error');
-      all[id].licenseStopped = true;
-      all[id].licenseRequestStatus = 'stopped';
-      all[id].licenseUpdatedAt = new Date().toISOString();
-      all[id].updatedAt = all[id].licenseUpdatedAt;
-      saveAllTeachers(all);
-      showNotification('Licence stopped', 'success');
-      render();
-    });
-    document.querySelectorAll('.btnResetTeacher').forEach(btn => btn.onclick = (ev) => {
-      if (!isSuperAdmin()) return;
-      const id = normalizeEmail(ev.currentTarget.dataset.id);
-      const next = prompt('Enter new password for ' + id);
-      if (!next) return;
-      const all = getAllTeachers();
-      if (!all[id]) return showNotification('Teacher not found', 'error');
-      all[id].password = next;
-      all[id].passwordResetAt = new Date().toISOString();
-      all[id].updatedAt = all[id].passwordResetAt;
-      saveAllTeachers(all);
-      showNotification('Password reset', 'success');
-    });
-    document.querySelectorAll('.btnChangeTeacherId').forEach(btn => btn.onclick = (ev) => {
-      if (!isSuperAdmin()) return;
-      const oldId = normalizeEmail(ev.currentTarget.dataset.id);
-      const newId = normalizeEmail(prompt('Enter new teacher email ID for ' + oldId) || '');
-      if (!newId || newId === oldId) return;
-      const teachersAll = getAllTeachers();
-      if (!teachersAll[oldId]) return showNotification('Teacher not found', 'error');
-      if (teachersAll[newId]) return showNotification('New teacher ID already exists', 'error');
-      teachersAll[newId] = { ...teachersAll[oldId], teacherId: newId, email: newId, idChangedFrom: oldId, idChangedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-      delete teachersAll[oldId];
-      saveAllTeachers(teachersAll);
-      const quizzesAll = getAllQuizzes();
-      Object.values(quizzesAll).forEach(q => { if (normalizeEmail(q.teacherId) === oldId) q.teacherId = newId; });
-      saveAllQuizzes(quizzesAll);
-      const studentsAll = getAllTeacherStudents();
-      if (studentsAll[oldId]) { studentsAll[newId] = studentsAll[oldId]; delete studentsAll[oldId]; saveAllTeacherStudents(studentsAll); }
-      showNotification('Teacher ID changed', 'success');
-      render();
-    });
+    };
   }, 0);
   return container;
 }
@@ -1940,6 +2210,7 @@ function renderQuizWelcome(quiz, questions) {
       <div class="quiz-instructions">
         <p><strong>Before you start:</strong> you may still leave this screen without penalty.</p>
         <p><strong>After Start Quiz:</strong> leaving the exam tab, exiting fullscreen, refreshing, closing the page, or using copy/screenshot shortcuts may be recorded and can submit the quiz automatically.</p>
+        ${quiz.webcamRequired ? '<p><strong>Camera requirement:</strong> this quiz needs camera monitoring. The camera window can be moved during the test.</p>' : ''}
         <p><strong>Desktop keys:</strong> A/B/C/D choose options, N moves next, P moves previous, and S submits.</p>
         <p>Click Start Quiz only when you are ready to begin.</p>
       </div>
@@ -1959,6 +2230,7 @@ function renderQuizWelcome(quiz, questions) {
       render();
     };
     document.getElementById('leaveQuizBtn').onclick = () => {
+      const calculator = document.getElementById('examCalculatorPanel'); if (calculator) calculator.remove();
       state.currentSubmission = null;
       state.currentQuiz = null;
       state.view = 'student';
@@ -1966,6 +2238,195 @@ function renderQuizWelcome(quiz, questions) {
     };
   }, 0);
   return wrapper;
+}
+
+function formatCalculatorValue(value) {
+  if (value == null || value === '') return '0';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 'Error';
+  if (Math.abs(num) >= 1e9 || (Math.abs(num) > 0 && Math.abs(num) < 1e-6)) return num.toExponential(6).replace(/\.?0+e/, 'e');
+  return Number.isInteger(num) ? String(num) : num.toFixed(8).replace(/\.?0+$/, '');
+}
+
+function sanitizeCalculatorExpression(expression) {
+  return (expression || '')
+    .replace(/÷/g, '/')
+    .replace(/×/g, '*')
+    .replace(/π/g, 'pi')
+    .replace(/\^/g, '**')
+    .replace(/(\d+(?:\.\d+)?)%/g, '($1/100)')
+    .replace(/\)%/g, ')/100');
+}
+
+function evaluateCalculatorExpression(expression) {
+  const sanitized = sanitizeCalculatorExpression(expression);
+  const degreeFactor = _calculatorMode === 'DEG' ? Math.PI / 180 : _calculatorMode === 'GRAD' ? Math.PI / 200 : 1;
+  const helpers = {
+    pi: Math.PI,
+    e: Math.E,
+    sqrt: (x) => Math.sqrt(x),
+    cbrt: (x) => Math.cbrt(x),
+    log: (x) => Math.log10(x),
+    ln: (x) => Math.log(x),
+    exp10: (x) => Math.pow(10, x),
+    expE: (x) => Math.exp(x),
+    inv: (x) => 1 / x,
+    sqr: (x) => Math.pow(x, 2),
+    cube: (x) => Math.pow(x, 3),
+    sin: (x) => Math.sin(x * degreeFactor),
+    cos: (x) => Math.cos(x * degreeFactor),
+    tan: (x) => Math.tan(x * degreeFactor),
+    asin: (x) => (_calculatorMode === 'DEG' ? Math.asin(x) * (180 / Math.PI) : _calculatorMode === 'GRAD' ? Math.asin(x) * (200 / Math.PI) : Math.asin(x)),
+    acos: (x) => (_calculatorMode === 'DEG' ? Math.acos(x) * (180 / Math.PI) : _calculatorMode === 'GRAD' ? Math.acos(x) * (200 / Math.PI) : Math.acos(x)),
+    atan: (x) => (_calculatorMode === 'DEG' ? Math.atan(x) * (180 / Math.PI) : _calculatorMode === 'GRAD' ? Math.atan(x) * (200 / Math.PI) : Math.atan(x)),
+    fact: (n) => {
+      const value = Math.floor(Number(n));
+      if (!Number.isFinite(value) || value < 0) throw new Error('Invalid factorial');
+      let out = 1;
+      for (let i = 2; i <= value; i++) out *= i;
+      return out;
+    },
+    nPr: (n, r) => {
+      const nn = Math.floor(Number(n));
+      const rr = Math.floor(Number(r));
+      if (rr > nn || rr < 0) throw new Error('Invalid permutation');
+      let out = 1;
+      for (let i = 0; i < rr; i++) out *= (nn - i);
+      return out;
+    },
+    nCr: (n, r) => {
+      const nn = Math.floor(Number(n));
+      const rr = Math.floor(Number(r));
+      if (rr > nn || rr < 0) throw new Error('Invalid combination');
+      return helpers.nPr(nn, rr) / helpers.fact(rr);
+    },
+    frac: (a, b, c) => (typeof c === 'undefined' ? Number(a) / Number(b) : Number(a) + (Number(b) / Number(c)))
+  };
+  try {
+    const evaluator = new Function('helpers', `with (helpers) { return (${sanitized || '0'}); }`);
+    const result = evaluator(helpers);
+    if (!Number.isFinite(result)) throw new Error('Invalid result');
+    return result;
+  } catch (error) {
+    throw new Error('Invalid calculation');
+  }
+}
+
+function getCalculatorButtonLayout() {
+  return [
+    [{ label: _calculatorMode, action: 'mode' }, { label: 'MC', action: 'mc' }, { label: 'MR', action: 'mr' }, { label: 'M+', action: 'mplus' }, { label: 'M-', action: 'mminus' }],
+    [{ label: 'AC', action: 'clear' }, { label: 'C', action: 'backspace' }, { label: '(', value: '(' }, { label: ')', value: ')' }, { label: 'a b/c', value: 'frac(' }],
+    [{ label: 'sin', value: 'sin(' }, { label: 'cos', value: 'cos(' }, { label: 'tan', value: 'tan(' }, { label: 'log', value: 'log(' }, { label: 'ln', value: 'ln(' }],
+    [{ label: '7', value: '7' }, { label: '8', value: '8' }, { label: '9', value: '9' }, { label: '÷', value: '÷' }, { label: '√', value: 'sqrt(' }],
+    [{ label: '4', value: '4' }, { label: '5', value: '5' }, { label: '6', value: '6' }, { label: '×', value: '×' }, { label: 'x²', value: '^2' }],
+    [{ label: '1', value: '1' }, { label: '2', value: '2' }, { label: '3', value: '3' }, { label: '-', value: '-' }, { label: '1/x', value: 'inv(' }],
+    [{ label: '+/-', action: 'sign' }, { label: '0', value: '0' }, { label: '.', value: '.' }, { label: '+', value: '+' }, { label: '%', value: '%' }],
+    [{ label: 'π', value: 'π' }, { label: 'x^y', value: '^' }, { label: 'n!', value: 'fact(' }, { label: 'nPr', value: 'nPr(' }, { label: 'nCr', value: 'nCr(' }],
+    [{ label: 'x³', value: 'cube(' }, { label: '³√x', value: 'cbrt(' }, { label: 'sin⁻¹', value: 'asin(' }, { label: 'cos⁻¹', value: 'acos(' }, { label: 'tan⁻¹', value: 'atan(' }],
+    [{ label: '10^x', value: 'exp10(' }, { label: 'e^x', value: 'expE(' }, { label: '=', action: 'equals', wide: true }]
+  ];
+}
+
+function updateCalculatorExpression(nextExpression) {
+  _calculatorExpression = nextExpression;
+  renderExamCalculatorWidget(true);
+}
+
+function handleCalculatorAction(action, value) {
+  if (value) {
+    updateCalculatorExpression(`${_calculatorExpression}${value}`);
+    return;
+  }
+  if (action === 'clear') {
+    updateCalculatorExpression('');
+  } else if (action === 'backspace') {
+    updateCalculatorExpression(_calculatorExpression.slice(0, -1));
+  } else if (action === 'mode') {
+    _calculatorMode = _calculatorMode === 'DEG' ? 'RAD' : _calculatorMode === 'RAD' ? 'GRAD' : 'DEG';
+    renderExamCalculatorWidget(true);
+  } else if (action === 'mc') {
+    _calculatorMemory = 0;
+    showNotification('Calculator memory cleared', 'info');
+  } else if (action === 'mr') {
+    updateCalculatorExpression(`${_calculatorExpression}${formatCalculatorValue(_calculatorMemory)}`);
+  } else if (action === 'mplus') {
+    try {
+      _calculatorMemory += Number(evaluateCalculatorExpression(_calculatorExpression || '0'));
+      showNotification('Added to calculator memory', 'success');
+    } catch (error) {
+      showNotification('Nothing valid to add to memory', 'error');
+    }
+  } else if (action === 'mminus') {
+    try {
+      _calculatorMemory -= Number(evaluateCalculatorExpression(_calculatorExpression || '0'));
+      showNotification('Subtracted from calculator memory', 'success');
+    } catch (error) {
+      showNotification('Nothing valid to subtract from memory', 'error');
+    }
+  } else if (action === 'sign') {
+    const expr = (_calculatorExpression || '').trim();
+    if (!expr) return updateCalculatorExpression('-');
+    updateCalculatorExpression(expr.startsWith('-') ? expr.slice(1) : `-(${expr})`);
+  } else if (action === 'equals') {
+    try {
+      updateCalculatorExpression(formatCalculatorValue(evaluateCalculatorExpression(_calculatorExpression || '0')));
+    } catch (error) {
+      showNotification(error.message || 'Invalid calculation', 'error');
+    }
+  }
+}
+
+function renderExamCalculatorWidget(open = false) {
+  let panel = document.getElementById('examCalculatorPanel');
+  if (!panel && !open) return;
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'examCalculatorPanel';
+    panel.className = 'card-beautiful exam-calculator-panel';
+    Object.assign(panel.style, {
+      position: 'fixed',
+      left: '16px',
+      top: '96px',
+      width: 'min(360px, calc(100vw - 24px))',
+      zIndex: '12000',
+      display: 'none',
+      padding: '12px'
+    });
+    document.body.appendChild(panel);
+  }
+  panel.innerHTML = `
+    <div class="exam-calculator-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+      <div class="webcam-drag-handle" style="font-weight:800;color:#0F172A;user-select:none">Calculator</div>
+      <button type="button" id="closeExamCalculator" class="btn btn-ghost btn-sm">Close</button>
+    </div>
+    <div class="exam-calculator-screen" style="border:1px solid #CBD5E1;border-radius:14px;padding:12px 14px;background:#0F172A;color:#F8FAFC;margin-bottom:12px">
+      <div style="font-size:12px;letter-spacing:.08em;color:#CBD5E1">${_calculatorMode} • MEM ${formatCalculatorValue(_calculatorMemory)}</div>
+      <div style="font-size:24px;font-weight:800;line-height:1.25;word-break:break-all;min-height:32px">${escapeHtml(_calculatorExpression || '0')}</div>
+    </div>
+    <div class="exam-calculator-grid" style="display:grid;gap:8px">
+      ${getCalculatorButtonLayout().map((row) => `
+        <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px">
+          ${row.map((button) => `
+            <button
+              type="button"
+              class="btn-secondary exam-calculator-btn"
+              data-action="${button.action || ''}"
+              data-value="${button.value || ''}"
+              style="${button.wide ? 'grid-column:span 3;' : ''};padding:10px 8px;min-height:42px;font-size:13px;font-weight:800"
+            >${button.label}</button>
+          `).join('')}
+        </div>
+      `).join('')}
+    </div>
+  `;
+  panel.style.display = open ? 'block' : panel.style.display;
+  makeFloatingPanelDraggable(panel, panel.querySelector('.webcam-drag-handle'));
+  document.getElementById('closeExamCalculator').onclick = () => {
+    panel.style.display = 'none';
+  };
+  panel.querySelectorAll('.exam-calculator-btn').forEach((button) => {
+    button.onclick = () => handleCalculatorAction(button.dataset.action || '', button.dataset.value || '');
+  });
 }
 
 function renderQuizTake() {
@@ -2012,6 +2473,7 @@ function renderQuizTake() {
         <div class="small" id="examAnswered">0 answered</div>
         <div class="small" id="examPercent">0.0%</div>
         <div class="timer" id="examTimer">--:--</div>
+        <button id="openExamCalculator" class="btn btn-ghost btn-sm" type="button">Calc</button>
       </div>
     </div>
     <div class="exam-progress"><span id="examProgress"></span></div>
@@ -2164,6 +2626,12 @@ function renderQuizTake() {
 
     const examPrev = document.getElementById('examPrev');
     const examNext = document.getElementById('examNext');
+    const openCalc = document.getElementById('openExamCalculator');
+    if (openCalc) openCalc.onclick = () => {
+      renderExamCalculatorWidget(true);
+      const panel = document.getElementById('examCalculatorPanel');
+      if (panel) panel.style.display = 'block';
+    };
     if (examPrev) examPrev.onclick = () => {
       if (q.verticalLayout) {
         window.scrollBy({ top: -window.innerHeight * 0.75, behavior: 'smooth' });
@@ -2908,6 +3376,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
   const questionCount = getTeacherSummaryQuestionCount(quiz, submissions);
   const avgScore = submissions.length ? Math.round(submissions.reduce((a, s) => a + (s.score || 0), 0) / submissions.length) : 0;
   const avgPercent = submissions.length ? Math.round(submissions.reduce((a, s) => a + (s.percent || 0), 0) / submissions.length) : 0;
+  const institutionName = escapeHtml(((quiz && quiz.examName) || '').toString().trim());
   const quizTitle = escapeHtml(((quiz && quiz.title) || 'ENGLISH TEST').toString().trim().toUpperCase());
   const rowThemes = [
     { bg: '#e8f8f2', edge: '#d6efe6' },
@@ -3011,6 +3480,13 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
           font-size:13px;
           font-weight:800;
           letter-spacing:0.26em;
+          color:var(--navy);
+        }
+        .summary-header-school{
+          margin:6px 0 0;
+          font-size:18px;
+          font-weight:800;
+          letter-spacing:0.04em;
           color:var(--navy);
         }
         .summary-header-title{
@@ -3197,6 +3673,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
         <div class="summary-header-card">
           <div class="summary-header-badge">Generated Result Summary</div>
           <div class="summary-header-brand">OPE ASSESSOR</div>
+          ${institutionName ? `<div class="summary-header-school">${institutionName}</div>` : ''}
           <h1 class="summary-header-title">${quizTitle} &mdash; Result Summary</h1>
           <div class="summary-header-subtitle">Clean assessment broadsheet for parents, management, and school records.</div>
         </div>
@@ -3228,7 +3705,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
         <div class="summary-table-card">
           <div class="summary-table-head">
             <h2 class="summary-table-title">Result Broadsheet</h2>
-            <div class="summary-table-note">A4 landscape pastel layout with clean, readable ranking.</div>
+            <div class="summary-table-note">A4 portrait layout with automatic page flow for clean printing.</div>
           </div>
           <table class="summary-table">
             <colgroup>
@@ -3411,6 +3888,44 @@ function buildCertificateSignatureSvg(item, index = 0) {
   `;
 }
 
+function buildCertificateVerificationUrl(quiz, submission) {
+  const base = window.location.href.split('?')[0];
+  const params = new URLSearchParams();
+  params.set('resultQuiz', submission?.quizId || quiz?.id || '');
+  params.set('resultKey', submission?.submissionId || buildSubmissionIdentity(submission));
+  return `${base}?${params.toString()}`;
+}
+
+function buildCertificateVerificationQrSvg(url) {
+  try {
+    if (typeof window === 'undefined' || typeof window.qrcode !== 'function' || !url) return '';
+    const qr = window.qrcode(0, 'M');
+    qr.addData(url);
+    qr.make();
+    return qr.createSvgTag(3, 0);
+  } catch (error) {
+    console.warn('QR generation failed', error);
+    return '';
+  }
+}
+
+function renderCertificateVerificationMarkup(quiz, submission) {
+  const url = buildCertificateVerificationUrl(quiz, submission);
+  const qrSvg = buildCertificateVerificationQrSvg(url);
+  return `
+    <div class="cert-verification">
+      <div class="cert-verification-copy">
+        <div class="cert-verification-label">Certificate Authentication</div>
+        <div class="cert-verification-text">Scan the QR code or open this result link to verify this certificate directly inside OPE Assessor.</div>
+        <a class="cert-verification-link" href="${escapeHtml(url)}">${escapeHtml(url)}</a>
+      </div>
+      <div class="cert-verification-qr" aria-label="Certificate verification QR code">
+        ${qrSvg || '<div class="cert-verification-fallback">QR unavailable</div>'}
+      </div>
+    </div>
+  `;
+}
+
 function renderCertificateSignatories(signatories = []) {
   const items = normalizeCertificateSignatories(signatories);
   if (!items.length) return '';
@@ -3423,7 +3938,8 @@ function renderCertificateSignatories(signatories = []) {
           <div class="cert-signature-card">
             <div class="cert-signature-script" style="transform:rotate(${tilt}deg)">${buildCertificateSignatureSvg(item, index)}</div>
             <span></span>
-            ${item.title ? `<p>${escapeHtml(item.title)}</p>` : ''}
+            <p class="cert-signatory-name">${escapeHtml(item.name)}</p>
+            ${item.title ? `<div class="cert-signatory-title">${escapeHtml(item.title)}</div>` : ''}
           </div>
         `;
       }).join('')}
@@ -3471,7 +3987,6 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
   const attemptedCount = submission.attemptedCount || Object.keys(submission.answers || {}).filter(key => !!submission.answers[key]).length;
   const submittedText = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A';
   const correctionRequested = !!submission.correctionRequested;
-  const correctionRequestedText = submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : '';
   const scoreText = `${formatScoreValue(submission.score || 0)} / ${totalQuestions}`;
   const quizName = escapeHtml(quiz.title || submission.quizId || 'Quiz');
   const institutionName = escapeHtml(quiz.examName || quiz.institution || quiz.title || 'OPE Assessor');
@@ -3541,16 +4056,10 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
             <div class="cert-detail-label">Quiz Name</div>
             <div class="cert-detail-value">${quizName}</div>
           </div>
-          <div class="cert-detail-card cert-correction-card">
-            <div class="cert-detail-label">Correction Request</div>
-            <div class="cert-detail-value" id="correctionRequestStatus">
-              ${correctionRequested ? '<span class="status-chip status-pending">Requested</span>' : '<span class="status-chip">Not requested</span>'}
-              <div class="small muted-line" id="correctionRequestedAtText">${correctionRequestedText ? escapeHtml(correctionRequestedText) : ''}</div>
-            </div>
-          </div>
         </div>
 
         ${signatoriesHtml}
+        ${renderCertificateVerificationMarkup(quiz, submission)}
 
         <div class="cert-footer">Verified Digital Result • Generated by OPE Assessor</div>
         <div class="cert-footer-sub">Clean • Secure • Beautiful • Parent-ready</div>
@@ -3602,13 +4111,21 @@ function getCertificateResultCss() {
     .cert-detail-card{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;padding:18px 20px;min-height:92px}
     .cert-detail-value{font-size:17px;line-height:1.45;margin-top:12px;color:#202938;word-break:break-word}
     .cert-detail-subline{font-size:12px;color:#B45309;margin-top:8px}
-    .cert-correction-card{grid-column:1/-1}
     .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
     .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
     .cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
     .cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
     .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
-    .cert-signatures p{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#101821}
+    .cert-signatory-name{margin:0;font-size:14px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#101821}
+    .cert-signatory-title{margin-top:6px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6B7280}
+    .cert-verification{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:28px 0 10px;padding:16px 18px;border:1px solid #DDE3EA;border-radius:16px;background:#F8FAFC}
+    .cert-verification-copy{flex:1;min-width:0}
+    .cert-verification-label{font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#0F172A}
+    .cert-verification-text{margin-top:8px;font-size:13px;line-height:1.55;color:#475569}
+    .cert-verification-link{display:block;margin-top:10px;font-size:12px;word-break:break-all;color:#0F766E;text-decoration:none}
+    .cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#fff;padding:8px;border:1px solid #D1D5DB;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .cert-verification-qr svg{display:block;width:100%;height:100%}
+    .cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
     .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
     .cert-footer-sub{text-align:center;color:#6B7280;margin-top:8px}
     .cert-result .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
@@ -3620,7 +4137,7 @@ function getCertificateResultCss() {
     .student-topic-item strong{display:block;color:#0F172A;font-size:14px;line-height:1.35}
     .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
     .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
-    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-correction-card{grid-column:auto}.cert-signatures{gap:20px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
+    @media(max-width:640px){.cert-result{border-width:3px;padding:8px}.cert-inner{padding:18px 12px}.cert-top-rule{height:24px}.cert-header{padding:26px 10px 22px}.cert-brand-lockup{gap:10px}.cert-logo-badge{width:58px;height:58px;border-radius:18px}.cert-logo-badge span{border-radius:15px;font-size:20px}.cert-logo-text{text-align:center}.cert-logo-text strong{font-size:18px}.cert-logo-text span{font-size:10px;letter-spacing:.13em}.cert-school{font-size:22px}.cert-test{font-size:15px}.cert-title{font-size:25px;margin-top:26px}.cert-platform{font-size:12px;letter-spacing:.14em}.cert-student-name{font-size:30px}.cert-score-ring{width:190px;height:190px;padding:10px}.cert-score-ring-inner{padding:20px}.cert-score-main{font-size:31px}.cert-score-percent{font-size:27px}.cert-score-helper{font-size:10px}.cert-performance{font-size:12px;padding:9px 14px}.cert-adjusted-note{font-size:11px;width:100%}.cert-rank{font-size:21px;width:90%;margin-bottom:24px}.cert-details-grid{grid-template-columns:1fr;gap:12px}.cert-signatures{gap:20px}.cert-signature-script{min-height:30px;margin-bottom:-6px}.cert-signature-svg{height:36px}.cert-verification{flex-direction:column;align-items:flex-start}.cert-verification-qr{align-self:flex-end}.student-topic-grid{grid-template-columns:1fr}.cert-footer{font-size:14px}}
     @media print{.cert-result{box-shadow:none;border-color:#D9B45A}.cert-result .result-actions{display:none!important}}
   `;
 }
@@ -3673,14 +4190,17 @@ function renderResultsView() {
   const passCount = submissions.filter(s => (s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail')) === 'Pass').length;
   const correctionRequestCount = submissions.filter(s => !!s.correctionRequested).length;
   const failCount = submissions.length - passCount;
+  const institutionLine = q.examName ? `<div class="text-sm text-gray-600">Institution: ${escapeHtml(q.examName)}</div>` : '';
   const div = document.createElement('div');
   div.className = 'max-w-7xl mx-auto';
   div.innerHTML = `
     <div class="mb-10 text-center">
       <h2 class="display-font text-4xl font-bold text-gradient mb-3">${q.title} - Results</h2>
+      ${institutionLine}
       <div class="text-sm text-gray-600">Facility: ${q.facility || ' '}</div>
       <div class="flex gap-3 justify-center mt-4">
         <button id="btnBackTeacher" class="btn-pastel-primary">Back to Dashboard</button>
+        <button id="btnEndCurrentQuiz" class="btn-pastel-secondary"${q.scheduleEnd && new Date(q.scheduleEnd).getTime() <= Date.now() ? ' disabled' : ''}>End Test</button>
         <button id="btnExamAnalysis" class="btn-pastel-secondary">Exam Analysis</button>
       </div>
     </div>
@@ -3756,9 +4276,11 @@ function renderResultsView() {
         buildTeacherSummaryPdfHtml(q, submissions),
         `results-summary-${q.id}.pdf`,
         'Teacher result summary PDF downloaded',
-        { orientation: 'l', singlePage: true, marginMm: 8, paddingPx: 8, sourceWidthPx: 1123 }
+        { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
       );
     };
+    const endBtn = document.getElementById('btnEndCurrentQuiz');
+    if (endBtn) endBtn.onclick = async () => { await endQuizNow(q.id); };
 
     const list = document.getElementById('submissionsList');
     if (submissions.length === 0) {
@@ -3784,10 +4306,16 @@ function renderResultsView() {
                 : '<span class="req-badge">None</span>'}
             </td>
             <td class="text-right">
-              <button class="btn-pastel-secondary btnEditSubmissionScore" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Edit Score</button>
-              <button class="btn-pastel-secondary btnDownloadCorrection" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Download Correction</button>
-              <button class="btn-pastel-secondary btnEmailCorrection" title="Send email to student" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Send Email</button>
-              <button class="btn-pastel-secondary btnDeleteSubmission" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Delete</button>
+              <div class="row-action-shell">
+                <select class="input-beautiful row-action-select submissionActionSelect" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">
+                  <option value="">Choose action</option>
+                  <option value="edit-score">Edit Score</option>
+                  <option value="download-correction">Download Correction</option>
+                  <option value="send-email">Send Email</option>
+                  <option value="delete">Delete Result</option>
+                </select>
+                <button class="btn-pastel-secondary btnApplySubmissionAction" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Apply</button>
+              </div>
             </td>
           </tr>
         `;
@@ -3824,20 +4352,20 @@ function renderResultsView() {
 
     // Wire per-student correction PDF buttons
     setTimeout(() => {
-      document.querySelectorAll('.btnEditSubmissionScore').forEach(btn => btn.onclick = (ev) => {
+      const runSubmissionAction = (action, ev) => {
+        if (!action) return showNotification('Choose an action first', 'error');
         const quizId = ev.currentTarget.dataset.quiz;
         const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
         const submittedAt = ev.currentTarget.dataset.submitted || '';
-        const all = getAllSubmissions();
-        const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
-        if (index < 0) return showNotification('Submission not found', 'error');
-        showEditSubmissionScoreModal(getAllQuizzes()[quizId] || q, all[index]);
-      });
-      document.querySelectorAll('.btnDownloadCorrection').forEach(btn => btn.onclick = (ev) => {
+        if (action === 'edit-score') {
+          const all = getAllSubmissions();
+          const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
+          if (index < 0) return showNotification('Submission not found', 'error');
+          showEditSubmissionScoreModal(getAllQuizzes()[quizId] || q, all[index]);
+          return;
+        }
+        if (action === 'download-correction') {
         try {
-          const quizId = ev.currentTarget.dataset.quiz;
-          const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
-          const submittedAt = ev.currentTarget.dataset.submitted || '';
           const subsAll = getAllSubmissions();
           const index = findSubmissionIndexByIdentity(subsAll, quizId, email, submittedAt);
           const s = index >= 0 ? subsAll[index] : null;
@@ -3855,12 +4383,10 @@ function renderResultsView() {
             }
           }).catch(() => {});
         } catch (e) { console.error(e); showNotification('Error generating PDF', 'error'); }
-      });
-      document.querySelectorAll('.btnEmailCorrection').forEach(btn => btn.onclick = (ev) => {
+          return;
+        }
+        if (action === 'send-email') {
         try {
-          const quizId = ev.currentTarget.dataset.quiz;
-          const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
-          const submittedAt = ev.currentTarget.dataset.submitted || '';
           const subsAll = getAllSubmissions();
           const index = findSubmissionIndexByIdentity(subsAll, quizId, email, submittedAt);
           const s = index >= 0 ? subsAll[index] : null;
@@ -3888,19 +4414,29 @@ function renderResultsView() {
             showNotification('Email draft opened. Your mail app cannot auto-attach files in browser mode, so attach the downloaded PDF and click Send.', 'warning', 9000);
           }).catch(() => {});
         } catch (e) { console.error(e); showNotification('Error preparing email', 'error'); }
-      });
-      document.querySelectorAll('.btnDeleteSubmission').forEach(btn => btn.onclick = (ev) => {
-        const quizId = ev.currentTarget.dataset.quiz;
-        const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
-        const submittedAt = ev.currentTarget.dataset.submitted || '';
-        if (!confirm('Delete this student submission/result? This cannot be undone.')) return;
-        const all = getAllSubmissions();
-        const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
-        if (index < 0) return showNotification('Submission not found', 'error');
-        const next = all.slice(0, index).concat(all.slice(index + 1));
-        saveAllSubmissions(next);
-        showNotification('Submission deleted', 'success');
-        render();
+          return;
+        }
+        if (action === 'delete') {
+          if (!confirmTeacherAction('Delete this student submission/result? It will be removed from results, ranking, and exports.')) return;
+          const all = getAllSubmissions({ includeDeleted: true });
+          const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt);
+          if (index < 0) return showNotification('Submission not found', 'error');
+          all[index] = {
+            ...all[index],
+            deletedAt: new Date().toISOString(),
+            deletedBy: state.teacherId || 'teacher',
+            updatedAt: new Date().toISOString()
+          };
+          save(STORAGE_KEYS.submissions, all);
+          showNotification('Submission deleted', 'success');
+          render();
+        }
+      };
+      document.querySelectorAll('.btnApplySubmissionAction').forEach(btn => btn.onclick = (ev) => {
+        const selector = ev.currentTarget.parentElement.querySelector('.submissionActionSelect');
+        const action = selector ? selector.value : '';
+        runSubmissionAction(action, ev);
+        if (selector) selector.value = '';
       });
     }, 100);
   }, 0);
@@ -3952,7 +4488,14 @@ function showExamAnalysisModal(q) {
       for (const r of data) {
         const subj = r.subject || 'General'; if (!grouped[subj]) grouped[subj]=[]; grouped[subj].push(r);
       }
-      const subjKeys = Object.keys(grouped);
+      const subjKeys = Object.keys(grouped).sort((left, right) => {
+        const average = (items) => {
+          const usable = items.filter((item) => item.facilityIndex != null);
+          if (!usable.length) return 1;
+          return usable.reduce((sum, item) => sum + item.facilityIndex, 0) / usable.length;
+        };
+        return average(grouped[left]) - average(grouped[right]);
+      });
       let html = '';
       for (const sk of subjKeys) {
         const items = grouped[sk].slice().sort((a,b)=>{
@@ -4029,6 +4572,8 @@ function showCreateQuizModal(editQuizId = '') {
   if (!canSetQuestions()) return showLicenseRequired();
   const editingQuiz = editQuizId ? getAllQuizzes()[editQuizId] : null;
   if (editingQuiz && editingQuiz.teacherId !== state.teacherId && !isSuperAdmin()) return showNotification('Access denied: this quiz belongs to another teacher', 'error');
+  const classNames = getTeacherClassNames();
+  const classOptionsMarkup = classNames.map((className) => `<option value="${escapeHtml(className)}">${escapeHtml(className)}</option>`).join('');
   let m = document.getElementById('createQuizModal'); if (m) m.remove();
   m = document.createElement('div'); m.id = 'createQuizModal'; m.style.position='fixed'; m.style.inset='0'; m.style.zIndex=20000; m.style.background='rgba(0,0,0,0.35)'; m.style.overflowY='auto'; m.style.padding='24px 12px';
   const inner = document.createElement('div'); inner.className='card-beautiful quiz-builder-shell'; inner.style.width='1180px'; inner.style.maxWidth='96%'; inner.style.maxHeight='calc(100vh - 48px)'; inner.style.margin='0 auto'; inner.style.padding='24px'; inner.style.overflowY='auto';
@@ -4061,6 +4606,26 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="form-group">
             <label class="form-label" for="cqTitle">Quiz title</label>
             <input id="cqTitle" class="input-beautiful" />
+          </div>
+          <div class="field-grid-2">
+            <div class="form-group">
+              <label class="form-label" for="cqAudience">Who can take this quiz?</label>
+              <select id="cqAudience" class="input-beautiful">
+                <option value="">Choose audience</option>
+                <option value="public">Public</option>
+                <option value="class">Uploaded class</option>
+              </select>
+              <p class="helper-text">Choose this first. Public means anyone with the student code can enter. Uploaded class means only students from one imported class can open it.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="cqAssignedClass">Class</label>
+              <select id="cqAssignedClass" class="input-beautiful">
+                <option value="">Select class</option>
+                ${classOptionsMarkup}
+              </select>
+              <p class="helper-text" id="cqAssignedClassHelp">${classNames.length ? 'Choose one of the classes already uploaded under Students.' : 'No uploaded class yet. Use the Students menu to import a class first.'}</p>
+              ${classNames.length ? '' : '<button type="button" id="goToStudentsFromQuiz" class="btn-secondary advanced-action" style="margin-top:8px">Go to Students</button>'}
+            </div>
           </div>
           <div class="field-grid-2">
             <div class="form-group">
@@ -4098,6 +4663,11 @@ function showCreateQuizModal(editQuizId = '') {
             </div>
           </div>
           <div class="field-grid-2">
+            <div class="form-group">
+              <div class="form-label">Quiz Template</div>
+              <p class="helper-text">Download the starter spreadsheet before you add subjects.</p>
+              <button id="btnExportTemplate" class="btn-secondary advanced-action">Export Quiz Template</button>
+            </div>
             <div class="form-group">
               <label class="form-label">Negative marking</label>
               <label class="check-row"><input type="checkbox" id="cqNegativeEnabled" /> <span>Enable mark deduction for wrong answers</span></label>
@@ -4138,7 +4708,7 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="form-group">
             <div id="signatoriesList" class="signatories-list"></div>
             <button type="button" id="btnAddSignatory" class="btn-secondary subject-add-btn">+ Add Signatory</button>
-            <p class="helper-text">Each signatory shows a drawn signature mark above the line. Only the title or label is printed on the certificate.</p>
+            <p class="helper-text">Each signatory shows a drawn signature mark above the line, the person&apos;s name below it, and the office/title below the name.</p>
           </div>
         </section>
 
@@ -4198,15 +4768,8 @@ function showCreateQuizModal(editQuizId = '') {
         </div>
 
         <div class="advanced-block">
-          <div class="form-label">Restrict to uploaded students</div>
-          <p class="helper-text">Import a CSV or Excel list to limit access to approved students only.</p>
-          <button id="btnImportWhitelist" class="btn-secondary advanced-action">Import Students</button>
-        </div>
-
-        <div class="advanced-block">
-          <div class="form-label">Export Excel Template</div>
-          <p class="helper-text">Download the starter spreadsheet with the supported question columns.</p>
-          <button id="btnExportTemplate" class="btn-secondary advanced-action">Export Excel Template</button>
+          <label class="check-row"><input type="checkbox" id="cqWebcamRequired" /> <span>Require camera during the quiz</span></label>
+          <p class="helper-text">Use this only when camera monitoring is compulsory. Students will be told before the quiz starts, and the camera window can be moved during the test.</p>
         </div>
       </aside>
     </div>
@@ -4222,6 +4785,9 @@ function showCreateQuizModal(editQuizId = '') {
   setTimeout(()=>{
     const subjectsList = document.getElementById('subjectsList');
     const signatoriesList = document.getElementById('signatoriesList');
+    const audienceSelect = document.getElementById('cqAudience');
+    const assignedClassSelect = document.getElementById('cqAssignedClass');
+    const assignedClassHelp = document.getElementById('cqAssignedClassHelp');
     const createSubjectRow = (subject = {}) => {
       const row = document.createElement('div');
       row.className = 'subject-row';
@@ -4298,10 +4864,27 @@ function showCreateQuizModal(editQuizId = '') {
       name: row.querySelector('.signatory-name').value.trim(),
       title: row.querySelector('.signatory-title').value.trim()
     })).filter((item) => item.name);
+    const updateAudienceState = () => {
+      const classMode = audienceSelect.value === 'class';
+      assignedClassSelect.disabled = !classMode || !classNames.length;
+      if (assignedClassHelp) {
+        assignedClassHelp.textContent = classMode
+          ? (classNames.length ? 'Choose the uploaded class that should receive this quiz.' : 'No uploaded class yet. Use the Students menu to import one first.')
+          : 'Leave this on Public if anyone with the code should be able to take the quiz.';
+      }
+    };
 
     if (editingQuiz) {
       document.getElementById('cqExamName').value = editingQuiz.examName || '';
       document.getElementById('cqTitle').value = editingQuiz.title || '';
+      audienceSelect.value = editingQuiz.audienceMode || (editingQuiz.assignedClassName ? 'class' : 'public');
+      if (editingQuiz.assignedClassName && !classNames.includes(editingQuiz.assignedClassName)) {
+        const option = document.createElement('option');
+        option.value = editingQuiz.assignedClassName;
+        option.textContent = `${editingQuiz.assignedClassName} (not in current upload)`;
+        assignedClassSelect.appendChild(option);
+      }
+      assignedClassSelect.value = editingQuiz.assignedClassName || '';
       document.getElementById('cqPassword').value = editingQuiz.password || '';
       document.getElementById('cqTime').value = editingQuiz.timeLimit || '';
       document.getElementById('cqMaxGrade').value = editingQuiz.maxGrade || '';
@@ -4323,24 +4906,32 @@ function showCreateQuizModal(editQuizId = '') {
       document.getElementById('cqInstantResult').checked = editingQuiz.showInstantResult !== false;
       document.getElementById('cqShowTopicsAfter').checked = !!editingQuiz.showTopicsAfterSubmission;
       document.getElementById('cqVertical').checked = !!editingQuiz.verticalLayout;
+      document.getElementById('cqWebcamRequired').checked = !!editingQuiz.webcamRequired;
       normalizeCertificateSignatories(editingQuiz.certificateSignatories).forEach(createSignatoryRow);
+    } else {
+      audienceSelect.value = 'public';
     }
     if (!subjectsList.children.length) createSubjectRow();
+    updateAudienceState();
+    audienceSelect.onchange = updateAudienceState;
     document.getElementById('btnAddSubject').onclick = () => createSubjectRow();
     document.getElementById('btnAddSignatory').onclick = () => createSignatoryRow();
     document.getElementById('closeCreate').onclick = ()=>m.remove();
     document.getElementById('btnCancelCreate').onclick = ()=>m.remove();
     document.getElementById('btnExportTemplate').onclick = ()=> exportQuizTemplate();
     enhancePasswordFields(inner);
-    document.getElementById('btnImportWhitelist').onclick = ()=>{
-      const inp = document.createElement('input'); inp.type='file'; inp.accept='.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'; inp.onchange = (ev)=>{
-        const f = ev.target.files[0]; if (!f) return; parseQuestionsFile(f, true).then(list=>{ showNotification('Students imported ('+list.length+')','success'); window._importedWhitelist=list; });
-      }; inp.click();
+    const goToStudentsBtn = document.getElementById('goToStudentsFromQuiz');
+    if (goToStudentsBtn) goToStudentsBtn.onclick = () => {
+      m.remove();
+      state.view = 'teacher.students';
+      render();
     };
 
     document.getElementById('btnCreateSave').onclick = async ()=>{
       const examName = document.getElementById('cqExamName').value.trim();
       const title = document.getElementById('cqTitle').value.trim();
+      const audienceMode = audienceSelect.value || '';
+      const assignedClassName = normalizeClassName(assignedClassSelect.value || '');
       const password = document.getElementById('cqPassword').value || '';
       const time = parseInt(document.getElementById('cqTime').value,10) || 0;
       const maxGrade = parseFloat(document.getElementById('cqMaxGrade').value) || 100;
@@ -4350,6 +4941,8 @@ function showCreateQuizModal(editQuizId = '') {
       const negativeMarkValue = parseFloat(document.getElementById('cqNegativeValue').value) || 0;
       const scheduleStart = document.getElementById('cqStart').value || '';
       const scheduleEnd = document.getElementById('cqEnd').value || '';
+      if (!audienceMode) return showNotification('Choose who can take this quiz', 'error');
+      if (audienceMode === 'class' && !assignedClassName) return showNotification('Choose the uploaded class for this quiz', 'error');
       if (scheduleStart && scheduleEnd && new Date(scheduleStart) >= new Date(scheduleEnd)) return showNotification('End time must be after start time', 'error');
       const subjects = getSubjectRows();
       const pastedBank = (document.getElementById('cqPaste').value||'').trim()
@@ -4382,23 +4975,35 @@ function showCreateQuizModal(editQuizId = '') {
 
       const id = editingQuiz ? editingQuiz.id : gen6DigitId();
       const now = new Date().toISOString();
-      const importedWhitelist = window._importedWhitelist || editingQuiz?.whitelist || [];
-      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: editingQuiz?.teacherId || state.teacherId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist: importedWhitelist, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
+      const selectedStudents = audienceMode === 'class'
+        ? getTeacherStudents().filter((student) => normalizeClassName(student.className || student.class || '') === assignedClassName)
+        : [];
+      if (audienceMode === 'class' && !selectedStudents.length) return showNotification('That class has no uploaded students yet. Open Students and import the class first.', 'error', 7000);
+      const whitelist = selectedStudents.map((student) => ({
+        name: student.name || '',
+        email: student.email || '',
+        id: student.id || student.registrationNo || '',
+        registrationNo: student.registrationNo || student.id || '',
+        className: normalizeClassName(student.className || student.class || '')
+      }));
+      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: editingQuiz?.teacherId || state.teacherId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
       const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
-      addStudentsToTeacher(importedWhitelist, id);
+      if (audienceMode === 'class') addStudentsToTeacher(selectedStudents, id);
       const sharedSyncOk = await syncSharedKeys([
         STORAGE_KEYS.quizzes,
         STORAGE_KEYS.students,
         ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
       ]);
       if (sharedSyncOk) {
+        markQuizzesCloudSynced([id]);
+      }
+      if (sharedSyncOk) {
         showNotification((editingQuiz ? 'Quiz updated' : 'Quiz saved') + '   ID: '+id,'success');
       } else {
         showNotification(`${editingQuiz ? 'Quiz updated' : 'Quiz saved'}   ID: ${id}. ${getSharedSyncWarningMessage()} Quiz IDs may not open on other devices yet.`, 'warning', 8000);
       }
-      window._importedWhitelist = [];
       m.remove(); render();
     };
   },0);
@@ -4430,7 +5035,7 @@ function parseQuestionsFile(file, whitelistOnly) {
           const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header:1, defval: '' });
           const rows = aoa.slice(1).map(r=>r.map(c=>c.toString()));
           if (whitelistOnly) {
-            const list = rows.map(r=>({ name: r[0]||'', email: (r[1]||'').toString(), id: (r[2]||'').toString(), registrationNo: (r[2]||'').toString() } )).filter(x=>x.name && (x.email || x.id));
+            const list = rows.map(r=>({ name: r[0]||'', email: (r[1]||'').toString(), id: (r[2]||'').toString(), registrationNo: (r[2]||'').toString(), className: normalizeClassName(r[3] || '') } )).filter(x=>x.name && (x.email || x.id));
             resolve(list);
           } else {
             // assume columns: question,optA,optB,optC,optD,answer,topic,difficulty
@@ -4441,7 +5046,9 @@ function parseQuestionsFile(file, whitelistOnly) {
           // Fallback CSV
           const text = data;
           if (whitelistOnly) {
-            const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean); const list = lines.map(l=>{ const p = l.split(','); return { name: p[0]||'', email: p[1]||'', id: p[2]||'', registrationNo: p[2]||'' }; }).filter(x => x.name && (x.email || x.id)); resolve(list);
+            const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+            const list = lines.map(l=>{ const p = l.split(','); return { name: p[0]||'', email: p[1]||'', id: p[2]||'', registrationNo: p[2]||'', className: normalizeClassName(p[3] || '') }; }).filter((x, index) => index > 0 && x.name && (x.email || x.id));
+            resolve(list);
           } else { const list = parseQuestionsFromCSVString(text); resolve(list); }
         }
       } catch (err) { reject(err); }
@@ -4636,6 +5243,52 @@ function getQuizScheduleStatus(quiz) {
   return { ok: true, message: '' };
 }
 
+function getQuizSyncStatus(quiz) {
+  if (!quiz) return { label: 'Unknown', tone: 'muted' };
+  const updatedStamp = getRecordStamp(quiz);
+  const syncedStamp = quiz.cloudSyncedAt ? new Date(quiz.cloudSyncedAt).getTime() : 0;
+  if (!canUseNetworkSync()) return { label: 'Local only', tone: 'muted' };
+  if (syncedStamp && syncedStamp >= updatedStamp) return { label: 'Cloud synced', tone: 'success' };
+  if (networkSyncFailed && !networkSyncReady) return { label: 'Sync unavailable', tone: 'warning' };
+  return { label: 'Pending cloud sync', tone: 'warning' };
+}
+
+function markQuizzesCloudSynced(quizIds = [], syncedAt = new Date().toISOString()) {
+  const uniqueIds = [...new Set((Array.isArray(quizIds) ? quizIds : []).filter(Boolean))];
+  if (!uniqueIds.length) return;
+  const quizzes = getAllQuizzes();
+  let changed = false;
+  uniqueIds.forEach((quizId) => {
+    const quiz = quizzes[quizId];
+    if (!quiz) return;
+    if (quiz.cloudSyncedAt === syncedAt) return;
+    quizzes[quizId] = { ...quiz, cloudSyncedAt: syncedAt, updatedAt: quiz.updatedAt || syncedAt };
+    changed = true;
+  });
+  if (changed) saveAllQuizzes(quizzes);
+}
+
+async function endQuizNow(quizId) {
+  const quizzes = getAllQuizzes();
+  const quiz = quizzes[quizId];
+  if (!quiz) return false;
+  const existingEnd = quiz.scheduleEnd ? new Date(quiz.scheduleEnd).getTime() : 0;
+  if (existingEnd && existingEnd <= Date.now()) {
+    showNotification('This test has already ended.', 'info');
+    return false;
+  }
+  if (!confirmTeacherAction(`End "${quiz.title || quiz.id}" now? Students who have not started yet will no longer be able to open it.`)) return false;
+  const now = new Date().toISOString();
+  quizzes[quizId] = { ...quiz, scheduleEnd: now, endedAt: now, updatedAt: now };
+  saveAllQuizzes(quizzes);
+  const synced = await syncSharedKeys([STORAGE_KEYS.quizzes]);
+  if (synced) markQuizzesCloudSynced([quizId]);
+  if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = quizzes[quizId];
+  showNotification(synced ? 'Test ended successfully' : `Test ended locally. ${getSharedSyncWarningMessage()}`, synced ? 'success' : 'warning', 7000);
+  render();
+  return true;
+}
+
 
 // ======= Helper UI & Exam Functions (restored features) =======
 
@@ -4707,6 +5360,43 @@ function showStudentResultModalByLookup(quizId, identifier, includeActions = tru
     printStudentSummary(quiz, s);
   };
   return s;
+}
+
+function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true) {
+  const id = (quizId || '').trim();
+  const key = (submissionKey || '').trim();
+  if (!id || !key) return showNotification('Result link is incomplete', 'error');
+  const quizForRegrade = getAllQuizzes()[id];
+  if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
+  const subs = getAllSubmissions().filter((item) => item.quizId === id && (item.submissionId || buildSubmissionIdentity(item)) === key);
+  if (!subs.length) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
+  const submission = subs[subs.length - 1];
+  const ranks = computeRankingForQuiz(id);
+  let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'studentResultModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'student-result-modal-card';
+  const quiz = getAllQuizzes()[id] || { id };
+  inner.innerHTML = buildStudentResultFullHtml(quiz, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
+  modal.appendChild(inner); document.body.appendChild(modal);
+  modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
+  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = ()=>modal.remove();
+  const downloadBtn = document.getElementById('downloadStudentResultPdf');
+  if (downloadBtn) downloadBtn.onclick = () => {
+    downloadPdfFromHtml(
+      buildStudentSummaryPdfHtml(quiz, submission),
+      getStudentResultPdfFilename(submission, id),
+      'Student result summary PDF downloaded',
+      { singlePage: true, marginMm: 6, paddingPx: 10 }
+    );
+  };
+  const printBtn = document.getElementById('printStudentResult');
+  if (printBtn) printBtn.onclick = () => {
+    printStudentSummary(quiz, submission);
+  };
+  return submission;
 }
 
 function showEditSubmissionScoreModal(quiz, submission) {
@@ -4805,6 +5495,7 @@ function showEditSubmissionScoreModal(quiz, submission) {
     const raw = Number(input.value);
     if (input.value === '' || !Number.isFinite(raw)) return showNotification('Enter a valid score', 'error');
     if (raw < 0 || raw > totalQuestions) return showNotification(`Score must be between 0 and ${totalQuestions}`, 'error');
+    if (!confirmTeacherAction(`Apply this adjusted score for ${submission.name || submission.email || 'this student'}?`)) return;
     const all = getAllSubmissions();
     const index = findSubmissionIndexByIdentity(all, submission.quizId, submission.email, submission.submittedAt || '');
     if (index < 0) return showNotification('Submission not found', 'error');
@@ -4821,6 +5512,7 @@ function showEditSubmissionScoreModal(quiz, submission) {
   };
 
   reset.onclick = () => {
+    if (!confirmTeacherAction(`Reset ${submission.name || submission.email || 'this student'} back to the auto-calculated score?`)) return;
     const all = getAllSubmissions();
     const index = findSubmissionIndexByIdentity(all, submission.quizId, submission.email, submission.submittedAt || '');
     if (index < 0) return showNotification('Submission not found', 'error');
@@ -4855,8 +5547,6 @@ function renderStudentEntry() {
         <div style="height:8px"></div>
         <label class="small">Quiz Code / Magic Link</label>
         <input id="stuAccess" class="input-beautiful" placeholder="123456, OPEQUIZ:..., or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
-        <div style="height:8px"></div>
-        <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="stuWebcamToggle" /> Enable webcam (optional)</label>
         <div style="height:12px"></div>
         <div class="student-buttons"><button id="startExamBtn" class="btn-main">Start Exam</button><button id="previewLink" class="btn-secondary">Copy Link</button><button id="checkResultBtn" class="btn-secondary">Check Result</button></div>
         </div>
@@ -4914,9 +5604,10 @@ function renderStudentEntry() {
         state.currentSubmission.currentIndex = draft.currentIndex || 0;
         state.currentSubmission.startedAt = draft.startedAt || '';
       }
-      const webcamOn = document.getElementById('stuWebcamToggle').checked;
+      const webcamOn = !!quiz.webcamRequired;
       state.currentSubmission.webcamRequested = webcamOn;
       state.currentSubmission.monitoring.webcamEnabled = webcamOn;
+      if (webcamOn) showNotification('This quiz requires camera monitoring. Allow camera access on the next screen to continue.', 'warning', 7000);
       getClientIpAddress().then(ip => { if (state.currentSubmission && state.currentSubmission.quizId === quiz.id) state.currentSubmission.monitoring.ipAddress = ip; });
       render();
     };
@@ -4936,6 +5627,49 @@ function renderStudentEntry() {
 }
 
 let _webcamStream = null;
+function makeFloatingPanelDraggable(panel, handle) {
+  if (!panel || panel.dataset.dragReady === 'true') return;
+  panel.dataset.dragReady = 'true';
+  const dragHandle = handle || panel;
+  let startX = 0, startY = 0, initialLeft = 0, initialTop = 0, dragging = false;
+  const onMove = (event) => {
+    if (!dragging) return;
+    const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+    const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+    const nextLeft = initialLeft + (clientX - startX);
+    const nextTop = initialTop + (clientY - startY);
+    panel.style.left = `${Math.max(8, Math.min(window.innerWidth - panel.offsetWidth - 8, nextLeft))}px`;
+    panel.style.top = `${Math.max(8, Math.min(window.innerHeight - panel.offsetHeight - 8, nextTop))}px`;
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  };
+  const stopDrag = () => {
+    dragging = false;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', stopDrag);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', stopDrag);
+  };
+  const startDrag = (event) => {
+    dragging = true;
+    const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+    const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+    const rect = panel.getBoundingClientRect();
+    startX = clientX;
+    startY = clientY;
+    initialLeft = rect.left;
+    initialTop = rect.top;
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', stopDrag);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('touchend', stopDrag);
+    if (event.cancelable) event.preventDefault();
+  };
+  dragHandle.style.cursor = 'move';
+  dragHandle.addEventListener('mousedown', startDrag);
+  dragHandle.addEventListener('touchstart', startDrag, { passive: false });
+}
+
 function startWebcam() {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return showNotification('Webcam not supported in this browser','error');
@@ -4944,8 +5678,18 @@ function startWebcam() {
       let feed = document.getElementById('webcamFeed');
       if (!feed) {
         feed = document.createElement('div'); feed.id = 'webcamFeed'; feed.className = 'webcam-feed card-beautiful';
-        feed.style.position = 'fixed'; feed.style.right = '18px'; feed.style.bottom = '18px'; feed.style.width = '140px'; feed.style.height = '100px'; feed.style.zIndex = 9999; feed.style.padding = '6px';
+        feed.style.position = 'fixed'; feed.style.right = '18px'; feed.style.bottom = '18px'; feed.style.width = '176px'; feed.style.height = '132px'; feed.style.zIndex = 9999; feed.style.padding = '8px';
+        const handle = document.createElement('div');
+        handle.className = 'webcam-drag-handle';
+        handle.textContent = 'Camera monitor';
+        handle.style.fontSize = '11px';
+        handle.style.fontWeight = '800';
+        handle.style.color = '#475569';
+        handle.style.marginBottom = '6px';
+        handle.style.userSelect = 'none';
+        feed.appendChild(handle);
         const v = document.createElement('video'); v.autoplay = true; v.muted = true; v.playsInline = true; v.className = 'webcam-video'; v.srcObject = stream; feed.appendChild(v); document.body.appendChild(feed);
+        makeFloatingPanelDraggable(feed, handle);
       } else {
         const v = feed.querySelector('video'); if (v) v.srcObject = stream;
       }
@@ -4989,12 +5733,14 @@ function collectAndSubmit() {
     applyGradeToSubmission(sub, grade);
     sub.timeSpent = sub.startedAt ? (Date.now() - new Date(sub.startedAt).getTime())/1000 : 0;
     sub.submittedAt = new Date().toISOString();
+    sub.submissionId = buildSubmissionIdentity(sub);
     const allSubs = getAllSubmissions(); allSubs.push(sub); saveAllSubmissions(allSubs);
     clearExamDraft(sub.quizId, sub.email);
     showNotification('Submission saved  ','success');
     // cleanup proctoring
     try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e){}
     stopWebcam();
+    const calculator = document.getElementById('examCalculatorPanel'); if (calculator) calculator.remove();
     // re-enable selection
     try{ document.body.classList.remove('exam-no-select'); }catch(e){}
     state.currentSubmission = null;
@@ -5013,6 +5759,28 @@ function collectAndSubmit() {
 // Global key/context handlers for copy protection while taking
 document.addEventListener('contextmenu', (e)=>{
   if (state.view === 'take' && state.currentSubmission?.examStarted) { e.preventDefault(); showNotification('Right click disabled during exam','warning'); }
+});
+['copy', 'cut', 'paste', 'selectstart', 'dragstart'].forEach((eventName) => {
+  document.addEventListener(eventName, (event) => {
+    if (state.view !== 'take' || !state.currentSubmission?.examStarted) return;
+    if (state.currentSubmission) {
+      state.currentSubmission.monitoring = state.currentSubmission.monitoring || {};
+      if (eventName === 'copy' || eventName === 'cut' || eventName === 'paste') {
+        state.currentSubmission.monitoring.copyAttempts = (state.currentSubmission.monitoring.copyAttempts || 0) + 1;
+      }
+    }
+    event.preventDefault();
+    showNotification('This action is disabled during the quiz', 'warning');
+  });
+});
+window.addEventListener('beforeprint', (event) => {
+  if (state.view !== 'take' || !state.currentSubmission?.examStarted) return;
+  if (state.currentSubmission) {
+    state.currentSubmission.monitoring = state.currentSubmission.monitoring || {};
+    state.currentSubmission.monitoring.copyAttempts = (state.currentSubmission.monitoring.copyAttempts || 0) + 1;
+  }
+  if (event && typeof event.preventDefault === 'function') event.preventDefault();
+  showNotification('Printing is disabled during the quiz', 'warning');
 });
 document.addEventListener('keydown', (e)=>{
   if (state.view === 'take' && state.currentSubmission?.examStarted) {

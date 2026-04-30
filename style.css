@@ -143,6 +143,10 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .table-wrap{width:100%;overflow-x:auto}
 .quiz-list-card{gap:14px}
 .quiz-list-actions{justify-content:flex-end}
+.row-action-shell{display:flex;gap:8px;align-items:center;justify-content:flex-end;min-width:220px}
+.row-action-select{min-width:170px;min-height:40px;padding:8px 12px}
+.webcam-feed{border:1px solid #CBD5E1;background:rgba(255,255,255,.96)!important;backdrop-filter:blur(10px)}
+.webcam-drag-handle{cursor:move}
 
 /* App shell polish and local utility fallbacks */
 .topbar{background:rgba(255,255,255,.92)!important;border-bottom:1px solid #E5E7EB!important;padding:14px 24px!important;backdrop-filter:blur(10px);box-shadow:0 1px 0 rgba(15,23,36,0.04)!important;position:sticky;top:0;z-index:100}
@@ -377,13 +381,21 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .cert-detail-card{border:1px solid #DDE3EA;background:#F8FAFC;border-radius:14px;padding:18px 20px;min-height:92px}
 .cert-detail-value{font-size:17px;line-height:1.45;margin-top:12px;color:#202938;word-break:break-word}
 .cert-detail-subline{font-size:12px;color:#B45309;margin-top:8px}
-.cert-correction-card{grid-column:1/-1}
 .cert-signatures{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:28px;margin:32px auto 12px;max-width:880px;text-align:center;color:#6B7280}
 .cert-signature-card{padding-top:6px;display:flex;flex-direction:column;align-items:center}
 .cert-signature-script{width:min(220px,100%);min-height:36px;margin:0 auto -8px;display:flex;align-items:flex-end;justify-content:center;transform-origin:center bottom}
 .cert-signature-svg{display:block;width:min(196px,100%);height:42px;overflow:visible}
 .cert-signatures span{display:block;border-top:2px solid #6B7280;margin:0 auto 8px;width:min(220px,100%)}
-.cert-signatures p{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#101821}
+.cert-signatory-name{margin:0;font-size:14px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#101821}
+.cert-signatory-title{margin-top:6px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6B7280}
+.cert-verification{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:28px 0 10px;padding:16px 18px;border:1px solid #DDE3EA;border-radius:16px;background:#F8FAFC}
+.cert-verification-copy{flex:1;min-width:0}
+.cert-verification-label{font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#0F172A}
+.cert-verification-text{margin-top:8px;font-size:13px;line-height:1.55;color:#475569}
+.cert-verification-link{display:block;margin-top:10px;font-size:12px;word-break:break-all;color:#0F766E;text-decoration:none}
+.cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#fff;padding:8px;border:1px solid #D1D5DB;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.cert-verification-qr svg{display:block;width:100%;height:100%}
+.cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
 .cert-footer{text-align:center;font-weight:900;font-size:17px;margin-top:18px;color:#101821}
 .cert-footer-sub{text-align:center;color:#6B7280;margin-top:8px}
 .cert-result .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px}
@@ -396,6 +408,7 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .student-topic-item span{display:block;margin-top:6px;color:#0F766E;font-weight:800}
 .student-topic-item small{display:block;margin-top:6px;color:#64748B;font-size:12px;line-height:1.45}
 .status-chip{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;background:#E2E8F0;color:#334155;font-size:12px;font-weight:700}
+.status-chip.status-success{background:#DCFCE7;color:#166534}
 .status-chip.status-pending{background:#FFEDD5;color:#9A3412}
 .muted-line{color:#64748B;margin-top:6px}
 .req-badge{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;background:#E2E8F0;color:#334155;font-size:12px;font-weight:700}
@@ -573,10 +586,11 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 	.cert-adjusted-note{font-size:11px;width:100%}
 	.cert-rank{font-size:21px;width:90%;margin-bottom:24px}
 	.cert-details-grid{grid-template-columns:1fr;gap:12px}
-	.cert-correction-card{grid-column:auto}
 	.cert-signatures{gap:20px}
 	.cert-signature-script{min-height:30px;margin-bottom:-6px}
 	.cert-signature-svg{height:36px}
+	.cert-verification{flex-direction:column;align-items:flex-start}
+	.cert-verification-qr{align-self:flex-end}
 	.student-topic-grid{grid-template-columns:1fr}
 	.cert-footer{font-size:14px}
 }
