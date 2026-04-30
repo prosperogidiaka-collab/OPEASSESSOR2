@@ -97,6 +97,55 @@ function resolveRequestPath(urlPath) {
   return filePath;
 }
 
+function escapeHtmlAttr(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function getRequestBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = (req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || (req.socket.encrypted ? 'https' : 'http');
+  const host = forwardedHost || req.headers.host || `localhost:${PORT}`;
+  return `${protocol}://${host}`;
+}
+
+function buildShareMeta(req) {
+  const currentUrl = new URL(req.url || '/', getRequestBaseUrl(req));
+  const hasQuizLink = currentUrl.searchParams.has('q');
+  const title = hasQuizLink ? 'Join Quiz on OPE Assessor' : 'OPE Assessor';
+  const description = hasQuizLink
+    ? 'Open this secure OPE Assessor quiz link to start the assessment.'
+    : 'Zero-Friction Assessment Portal with secure quiz sharing, student results, and teacher dashboards.';
+  const imageUrl = new URL('/summary-preview.png', getRequestBaseUrl(req)).toString();
+  return {
+    title,
+    description,
+    url: currentUrl.toString(),
+    imageUrl
+  };
+}
+
+function decorateHtmlForSharing(req, htmlBuffer) {
+  const shareMeta = buildShareMeta(req);
+  let html = Buffer.isBuffer(htmlBuffer) ? htmlBuffer.toString('utf8') : String(htmlBuffer || '');
+  html = html
+    .replace(/<meta property="og:title" content="[^"]*">/i, `<meta property="og:title" content="${escapeHtmlAttr(shareMeta.title)}">`)
+    .replace(/<meta property="og:description" content="[^"]*">/i, `<meta property="og:description" content="${escapeHtmlAttr(shareMeta.description)}">`)
+    .replace(/<meta property="og:image" content="[^"]*">/i, `<meta property="og:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`)
+    .replace(/<meta name="twitter:title" content="[^"]*">/i, `<meta name="twitter:title" content="${escapeHtmlAttr(shareMeta.title)}">`)
+    .replace(/<meta name="twitter:description" content="[^"]*">/i, `<meta name="twitter:description" content="${escapeHtmlAttr(shareMeta.description)}">`)
+    .replace(/<meta name="twitter:image" content="[^"]*">/i, `<meta name="twitter:image" content="${escapeHtmlAttr(shareMeta.imageUrl)}">`);
+  if (!/<meta property="og:url"/i.test(html)) {
+    html = html.replace('</head>', `    <meta property="og:url" content="${escapeHtmlAttr(shareMeta.url)}">\n    <link rel="canonical" href="${escapeHtmlAttr(shareMeta.url)}">\n</head>`);
+  }
+  return Buffer.from(html, 'utf8');
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -196,11 +245,14 @@ const server = http.createServer(async (req, res) => {
       const fallback = path.join(ROOT, 'index.html');
       return fs.readFile(fallback, (fallbackErr, fallbackData) => {
         if (fallbackErr) return send(req, res, 404, 'Not found');
-        send(req, res, 200, req.method === 'HEAD' ? '' : fallbackData, TYPES['.html']);
+        const html = decorateHtmlForSharing(req, fallbackData);
+        send(req, res, 200, req.method === 'HEAD' ? '' : html, TYPES['.html']);
       });
     }
 
-    send(req, res, 200, req.method === 'HEAD' ? '' : data, TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream');
+    const type = TYPES[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+    const body = type.startsWith('text/html') ? decorateHtmlForSharing(req, data) : data;
+    send(req, res, 200, req.method === 'HEAD' ? '' : body, type);
   });
 });
 

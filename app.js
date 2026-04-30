@@ -402,6 +402,28 @@ function getSubmissionCorrectionShareMeta(submission = {}) {
   return { label: 'No correction activity', timestamp: '' };
 }
 
+function isLikelyMobileDevice() {
+  const ua = (navigator.userAgent || '').toLowerCase();
+  return /android|iphone|ipad|ipod|mobile|windows phone/.test(ua);
+}
+
+function openWhatsappChat(phone, message = '') {
+  const normalizedPhone = normalizeWhatsappNumber(phone);
+  if (!normalizedPhone) return false;
+  const encodedMessage = encodeURIComponent((message || '').toString());
+  const nativeUrl = `whatsapp://send?phone=${normalizedPhone}&text=${encodedMessage}`;
+  const webUrl = `https://wa.me/${normalizedPhone}?text=${encodedMessage}`;
+  if (isLikelyMobileDevice()) {
+    window.location.href = nativeUrl;
+    setTimeout(() => {
+      if (document.visibilityState !== 'hidden') window.open(webUrl, '_blank', 'noopener');
+    }, 900);
+    return true;
+  }
+  window.open(webUrl, '_blank', 'noopener');
+  return true;
+}
+
 function saveSupportSettings(nextSettings = {}) {
   const teachers = getAllTeachers();
   const adminId = normalizeEmail(SUPER_ADMIN_EMAIL);
@@ -659,6 +681,79 @@ async function copyQuizAccessCode(quiz) {
   if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
   markQuizzesCloudSynced([quiz.id]);
   await copyTextToClipboard(quiz.id, 'Student code copied');
+  return true;
+}
+
+function buildQuizSharePayload(quiz) {
+  const url = encodeQuizToLink(quiz);
+  return {
+    url,
+    title: quiz?.title || 'OPE Assessor Quiz',
+    text: `Open ${quiz?.title || 'this quiz'} on OPE Assessor.`
+  };
+}
+
+async function shareQuizAccessLink(quiz) {
+  if (!quiz || !quiz.id) return false;
+  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
+  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
+  markQuizzesCloudSynced([quiz.id]);
+  const sharePayload = buildQuizSharePayload(quiz);
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: sharePayload.title,
+        text: sharePayload.text,
+        url: sharePayload.url
+      });
+      showNotification('Quiz link shared', 'success');
+      return true;
+    } catch (error) {
+      if (error && error.name === 'AbortError') return false;
+    }
+  }
+  await copyTextToClipboard(sharePayload.url, 'Quiz link copied');
+  return true;
+}
+
+async function deleteQuizById(quizId, options = {}) {
+  const quizzes = getAllQuizzes();
+  const quiz = quizzes[quizId];
+  if (!quiz) {
+    showNotification('Quiz not found', 'error');
+    return false;
+  }
+  const visibleSubmissionCount = getAllSubmissions().filter((item) => item.quizId === quizId).length;
+  const message = visibleSubmissionCount
+    ? `Delete "${quiz.title || quiz.id}" and remove its ${visibleSubmissionCount} submission(s)? This cannot be undone.`
+    : `Delete "${quiz.title || quiz.id}" now? This cannot be undone.`;
+  if (!confirmTeacherAction(message)) return false;
+  delete quizzes[quizId];
+  saveAllQuizzes(quizzes);
+
+  const submissions = getAllSubmissions({ includeDeleted: true });
+  let changedSubmissions = false;
+  submissions.forEach((item) => {
+    if (item.quizId !== quizId || isDeletedSubmission(item)) return;
+    item.deletedAt = new Date().toISOString();
+    item.deletedBy = state.teacherId || 'teacher';
+    item.updatedAt = item.deletedAt;
+    changedSubmissions = true;
+  });
+  if (changedSubmissions) save(STORAGE_KEYS.submissions, submissions);
+
+  if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = null;
+  const synced = await syncSharedKeys([
+    STORAGE_KEYS.quizzes,
+    ...(changedSubmissions ? [STORAGE_KEYS.submissions] : [])
+  ]);
+  if (options.onDeleted) options.onDeleted();
+  if (synced) {
+    showNotification('Quiz deleted', 'success');
+  } else {
+    showNotification(`Quiz deleted on this device. ${getSharedSyncWarningMessage()}`, 'warning', 8000);
+  }
+  render();
   return true;
 }
 
@@ -1208,6 +1303,46 @@ function getQuizQuestionsForTaking(quiz) {
   }
   if (quiz.shuffleQs) shuffle(allQuestions);
   return allQuestions.map(question => prepareQuestionForStudent(question, !!quiz.shuffleOpts));
+}
+
+function buildQuestionSubjectSections(questions = []) {
+  const subjectMap = new Map();
+  (Array.isArray(questions) ? questions : []).forEach((question, globalIndex) => {
+    const subjectName = (question?._subject || question?.subject || 'General').toString().trim() || 'General';
+    if (!subjectMap.has(subjectName)) subjectMap.set(subjectName, { name: subjectName, indices: [] });
+    subjectMap.get(subjectName).indices.push(globalIndex);
+  });
+  return Array.from(subjectMap.values()).map((section, sectionIndex) => ({
+    ...section,
+    sectionIndex,
+    total: section.indices.length,
+    firstIndex: section.indices[0] ?? 0,
+    lastIndex: section.indices[section.indices.length - 1] ?? 0
+  }));
+}
+
+function getSubjectSectionIndexForQuestion(sections = [], questionIndex = 0) {
+  const normalizedIndex = Math.max(0, Number(questionIndex) || 0);
+  const foundIndex = sections.findIndex((section) => section.indices.includes(normalizedIndex));
+  return foundIndex >= 0 ? foundIndex : 0;
+}
+
+function getQuestionPositionWithinSubject(sections = [], questionIndex = 0) {
+  const sectionIndex = getSubjectSectionIndexForQuestion(sections, questionIndex);
+  const section = sections[sectionIndex] || { name: 'General', indices: [questionIndex], total: 1, firstIndex: questionIndex, lastIndex: questionIndex };
+  const localIndex = Math.max(0, section.indices.indexOf(questionIndex));
+  return {
+    sectionIndex,
+    section,
+    localIndex,
+    localNumber: localIndex + 1,
+    totalInSubject: section.total || section.indices.length || 1
+  };
+}
+
+function countAnsweredQuestionsInSection(section, answers = {}) {
+  if (!section || !Array.isArray(section.indices)) return 0;
+  return section.indices.filter((globalIndex) => !!answers[globalIndex]).length;
 }
 
 function encodeQuizToLink(q, options = {}) {
@@ -1950,8 +2085,10 @@ function renderTeacherQuizzes() {
         <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy Student Code</button>
           <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">Copy Link</button>
+          <button class="btn btn-ghost btn-sm btnShareLink" data-id="${q.id}">Share</button>
           <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
           <button class="btn btn-ghost btn-sm btnEndQuiz" data-id="${q.id}" ${ended ? 'disabled' : ''}>End Test</button>
+          <button class="btn btn-ghost btn-sm btnDeleteQuiz" data-id="${q.id}">Delete</button>
           <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
         </div>
       </div>`;
@@ -1960,8 +2097,10 @@ function renderTeacherQuizzes() {
     setTimeout(()=> {
       document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessCode(q);});
       document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessLink(q);});
+      document.querySelectorAll('.btnShareLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await shareQuizAccessLink(q);});
       document.querySelectorAll('.btnEditQuiz').forEach(b=>b.onclick=(e)=>{ canSetQuestions() ? showCreateQuizModal(e.currentTarget.dataset.id) : showLicenseRequired(); });
       document.querySelectorAll('.btnEndQuiz').forEach(b=>b.onclick=async (e)=>{ await endQuizNow(e.currentTarget.dataset.id); });
+      document.querySelectorAll('.btnDeleteQuiz').forEach(b=>b.onclick=async (e)=>{ await deleteQuizById(e.currentTarget.dataset.id); });
       document.querySelectorAll('.btnView').forEach(b=>b.onclick=(e)=>{state.currentQuiz=getAllQuizzes()[e.currentTarget.dataset.id]; state.view='results'; render();});
     },0);
   },0);
@@ -2218,6 +2357,8 @@ function showQuizSetDetails(quizId) {
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
       <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>
       <button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>
+      <button id="shareQuizSetLink" class="btn btn-ghost btn-sm">Share Link</button>
+      ${canEditThisQuiz ? '<button id="deleteQuizSetBtn" class="btn btn-ghost btn-sm">Delete Quiz</button>' : ''}
     </div>
     <div id="quizSetDetailsBody"></div>
   `;
@@ -2225,6 +2366,12 @@ function showQuizSetDetails(quizId) {
   document.getElementById('closeQuizSetDetails').onclick = () => modal.remove();
   document.getElementById('copyQuizSetId').onclick = async () => { await copyQuizAccessCode(getAllQuizzes()[quizId] || draftQuiz); };
   document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
+  document.getElementById('shareQuizSetLink').onclick = async () => { await shareQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
+  const deleteQuizSetBtn = document.getElementById('deleteQuizSetBtn');
+  if (deleteQuizSetBtn) deleteQuizSetBtn.onclick = async () => {
+    const deleted = await deleteQuizById(quizId, { onDeleted: () => modal.remove() });
+    if (deleted) return;
+  };
   renderEditor();
 }
 
@@ -3011,6 +3158,7 @@ function showAdminTeacherExams(teacherId) {
                 <button class="btn btn-ghost btn-sm adminResultsQuiz" data-id="${escapeHtml(q.id)}">Results</button>
                 <button class="btn btn-ghost btn-sm adminContentQuiz" data-id="${escapeHtml(q.id)}">Content</button>
                 <button class="btn btn-ghost btn-sm adminCopyQuizLink" data-id="${escapeHtml(q.id)}">Copy Link</button>
+                <button class="btn btn-ghost btn-sm adminShareQuizLink" data-id="${escapeHtml(q.id)}">Share</button>
               </td>
             </tr>`;
           }).join('') || '<tr><td colspan="7">This teacher has not created any exams yet.</td></tr>'}
@@ -3032,6 +3180,10 @@ function showAdminTeacherExams(teacherId) {
   document.querySelectorAll('.adminCopyQuizLink').forEach(btn => btn.onclick = async (ev) => {
     const q = getAllQuizzes()[ev.currentTarget.dataset.id];
     await copyQuizAccessLink(q);
+  });
+  document.querySelectorAll('.adminShareQuizLink').forEach(btn => btn.onclick = async (ev) => {
+    const q = getAllQuizzes()[ev.currentTarget.dataset.id];
+    await shareQuizAccessLink(q);
   });
 }
 
@@ -3091,6 +3243,7 @@ function renderQuizWelcome(quiz, questions) {
         <p><strong>After Start Quiz:</strong> leaving the exam tab, exiting fullscreen, refreshing, closing the page, or using copy/screenshot shortcuts may be recorded and can submit the quiz automatically.</p>
         ${calculatorType !== 'none' ? `<p><strong>Calculator:</strong> this quiz allows a ${escapeHtml(calculatorType)} calculator from the Calc button during the test.</p>` : ''}
         ${quiz.webcamRequired ? '<p><strong>Camera requirement:</strong> this quiz needs camera monitoring. The camera window can be moved during the test.</p>' : ''}
+        <p><strong>Correction PDF:</strong> if you later request a correction, you will enter the WhatsApp number for delivery at the end of the quiz. Your email or registration details from the start screen are already saved.</p>
         <p><strong>Desktop keys:</strong> A/B/C/D choose options, N moves next, P moves previous, and S submits.</p>
         <p>Click Start Quiz only when you are ready to begin.</p>
       </div>
@@ -3357,6 +3510,7 @@ function renderQuizTake() {
     state.currentSubmission.allQuestions = preparedQuestions;
   }
   if (!state.currentSubmission.examStarted) return renderQuizWelcome(q, state.currentSubmission.allQuestions);
+  const initialSections = buildQuestionSubjectSections(state.currentSubmission.allQuestions || preparedQuestions);
   // disable text selection while in exam
   try{ document.body.classList.add('exam-no-select'); }catch(e){}
 
@@ -3368,7 +3522,8 @@ function renderQuizTake() {
       <div class="exam-meta">
         <div>
           <div class="h2 exam-title">${escapeHtml(q.title)}</div>
-          <div class="small" id="examSubjectLine">${escapeHtml(q.examName || '')}   ${(q.subjects || []).length} subject(s)</div>
+          <div class="small" id="examInstitutionLine">${escapeHtml(q.examName || '')}${initialSections.length ? ` • ${initialSections.length} subject(s)` : ''}</div>
+          <div class="small" id="examSubjectMeta" style="margin-top:4px"></div>
         </div>
       </div>
       <div class="exam-status" style="display:flex;align-items:center;gap:12px">
@@ -3379,6 +3534,7 @@ function renderQuizTake() {
       </div>
     </div>
     <div class="exam-progress"><span id="examProgress"></span></div>
+    ${initialSections.length > 1 ? '<div id="examSubjectTabs" style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 18px"></div>' : ''}
 
     <div class="exam-layout" style="display:flex;gap:var(--space-3);align-items:flex-start">
       <div class="exam-main" style="flex:1;min-width:320px">
@@ -3415,9 +3571,58 @@ function renderQuizTake() {
       };
     }
 
-    // render question(s) and palette
     const qa = document.getElementById('questionArea');
     const sub = state.currentSubmission;
+    const subjectSections = buildQuestionSubjectSections(sub.allQuestions || []);
+    if (!subjectSections.length) {
+      qa.innerHTML = '<div class="question-card"><div class="h3">No question found</div><p class="text-muted">Please go back and ask the teacher to check the quiz questions.</p></div>';
+      return;
+    }
+    if (!sub.allQuestions[sub.currentIndex]) sub.currentIndex = subjectSections[0].firstIndex;
+    if (!Number.isInteger(sub.currentSubjectIndex) || !subjectSections[sub.currentSubjectIndex]) {
+      sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, sub.currentIndex);
+    }
+
+    const getCurrentSection = () => subjectSections[sub.currentSubjectIndex] || subjectSections[0];
+    const syncSubjectIndexToCurrentQuestion = () => {
+      sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, sub.currentIndex);
+    };
+    const renderSubjectTabs = () => {
+      const host = document.getElementById('examSubjectTabs');
+      if (!host) return;
+      host.innerHTML = subjectSections.map((section, index) => {
+        const answeredCount = countAnsweredQuestionsInSection(section, sub.answers || {});
+        const isActive = index === sub.currentSubjectIndex;
+        return `
+          <button
+            type="button"
+            class="btn ${isActive ? 'btn-primary' : 'btn-ghost'} btn-sm"
+            data-subject-tab="${index}"
+            style="justify-content:flex-start;text-align:left;border-radius:999px;padding:10px 14px"
+          >
+            ${escapeHtml(section.name)} (${answeredCount}/${section.total})
+          </button>
+        `;
+      }).join('');
+      host.querySelectorAll('[data-subject-tab]').forEach((button) => {
+        button.onclick = () => {
+          const nextSectionIndex = parseInt(button.dataset.subjectTab || '0', 10) || 0;
+          const nextSection = subjectSections[nextSectionIndex];
+          if (!nextSection) return;
+          sub.currentSubjectIndex = nextSectionIndex;
+          sub.currentIndex = nextSection.firstIndex;
+          saveExamDraft(sub);
+          if (q.verticalLayout) {
+            renderVerticalSubjectView();
+          } else {
+            renderQuestion(sub.currentIndex);
+          }
+          renderQuestionPalette();
+          updateExamChrome();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+      });
+    };
     const updateExamChrome = () => {
       const total = (sub.allQuestions || []).length || 1;
       const answered = Object.keys(sub.answers || {}).filter(k => sub.answers[k]).length;
@@ -3425,32 +3630,118 @@ function renderQuizTake() {
       const progress = document.getElementById('examProgress'); if (progress) progress.style.width = percent + '%';
       const pct = document.getElementById('examPercent'); if (pct) pct.textContent = percent.toFixed(1) + '%';
       const ans = document.getElementById('examAnswered'); if (ans) ans.textContent = `${answered}/${total} answered`;
-      const subj = document.getElementById('examSubjectLine');
-      if (subj && sub.allQuestions[sub.currentIndex]) subj.textContent = `Question ${sub.currentIndex + 1} of ${total}`;
+      const position = getQuestionPositionWithinSubject(subjectSections, sub.currentIndex);
+      const currentSection = subjectSections[position.sectionIndex] || getCurrentSection();
+      const subjectMeta = document.getElementById('examSubjectMeta');
+      if (subjectMeta) {
+        subjectMeta.textContent = `${currentSection.name} • Question ${position.localNumber} of ${position.totalInSubject} • ${countAnsweredQuestionsInSection(currentSection, sub.answers || {})}/${currentSection.total} answered in this subject`;
+      }
+      renderSubjectTabs();
+    };
+    const moveQuestion = (step) => {
+      const position = getQuestionPositionWithinSubject(subjectSections, sub.currentIndex);
+      const section = position.section;
+      const nextLocalIndex = position.localIndex + step;
+      if (nextLocalIndex >= 0 && nextLocalIndex < section.indices.length) {
+        sub.currentIndex = section.indices[nextLocalIndex];
+      } else if (step > 0 && subjectSections[position.sectionIndex + 1]) {
+        sub.currentSubjectIndex = position.sectionIndex + 1;
+        sub.currentIndex = subjectSections[sub.currentSubjectIndex].firstIndex;
+      } else if (step < 0 && subjectSections[position.sectionIndex - 1]) {
+        sub.currentSubjectIndex = position.sectionIndex - 1;
+        sub.currentIndex = subjectSections[sub.currentSubjectIndex].lastIndex;
+      } else {
+        return false;
+      }
+      syncSubjectIndexToCurrentQuestion();
+      saveExamDraft(sub);
+      return true;
+    };
+    const renderQuestionPalette = () => {
+      const pal = document.getElementById('rightPalette');
+      const drawer = document.getElementById('paletteDrawer');
+      const currentSection = getCurrentSection();
+      const items = currentSection.indices.map((globalIndex, localIndex) => {
+        const answered = !!sub.answers[globalIndex];
+        const flagged = !!sub.flagged[globalIndex];
+        const classes = ['palette-item'];
+        if (answered) classes.push('palette-answered');
+        if (flagged) classes.push('palette-flagged');
+        if (globalIndex === sub.currentIndex) classes.push('palette-current');
+        return `<div class="${classes.join(' ')}" data-index="${globalIndex}">${localIndex + 1}</div>`;
+      });
+      const heading = `Question Palette • ${escapeHtml(currentSection.name)}`;
+      pal.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div class="palette-grid">${items.join('')}</div>`;
+      drawer.innerHTML = `<div class="small" style="margin-bottom:8px">${heading}</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">${items.join('')}</div>`;
+      [pal, drawer].forEach((scope) => scope.querySelectorAll('.palette-item').forEach((el) => {
+        el.onclick = (ev) => {
+          const idx = parseInt(ev.currentTarget.dataset.index, 10);
+          sub.currentIndex = idx;
+          syncSubjectIndexToCurrentQuestion();
+          saveExamDraft(sub);
+          if (q.verticalLayout) {
+            const card = document.getElementById(`questionCard-${idx}`);
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } else {
+            renderQuestion(idx);
+          }
+          renderQuestionPalette();
+          updateExamChrome();
+          document.getElementById('paletteDrawer').style.display = 'none';
+        };
+      }));
     };
     if (q.verticalLayout) {
-      // render all questions stacked for easy scrolling
-      qa.innerHTML = sub.allQuestions.map((qq, idx)=>{
-        const opts = (qq.options||[]).map((opt,i)=>{
-          const letter = String.fromCharCode(65+i);
-          const checked = sub.answers[idx] === letter ? 'checked' : '';
-          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
-        }).join('');
-        return `
-          <div class="question-card" style="margin-bottom:12px">
-            <div class="h3">Question ${idx+1} of ${sub.allQuestions.length}</div>
-            <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
-            <div class="options" id="optionsList-${idx}">${opts}</div>
+      function renderVerticalSubjectView() {
+        const currentSection = getCurrentSection();
+        qa.innerHTML = `
+          <div class="card-beautiful" style="margin-bottom:14px;padding:14px 16px">
+            <div class="small">Current subject</div>
+            <div class="h3" style="margin-top:6px">${escapeHtml(currentSection.name)}</div>
+            <div class="small" style="margin-top:4px">${currentSection.total} question(s) assigned in this subject</div>
           </div>
+          ${currentSection.indices.map((globalIndex, localIndex) => {
+            const qq = sub.allQuestions[globalIndex];
+            const opts = (qq.options || []).map((opt, optionIndex) => {
+              const letter = String.fromCharCode(65 + optionIndex);
+              const checked = sub.answers[globalIndex] === letter ? 'checked' : '';
+              return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
+            }).join('');
+            return `
+              <div class="question-card" id="questionCard-${globalIndex}" data-question-card="${globalIndex}" style="margin-bottom:12px">
+                <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
+                <div class="h3">Question ${localIndex + 1} of ${currentSection.total}</div>
+                <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
+                <div class="options" id="optionsList-${globalIndex}">${opts}</div>
+              </div>
+            `;
+          }).join('')}
         `;
-      }).join('');
-      // wire radio change handlers
-      setTimeout(()=>{
-        sub.allQuestions.forEach((qq, idx)=>{
-          document.querySelectorAll(`input[name="opt-${idx}"]`).forEach(i=>i.onchange = (e)=>{ sub.answers[idx] = e.target.value; saveExamDraft(sub); updateExamChrome(); });
+        currentSection.indices.forEach((globalIndex) => {
+          document.querySelectorAll(`input[name="opt-${globalIndex}"]`).forEach((input) => {
+            input.onchange = (event) => {
+              sub.currentIndex = globalIndex;
+              sub.currentSubjectIndex = getSubjectSectionIndexForQuestion(subjectSections, globalIndex);
+              sub.answers[globalIndex] = event.target.value;
+              saveExamDraft(sub);
+              renderQuestionPalette();
+              updateExamChrome();
+            };
+          });
+        });
+        qa.querySelectorAll('[data-question-card]').forEach((card) => {
+          card.onclick = () => {
+            const idx = parseInt(card.dataset.questionCard || '0', 10) || 0;
+            sub.currentIndex = idx;
+            syncSubjectIndexToCurrentQuestion();
+            renderQuestionPalette();
+            updateExamChrome();
+          };
         });
         updateExamChrome();
-      },0);
+      }
+      renderVerticalSubjectView();
+      renderQuestionPalette();
     } else {
       function renderQuestion(idx) {
         const qq = sub.allQuestions[idx];
@@ -3458,6 +3749,9 @@ function renderQuizTake() {
           qa.innerHTML = '<div class="question-card"><div class="h3">No question found</div><p class="text-muted">Please go back and ask the teacher to check the quiz questions.</p></div>';
           return;
         }
+        syncSubjectIndexToCurrentQuestion();
+        const position = getQuestionPositionWithinSubject(subjectSections, idx);
+        const currentSection = subjectSections[position.sectionIndex] || getCurrentSection();
         const opts = (qq.options || []).map((opt, i) => {
           const letter = String.fromCharCode(65 + i);
           const checked = sub.answers[idx] === letter ? 'checked' : '';
@@ -3466,7 +3760,8 @@ function renderQuizTake() {
 
         qa.innerHTML = `
           <div class="question-card" style="margin-bottom:12px">
-            <div class="h3">Question ${idx + 1} of ${sub.allQuestions.length}</div>
+            <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
+            <div class="h3">Question ${position.localNumber} of ${position.totalInSubject}</div>
             <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
             <div class="options" id="optionsList-${idx}">${opts}</div>
             <div class="question-inline-actions" style="display:flex;justify-content:space-between;margin-top:12px">
@@ -3485,43 +3780,12 @@ function renderQuizTake() {
         setTimeout(() => {
           updateExamChrome();
           document.querySelectorAll(`#optionsList-${idx} input[type=\"radio\"]`).forEach(i => i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); });
-          const prev = document.getElementById('prevQ'); if (prev) prev.onclick = () => { if (sub.currentIndex > 0) { sub.currentIndex--; saveExamDraft(sub); renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
-          const next = document.getElementById('nextQ'); if (next) next.onclick = () => { if (sub.currentIndex < sub.allQuestions.length - 1) { sub.currentIndex++; saveExamDraft(sub); renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
+          const prev = document.getElementById('prevQ'); if (prev) prev.onclick = () => { if (moveQuestion(-1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
+          const next = document.getElementById('nextQ'); if (next) next.onclick = () => { if (moveQuestion(1)) { renderQuestion(sub.currentIndex); renderQuestionPalette(); updateExamChrome(); } };
           const saveBtn = document.getElementById('saveQ'); if (saveBtn) saveBtn.onclick = () => { showNotification('Saved locally', 'success'); };
           const flag = document.getElementById('flagBtn'); if (flag) flag.onclick = () => { sub.flagged[idx] = !sub.flagged[idx]; saveExamDraft(sub); flag.textContent = sub.flagged[idx] ? 'Flagged' : 'Flag'; renderQuestionPalette(); };
         }, 0);
       }
-      // palette render function
-      function renderQuestionPalette() {
-        const pal = document.getElementById('rightPalette');
-        const drawer = document.getElementById('paletteDrawer');
-        const total = sub.allQuestions.length;
-        let items = [];
-        for (let i=0;i<total;i++){
-          const answered = !!sub.answers[i];
-          const flagged = !!sub.flagged[i];
-          const classes = ['palette-item'];
-          if (answered) classes.push('palette-answered');
-          if (flagged) classes.push('palette-flagged');
-          if (i === sub.currentIndex) classes.push('palette-current');
-          items.push(`<div class="${classes.join(' ')}" data-index="${i}">${i+1}</div>`);
-        }
-        pal.innerHTML = `<div class="small" style="margin-bottom:8px">Question Palette</div><div class="palette-grid">${items.join('')}</div>`;
-        drawer.innerHTML = `<div class="small" style="margin-bottom:8px">Question Palette</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px">${items.join('')}</div>`;
-        setTimeout(()=>{
-          [pal, drawer].forEach(scope => scope.querySelectorAll('.palette-item').forEach(el=>el.onclick=(ev)=>{
-            const idx = parseInt(ev.currentTarget.dataset.index,10);
-            sub.currentIndex = idx;
-            saveExamDraft(sub);
-            renderQuestion(idx);
-            renderQuestionPalette();
-            updateExamChrome();
-            document.getElementById('paletteDrawer').style.display='none';
-          }));
-        },0);
-      }
-
-      // initial render for non-vertical
       renderQuestion(sub.currentIndex);
       renderQuestionPalette();
     }
@@ -4193,37 +4457,23 @@ async function sendCorrectionByEmail(submission, quiz) {
 async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
   const contact = getSubmissionCorrectionContact(submission);
   const phone = contact.whatsapp || normalizeWhatsappNumber(submission.whatsappNumber || '');
-  if (!phone) return showNotification('This student did not provide a WhatsApp number for corrections.', 'error');
+  if (!phone) {
+    showNotification('This student did not provide a WhatsApp number for corrections.', 'error');
+    return false;
+  }
   const message = buildCorrectionShareMessage(submission, quiz);
   try {
-    if (!options.forceLinkMode && navigator.share) {
-      const file = await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, returnFile: true, autoSave: false });
-      if (file && typeof File !== 'undefined' && file instanceof File && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
-        await navigator.share({
-          title: `Correction for ${quiz.title || submission.quizId}`,
-          text: message,
-          files: [file]
-        });
-        markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
-          correctionStatus: 'whatsapp-shared',
-          correctionWhatsappAt: new Date().toISOString()
-        });
-        if (!options.suppressSuccess) showNotification('WhatsApp share opened with the correction PDF.', 'success');
-        return true;
-      }
-    }
     await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+    openWhatsappChat(phone, message);
     markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
       correctionStatus: 'whatsapp-opened',
       correctionWhatsappAt: new Date().toISOString()
     });
     if (!options.suppressSuccess) {
-      showNotification('WhatsApp chat opened. Attach the downloaded PDF if the browser cannot attach it automatically.', 'warning', 9000);
+      showNotification('WhatsApp opened for the student number. The correction PDF has been downloaded so you can attach it in that chat.', 'warning', 9000);
     }
     return true;
   } catch (error) {
-    if (error && error.name === 'AbortError') return false;
     console.error(error);
     showNotification('Error preparing WhatsApp correction share', 'error');
     return false;
@@ -5028,25 +5278,28 @@ function renderCertificateSignatories(signatories = []) {
 }
 
 function buildStudentResultSupplementHtml(quiz, submission) {
-  if (!quiz || !quiz.showTopicsAfterSubmission) return '';
-  const analysis = computeStudentTopicPerformance(submission);
-  const subjects = Object.keys(analysis);
-  if (!subjects.length) return '';
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const shouldShowBreakdown = breakdown.length > 1 || (!!quiz && !!quiz.showTopicsAfterSubmission);
+  if (!shouldShowBreakdown || !breakdown.length) return '';
+  const averagePercent = breakdown.length
+    ? Math.round(breakdown.reduce((sum, item) => sum + (item.percent || 0), 0) / breakdown.length)
+    : 0;
+  const totalQuestions = (submission.allQuestions || []).length;
   return `
     <div class="student-topic-card">
-      <h4>Performance by Topic</h4>
+      <h4>${breakdown.length > 1 ? 'Performance by Subject' : 'Performance Summary'}</h4>
+      ${breakdown.length > 1 ? `<div class="small" style="margin:0 0 12px;color:#475569">Cumulative total: ${formatScoreValue(submission.score || 0)} / ${totalQuestions} • Average across ${breakdown.length} subjects: ${averagePercent}%</div>` : ''}
       <div class="student-topic-grid">
-        ${subjects.map((subject) => {
-          const item = analysis[subject];
+        ${breakdown.map((item) => {
           const attempted = item.attempted || 0;
           const correct = item.correct || 0;
           const total = item.total || 0;
-          const percent = attempted ? Math.round((correct / attempted) * 100) : 0;
+          const percent = item.percent || 0;
           return `
             <div class="student-topic-item">
-              <strong>${escapeHtml(subject)}</strong>
-              <span>${percent}% correct</span>
-              <small>${correct} correct • ${attempted} attempted • ${total} total</small>
+              <strong>${escapeHtml(item.name)}</strong>
+              <span>${formatScoreValue(item.score)} / ${total} • ${percent}%</span>
+              <small>${correct} correct • ${attempted} attempted • ${total} total${item.wrong ? ` • ${item.wrong} wrong` : ''}</small>
             </div>
           `;
         }).join('')}
@@ -5059,6 +5312,17 @@ function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
   const cardHtml = buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts);
   const supplementHtml = buildStudentResultSupplementHtml(quiz, submission);
   return `<div class="student-result-full">${cardHtml}${supplementHtml}</div>`;
+}
+
+function buildCorrectionRequestStatusHtml(submission = {}) {
+  const correctionRequested = !!submission.correctionRequested;
+  const correctionContact = getSubmissionCorrectionContact(submission);
+  if (!correctionRequested) return '<div class="small">No correction request yet.</div>';
+  return `
+    <span class="status-chip status-pending">Requested</span>
+    <div class="small" style="margin-top:6px">${escapeHtml(submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'Awaiting teacher review')}</div>
+    ${correctionContact.whatsapp ? `<div class="small" style="margin-top:4px">WhatsApp: ${escapeHtml(correctionContact.whatsapp)}</div>` : ''}
+  `;
 }
 
 function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {}) {
@@ -5147,6 +5411,10 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 
       ${includeActions ? `
         <div class="result-actions no-print">
+          <div style="width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left;margin-bottom:10px">
+            <div class="small">If you want a correction PDF, click Request Correction and enter the WhatsApp number where your teacher should send it. Your email or registration details from quiz start are already saved.</div>
+            <div id="correctionRequestStatus" style="margin-top:8px">${buildCorrectionRequestStatusHtml(submission)}</div>
+          </div>
           <button id="requestCorrectionBtn" class="btn btn-secondary">${correctionRequested ? 'Update Request' : 'Request Correction'}</button>
           <button id="downloadStudentResultPdf" class="btn btn-primary">Download PDF</button>
           <button id="printStudentResult" class="btn btn-secondary">Print Result</button>
@@ -6422,6 +6690,39 @@ function computeStudentTopicPerformance(submission) {
   return grouped;
 }
 
+function computeSubmissionSubjectBreakdown(quiz, submission) {
+  const sections = buildQuestionSubjectSections(submission?.allQuestions || []);
+  const answers = submission?.answers || {};
+  const negativeEnabled = !!quiz?.negativeMarkEnabled;
+  const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
+  return sections.map((section) => {
+    let attempted = 0;
+    let correct = 0;
+    let wrong = 0;
+    section.indices.forEach((globalIndex) => {
+      const question = submission.allQuestions[globalIndex];
+      const chosen = (answers[globalIndex] || '').toString().toUpperCase();
+      if (!chosen) return;
+      attempted++;
+      const expected = (question?.answer || '').toString().toUpperCase();
+      if (chosen === expected) correct++;
+      else wrong++;
+    });
+    const rawScore = correct - (negativeEnabled ? wrong * negativeValue : 0);
+    const score = Math.max(0, Math.round(rawScore * 100) / 100);
+    const percent = section.total ? clampPercent((score / section.total) * 100) : 0;
+    return {
+      name: section.name,
+      total: section.total,
+      attempted,
+      correct,
+      wrong,
+      score,
+      percent
+    };
+  });
+}
+
 async function getClientIpAddress() {
   try {
     const res = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
@@ -6521,6 +6822,68 @@ function showNotification(msg, type = 'info', ttl = 3000) {
   } catch (e) { console.warn('notify', e); }
 }
 
+function showCorrectionRequestModal(quiz, submission, onSave) {
+  if (!quiz || !submission) return;
+  let modal = document.getElementById('correctionRequestModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'correctionRequestModal';
+  modal.className = 'student-result-modal';
+  const existingWhatsapp = normalizeWhatsappNumber(submission.whatsappNumber || getSubmissionCorrectionContact(submission).whatsapp || '');
+  const card = document.createElement('div');
+  card.className = 'card-beautiful admin-modal-card';
+  card.style.width = 'min(560px, 94vw)';
+  card.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Request Correction</div>
+        <div class="small">${escapeHtml(quiz.title || quiz.id || 'Quiz')}</div>
+      </div>
+      <button id="closeCorrectionRequestModal" class="btn btn-ghost">Close</button>
+    </div>
+    <div class="small" style="line-height:1.7;margin-bottom:14px">We already saved your email or registration details from quiz start. To receive the correction PDF on WhatsApp, enter the WhatsApp number your teacher should use.</div>
+    <label class="small" style="display:block;margin-top:10px">WhatsApp number</label>
+    <input id="correctionRequestWhatsapp" class="input-beautiful" placeholder="e.g. 08012345678" value="${escapeHtml(existingWhatsapp)}" />
+    <label class="small" style="display:block;margin-top:12px">Message for teacher (optional)</label>
+    <textarea id="correctionRequestMessage" class="input-beautiful" style="min-height:110px">${escapeHtml(submission.correctionMessage || '')}</textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <button id="cancelCorrectionRequestModal" class="btn btn-ghost">Cancel</button>
+      <button id="saveCorrectionRequestModal" class="btn btn-primary">Save Request</button>
+    </div>
+  `;
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  const closeModal = () => modal.remove();
+  document.getElementById('closeCorrectionRequestModal').onclick = closeModal;
+  document.getElementById('cancelCorrectionRequestModal').onclick = closeModal;
+  document.getElementById('saveCorrectionRequestModal').onclick = () => {
+    const whatsappRaw = document.getElementById('correctionRequestWhatsapp').value.trim();
+    const whatsapp = normalizeWhatsappNumber(whatsappRaw);
+    const message = (document.getElementById('correctionRequestMessage').value || '').trim();
+    if (!whatsapp || whatsapp.length < 10) return showNotification('Enter a valid WhatsApp number so your teacher can send the correction PDF.', 'error', 6000);
+    const updated = updateLatestSubmissionByQuizAndEmail(quiz.id, submission.email, (item) => {
+      item.correctionRequested = true;
+      item.correctionRequestedAt = new Date().toISOString();
+      item.correctionMessage = message;
+      item.correctionStatus = 'pending';
+      item.correctionContact = whatsapp;
+      item.correctionContactChannel = 'whatsapp';
+      item.whatsappNumber = whatsapp;
+    });
+    if (!updated) return showNotification('Unable to save correction request', 'error');
+    submission.correctionRequested = true;
+    submission.correctionRequestedAt = updated.correctionRequestedAt;
+    submission.correctionMessage = message;
+    submission.correctionStatus = 'pending';
+    submission.correctionContact = whatsapp;
+    submission.correctionContactChannel = 'whatsapp';
+    submission.whatsappNumber = whatsapp;
+    closeModal();
+    if (typeof onSave === 'function') onSave(updated);
+  };
+}
+
 async function showStudentResultModalByLookup(quizId, identifier, includeActions = true) {
   const id = (quizId || '').trim();
   const key = normalizeEmail(identifier || '');
@@ -6559,22 +6922,12 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   };
   const requestBtn = document.getElementById('requestCorrectionBtn');
   if (requestBtn) requestBtn.onclick = () => {
-    const note = (prompt('Add a short correction request message for your teacher (optional):', s.correctionMessage || '') || '').trim();
-    const updated = updateLatestSubmissionByQuizAndEmail(id, s.email, (item) => {
-      item.correctionRequested = true;
-      item.correctionRequestedAt = new Date().toISOString();
-      item.correctionMessage = note;
-      item.correctionStatus = 'pending';
+    showCorrectionRequestModal(quiz, s, (updated) => {
+      showNotification('Correction request sent to teacher', 'success', 5000);
+      const statusEl = document.getElementById('correctionRequestStatus');
+      if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
+      requestBtn.textContent = 'Update Request';
     });
-    if (!updated) return showNotification('Unable to save correction request', 'error');
-    s.correctionRequested = true;
-    s.correctionRequestedAt = updated.correctionRequestedAt;
-    s.correctionMessage = note;
-    s.correctionStatus = 'pending';
-    showNotification('Correction request sent to teacher', 'success', 5000);
-    const statusEl = document.getElementById('correctionRequestStatus');
-    if (statusEl) statusEl.innerHTML = `<span class="status-chip status-pending">Requested</span><div class="small muted-line" id="correctionRequestedAtText">${escapeHtml(new Date(updated.correctionRequestedAt).toLocaleString())}</div>`;
-    requestBtn.textContent = 'Update Request';
   };
   const printBtn = document.getElementById('printStudentResult');
   if (printBtn) printBtn.onclick = () => {
@@ -6613,6 +6966,15 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
       'Student result summary PDF downloaded',
       { singlePage: true, marginMm: 6, paddingPx: 10 }
     );
+  };
+  const requestBtn = document.getElementById('requestCorrectionBtn');
+  if (requestBtn) requestBtn.onclick = () => {
+    showCorrectionRequestModal(quiz, submission, (updated) => {
+      showNotification('Correction request sent to teacher', 'success', 5000);
+      const statusEl = document.getElementById('correctionRequestStatus');
+      if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
+      requestBtn.textContent = 'Update Request';
+    });
   };
   const printBtn = document.getElementById('printStudentResult');
   if (printBtn) printBtn.onclick = () => {
@@ -6764,22 +7126,19 @@ function renderStudentEntry() {
         <label class="small">Full name</label>
         <input id="stuName" class="input-beautiful" />
         <div style="height:8px"></div>
-        <label class="small">Email / Registration No</label>
-        <input id="stuIdentity" class="input-beautiful" placeholder="Email or registration number" />
-        <div style="height:8px"></div>
-        <label class="small">Correction Contact (Email or WhatsApp)</label>
-        <input id="stuCorrectionContact" class="input-beautiful" placeholder="Optional: email or WhatsApp number for corrections" />
-        <div style="height:8px"></div>
-        <label class="small">Quiz Code / Magic Link</label>
-        <input id="stuAccess" class="input-beautiful" placeholder="123456 or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
-        <div style="height:12px"></div>
-        <div class="student-buttons"><button id="startExamBtn" class="btn-main">Start Exam</button><button id="previewLink" class="btn-secondary">Copy Link</button><button id="checkResultBtn" class="btn-secondary">Check Result</button></div>
-        </div>
+         <label class="small">Email / Registration No</label>
+         <input id="stuIdentity" class="input-beautiful" placeholder="Email or registration number" />
+         <div style="height:8px"></div>
+         <label class="small">Quiz Code / Magic Link</label>
+         <input id="stuAccess" class="input-beautiful" placeholder="123456 or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
+         <div style="height:12px"></div>
+         <div class="student-buttons"><button id="startExamBtn" class="btn-main">Start Exam</button><button id="previewLink" class="btn-secondary">Copy Link</button><button id="checkResultBtn" class="btn-secondary">Check Result</button></div>
+         </div>
       </div>
       <div class="info-card">
           <h3 class="display-font">Quick Info</h3>
           <p class="text-muted">Enter the Quiz Code provided by your teacher or paste the student link.</p>
-          <p class="text-muted">If you enter an email or WhatsApp number in the correction contact field, that is where your teacher will try to send any correction response.</p>
+          <p class="text-muted">If you later request a correction PDF, the app will ask for your WhatsApp number at the end of the quiz. Your email or registration details from this screen are already saved.</p>
           <p class="text-muted">The app will not show other teachers' quizzes.</p>
       </div>
     </div>
@@ -6789,7 +7148,6 @@ function renderStudentEntry() {
     document.getElementById('startExamBtn').onclick = async () => {
       const name = document.getElementById('stuName').value.trim();
       const studentKey = document.getElementById('stuIdentity').value.trim();
-      const correctionContact = document.getElementById('stuCorrectionContact').value.trim();
       const access = parseQuizAccessInput(document.getElementById('stuAccess').value || '');
       const email = studentKey.includes('@') ? studentKey : '';
       const registrationNo = studentKey.includes('@') ? '' : studentKey;
@@ -6820,8 +7178,7 @@ function renderStudentEntry() {
       state.currentSubmission = null; // reset
       state.view = 'take';
       // set student details into submission placeholder
-      const correctionChannel = detectCorrectionContactChannel(correctionContact || email);
-      state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: correctionContact || email || '', correctionContactChannel: correctionChannel || (email ? 'email' : ''), whatsappNumber: correctionChannel === 'whatsapp' ? normalizeWhatsappNumber(correctionContact) : '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' } };
+      state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: email || '', correctionContactChannel: email ? 'email' : '', whatsappNumber: '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' } };
       const draft = loadExamDraft(quiz.id, studentKey);
       if (draft && confirm('A saved exam draft was found. Resume from where you stopped?')) {
         state.currentSubmission.answers = draft.answers || {};

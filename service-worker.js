@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v26';
+const CACHE_NAME = 'ope-assessor-v27';
 const urlsToCache = [
   './',
   './index.html',
@@ -6,6 +6,7 @@ const urlsToCache = [
   './app.js',
   './style.css',
   './manifest.json',
+  './summary-preview.png',
   'https://cdn.tailwindcss.com'
 ];
 
