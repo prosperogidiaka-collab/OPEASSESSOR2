@@ -376,6 +376,32 @@ function buildCorrectionShareMessage(submission, quiz) {
   return `Hi ${submission.name || 'Student'},\n\nPlease find the correction for ${quiz.title || submission.quizId}.${requestLine}\nBest regards,`;
 }
 
+function formatCorrectionActivityStamp(timestamp = '') {
+  const time = timestamp ? new Date(timestamp).getTime() : 0;
+  if (!time || Number.isNaN(time)) return '';
+  return new Date(time).toLocaleString();
+}
+
+function getSubmissionCorrectionShareMeta(submission = {}) {
+  const status = (submission.correctionStatus || '').toString().trim();
+  if (status === 'whatsapp-shared') {
+    return { label: 'WhatsApp sent', timestamp: submission.correctionWhatsappAt || '' };
+  }
+  if (status === 'whatsapp-opened') {
+    return { label: 'WhatsApp opened', timestamp: submission.correctionWhatsappAt || '' };
+  }
+  if (status === 'emailed') {
+    return { label: 'Email opened', timestamp: submission.correctionEmailedAt || '' };
+  }
+  if (status === 'pending' || submission.correctionRequested) {
+    return { label: 'Requested', timestamp: submission.correctionRequestedAt || '' };
+  }
+  if (submission.correctionDownloadedAt || submission._correctionDownloaded) {
+    return { label: 'PDF downloaded', timestamp: submission.correctionDownloadedAt || '' };
+  }
+  return { label: 'No correction activity', timestamp: '' };
+}
+
 function saveSupportSettings(nextSettings = {}) {
   const teachers = getAllTeachers();
   const adminId = normalizeEmail(SUPER_ADMIN_EMAIL);
@@ -4142,7 +4168,10 @@ function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) 
 async function sendCorrectionByEmail(submission, quiz) {
   const contact = getSubmissionCorrectionContact(submission);
   const targetEmail = contact.email || ((submission.email || '').includes('@') ? submission.email : '');
-  if (!targetEmail) return showNotification('This student did not provide an email contact for corrections.', 'error');
+  if (!targetEmail) {
+    showNotification('This student did not provide an email contact for corrections.', 'error');
+    return false;
+  }
   try {
     await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
     const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
@@ -4153,9 +4182,11 @@ async function sendCorrectionByEmail(submission, quiz) {
       correctionEmailedAt: new Date().toISOString()
     });
     showNotification('Email draft opened. Attach the downloaded PDF and click Send.', 'warning', 9000);
+    return true;
   } catch (error) {
     console.error(error);
     showNotification('Error preparing correction email', 'error');
+    return false;
   }
 }
 
@@ -4223,14 +4254,17 @@ function openRequestedCorrectionsShareModal(quiz, submissions = []) {
     </div>
     <div class="table-wrap">
       <table class="table-dense">
-        <thead><tr><th>Name</th><th>Email / ID</th><th>Preferred Contact</th><th>Request</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Email / ID</th><th>Preferred Contact</th><th>Status</th><th>Request</th><th>Actions</th></tr></thead>
         <tbody>
           ${requested.map((submission) => {
             const contact = getSubmissionCorrectionContact(submission);
+            const shareMeta = getSubmissionCorrectionShareMeta(submission);
+            const shareStamp = formatCorrectionActivityStamp(shareMeta.timestamp);
             return `<tr>
               <td>${escapeHtml(submission.name || '')}</td>
               <td>${escapeHtml(submission.email || submission.registrationNo || '')}</td>
               <td>${escapeHtml(contact.label || 'Not provided')}</td>
+              <td>${escapeHtml(shareMeta.label)}${shareStamp ? `<div class="small">${escapeHtml(shareStamp)}</div>` : ''}</td>
               <td>${escapeHtml(submission.correctionMessage || 'Correction review requested.')}</td>
               <td>
                 <div class="row-action-shell">
@@ -4239,7 +4273,7 @@ function openRequestedCorrectionsShareModal(quiz, submissions = []) {
                 </div>
               </td>
             </tr>`;
-          }).join('') || '<tr><td colspan="5">No correction requests yet.</td></tr>'}
+          }).join('') || '<tr><td colspan="6">No correction requests yet.</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -5308,14 +5342,16 @@ function renderResultsView() {
     document.getElementById('btnExportXLSX').onclick = () => {
       if (typeof XLSX === 'undefined') return showNotification('Excel library not loaded', 'error');
       const ranks = computeRankingForQuiz(q.id);
-      const header = ['Name','Email / Reg No','Facility','Score','%','Status','Adjusted','Correction Request','Correction Message','IP','Tab switches','Time (min)','Rank','Submitted'];
+      const header = ['Name','Email / Reg No','Facility','Score','%','Status','Adjusted','Correction Request','Correction Message','Correction Contact','Correction Share Status','Correction Activity Time','IP','Tab switches','Time (min)','Rank','Submitted'];
       const data = [header];
       submissions.forEach(s => {
-        data.push([s.name, s.email, s.facility || q.facility || '', formatScoreValue(s.score), s.percent, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', (s.monitoring && s.monitoring.ipAddress) || '', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
+        const correctionContact = getSubmissionCorrectionContact(s);
+        const correctionShare = getSubmissionCorrectionShareMeta(s);
+        data.push([s.name, s.email, s.facility || q.facility || '', formatScoreValue(s.score), s.percent, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), (s.monitoring && s.monitoring.ipAddress) || '', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
       });
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(data);
-      ws['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }];
+      ws['!cols'] = [{ wch: 20 }, { wch: 25 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 24 }, { wch: 24 }, { wch: 22 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(wb, ws, 'Results');
       XLSX.writeFile(wb, `results-${q.id}.xlsx`);
       showNotification('  Exported to Excel', 'success');
@@ -5339,6 +5375,9 @@ function renderResultsView() {
     } else {
       const ranks = computeRankingForQuiz(q.id);
       const rows = submissions.map(s => {
+        const correctionContact = getSubmissionCorrectionContact(s);
+        const correctionShare = getSubmissionCorrectionShareMeta(s);
+        const correctionShareStamp = formatCorrectionActivityStamp(correctionShare.timestamp);
         return `
           <tr>
             <td>${escapeHtml(s.name || '')}</td>
@@ -5355,6 +5394,8 @@ function renderResultsView() {
               ${s.correctionRequested
                 ? `<span class="req-badge req-pending" title="${escapeHtml(s.correctionMessage || '')}">Requested</span>`
                 : '<span class="req-badge">None</span>'}
+              <div class="small" style="margin-top:6px">${escapeHtml(correctionContact.label || 'No contact provided')}</div>
+              <div class="small" style="margin-top:4px;color:#64748B">${escapeHtml(correctionShare.label)}${correctionShareStamp ? ` • ${escapeHtml(correctionShareStamp)}` : ''}</div>
             </td>
             <td class="text-right">
               <div class="row-action-shell">
@@ -5404,7 +5445,7 @@ function renderResultsView() {
 
     // Wire per-student correction PDF buttons
     setTimeout(() => {
-      const runSubmissionAction = (action, ev) => {
+      const runSubmissionAction = async (action, ev) => {
         if (!action) return showNotification('Choose an action first', 'error');
         const quizId = ev.currentTarget.dataset.quiz;
         const email = decodeURIComponent(ev.currentTarget.dataset.email || '');
@@ -5423,17 +5464,18 @@ function renderResultsView() {
           const s = index >= 0 ? subsAll[index] : null;
           if (!s) return showNotification('Submission not found', 'error');
           const quiz = getAllQuizzes()[quizId] || {};
-          downloadCorrectionPdfFast(s, quiz, { showNegativePenalty: true }).then(() => {
-            showNotification('Student correction PDF downloaded', 'success');
-            s._correctionDownloaded = true;
-            s.updatedAt = new Date().toISOString();
-            const subsAll2 = getAllSubmissions();
-            const idx2 = findSubmissionIndexByIdentity(subsAll2, s.quizId, s.email, s.submittedAt || '');
-            if (idx2 >= 0) {
-              subsAll2[idx2] = s;
-              saveAllSubmissions(subsAll2);
-            }
-          }).catch(() => {});
+          await downloadCorrectionPdfFast(s, quiz, { showNegativePenalty: true });
+          showNotification('Student correction PDF downloaded', 'success');
+          s._correctionDownloaded = true;
+          s.correctionDownloadedAt = new Date().toISOString();
+          s.updatedAt = new Date().toISOString();
+          const subsAll2 = getAllSubmissions();
+          const idx2 = findSubmissionIndexByIdentity(subsAll2, s.quizId, s.email, s.submittedAt || '');
+          if (idx2 >= 0) {
+            subsAll2[idx2] = s;
+            saveAllSubmissions(subsAll2);
+          }
+          render();
         } catch (e) { console.error(e); showNotification('Error generating PDF', 'error'); }
           return;
         }
@@ -5444,7 +5486,8 @@ function renderResultsView() {
           const s = index >= 0 ? subsAll[index] : null;
           if (!s) return showNotification('Submission not found', 'error');
           const quiz = getAllQuizzes()[quizId] || {};
-          sendCorrectionByEmail(s, quiz);
+          const sent = await sendCorrectionByEmail(s, quiz);
+          if (sent) render();
         } catch (e) { console.error(e); showNotification('Error preparing email', 'error'); }
           return;
         }
@@ -5455,7 +5498,8 @@ function renderResultsView() {
           const s = index >= 0 ? subsAll[index] : null;
           if (!s) return showNotification('Submission not found', 'error');
           const quiz = getAllQuizzes()[quizId] || {};
-          shareCorrectionViaWhatsapp(s, quiz);
+          const shared = await shareCorrectionViaWhatsapp(s, quiz);
+          if (shared) render();
         } catch (e) { console.error(e); showNotification('Error preparing WhatsApp share', 'error'); }
           return;
         }
@@ -5475,10 +5519,10 @@ function renderResultsView() {
           render();
         }
       };
-      document.querySelectorAll('.btnApplySubmissionAction').forEach(btn => btn.onclick = (ev) => {
+      document.querySelectorAll('.btnApplySubmissionAction').forEach(btn => btn.onclick = async (ev) => {
         const selector = ev.currentTarget.parentElement.querySelector('.submissionActionSelect');
         const action = selector ? selector.value : '';
-        runSubmissionAction(action, ev);
+        await runSubmissionAction(action, ev);
         if (selector) selector.value = '';
       });
     }, 100);
