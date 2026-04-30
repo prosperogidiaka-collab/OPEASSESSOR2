@@ -34,6 +34,12 @@ const DEFAULT_SUPPORT_SETTINGS = {
   email: ADMIN_CONTACT_EMAIL,
   whatsapp: ''
 };
+const DEFAULT_LICENSE_PRICING = {
+  daily: '',
+  weekly: '',
+  monthly: '',
+  yearly: ''
+};
 
 function normalizeApiBaseUrl(value) {
   return (value || '').toString().trim().replace(/\/+$/, '');
@@ -231,6 +237,143 @@ function getSupportSettings() {
     email: (admin.supportEmail || DEFAULT_SUPPORT_SETTINGS.email || ADMIN_CONTACT_EMAIL || '').toString().trim(),
     whatsapp: (admin.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp || '').toString().trim()
   };
+}
+
+function getLicensePricingSettings() {
+  const admin = getAllTeachers()[normalizeEmail(SUPER_ADMIN_EMAIL)] || {};
+  const pricing = admin.licensePricing && typeof admin.licensePricing === 'object' ? admin.licensePricing : {};
+  return {
+    daily: (pricing.daily || DEFAULT_LICENSE_PRICING.daily || '').toString().trim(),
+    weekly: (pricing.weekly || DEFAULT_LICENSE_PRICING.weekly || '').toString().trim(),
+    monthly: (pricing.monthly || DEFAULT_LICENSE_PRICING.monthly || '').toString().trim(),
+    yearly: (pricing.yearly || DEFAULT_LICENSE_PRICING.yearly || '').toString().trim()
+  };
+}
+
+function saveLicensePricingSettings(nextPricing = {}) {
+  const teachers = getAllTeachers();
+  const adminId = normalizeEmail(SUPER_ADMIN_EMAIL);
+  const currentPricing = getLicensePricingSettings();
+  teachers[adminId] = {
+    ...(teachers[adminId] || {}),
+    teacherId: adminId,
+    email: adminId,
+    role: 'super_admin',
+    supportEmail: teachers[adminId]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
+    supportWhatsapp: teachers[adminId]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
+    licensePricing: {
+      daily: (nextPricing.daily ?? currentPricing.daily ?? '').toString().trim(),
+      weekly: (nextPricing.weekly ?? currentPricing.weekly ?? '').toString().trim(),
+      monthly: (nextPricing.monthly ?? currentPricing.monthly ?? '').toString().trim(),
+      yearly: (nextPricing.yearly ?? currentPricing.yearly ?? '').toString().trim()
+    },
+    createdAt: teachers[adminId]?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  saveAllTeachers(teachers);
+}
+
+function getTeacherOwnedQuizCount(teacherId = state.teacherId) {
+  const ownerId = normalizeEmail(teacherId);
+  return Object.values(getAllQuizzes() || {}).filter((quiz) => normalizeEmail(quiz.teacherId) === ownerId).length;
+}
+
+function getTeacherTrialStatus(teacher = getCurrentTeacher()) {
+  if (!teacher) return { available: false, used: false, label: 'No teacher session' };
+  if (teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) {
+    return { available: false, used: false, label: 'Admin accounts are unlimited' };
+  }
+  const used = !!teacher.trialQuizUsedAt || getTeacherOwnedQuizCount(teacher.teacherId || teacher.email) > 0;
+  return {
+    available: !used,
+    used,
+    usedAt: teacher.trialQuizUsedAt || '',
+    label: used ? 'Free trial used' : 'One free trial quiz available'
+  };
+}
+
+function getTeacherLicenseGraceDeadline(teacher = getCurrentTeacher()) {
+  if (!teacher || teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) return 0;
+  const status = getTeacherLicenseStatus(teacher);
+  if (status.active) return 0;
+  const base = teacher.licenseStopped
+    ? (teacher.licenseUpdatedAt || teacher.updatedAt || teacher.licenseEndsAt || '')
+    : (teacher.licenseEndsAt || '');
+  const baseTime = base ? new Date(base).getTime() : 0;
+  if (!baseTime || Number.isNaN(baseTime)) return 0;
+  return baseTime + (3 * 24 * 60 * 60 * 1000);
+}
+
+function getTeacherById(teacherId = '') {
+  return getAllTeachers()[normalizeEmail(teacherId)] || null;
+}
+
+function getQuizEffectiveEndTime(quiz) {
+  if (!quiz) return 0;
+  const scheduleEndTime = quiz.scheduleEnd ? new Date(quiz.scheduleEnd).getTime() : 0;
+  const owner = getTeacherById(quiz.teacherId);
+  const graceEndTime = getTeacherLicenseGraceDeadline(owner);
+  if (scheduleEndTime && graceEndTime) return Math.min(scheduleEndTime, graceEndTime);
+  return scheduleEndTime || graceEndTime || 0;
+}
+
+function formatLicensePlanLabel(planKey = '') {
+  const labels = {
+    daily: 'Daily',
+    weekly: 'Weekly',
+    monthly: 'Monthly',
+    yearly: 'Yearly'
+  };
+  return labels[planKey] || 'Plan';
+}
+
+function buildLicensePricingListMarkup() {
+  const pricing = getLicensePricingSettings();
+  return ['daily', 'weekly', 'monthly', 'yearly'].map((planKey) => {
+    const amount = (pricing[planKey] || '').trim();
+    return `<li>${formatLicensePlanLabel(planKey)}: ${escapeHtml(amount || 'Not set')}</li>`;
+  }).join('');
+}
+
+function normalizeWhatsappNumber(value = '') {
+  const digits = (value || '').toString().replace(/[^\d]/g, '');
+  if (!digits) return '';
+  return digits.startsWith('0') && digits.length > 10 ? `234${digits.slice(1)}` : digits;
+}
+
+function detectCorrectionContactChannel(value = '') {
+  const raw = (value || '').toString().trim();
+  if (!raw) return '';
+  if (raw.includes('@')) return 'email';
+  if (normalizeWhatsappNumber(raw)) return 'whatsapp';
+  return '';
+}
+
+function getSubmissionCorrectionContact(submission = {}) {
+  const storedValue = (submission.correctionContact || submission.contactValue || '').toString().trim();
+  const storedChannel = (submission.correctionContactChannel || '').toString().trim();
+  const fallbackEmail = (submission.email || '').includes('@') ? (submission.email || '').toString().trim() : '';
+  const fallbackWhatsapp = normalizeWhatsappNumber(submission.whatsappNumber || '');
+  const channel = storedChannel || detectCorrectionContactChannel(storedValue) || (fallbackWhatsapp ? 'whatsapp' : fallbackEmail ? 'email' : '');
+  const email = channel === 'email'
+    ? (storedValue || fallbackEmail)
+    : fallbackEmail;
+  const whatsapp = channel === 'whatsapp'
+    ? normalizeWhatsappNumber(storedValue || fallbackWhatsapp)
+    : fallbackWhatsapp;
+  return {
+    channel,
+    email: (email || '').toString().trim(),
+    whatsapp,
+    label: channel === 'whatsapp' ? (whatsapp || 'No WhatsApp number') : (email || 'No email address')
+  };
+}
+
+function buildCorrectionShareMessage(submission, quiz) {
+  const requestLine = submission.correctionRequested
+    ? `\nStudent request: ${submission.correctionMessage || 'Correction review requested.'}\nRequested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
+    : '\n';
+  return `Hi ${submission.name || 'Student'},\n\nPlease find the correction for ${quiz.title || submission.quizId}.${requestLine}\nBest regards,`;
 }
 
 function saveSupportSettings(nextSettings = {}) {
@@ -478,25 +621,18 @@ function encodeQuizToPortableCode(quiz) {
 async function copyQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  const portableFallback = !sharedSyncOk;
-  if (sharedSyncOk) markQuizzesCloudSynced([quiz.id]);
-  await copyTextToClipboard(encodeQuizToLink(quiz, { portable: portableFallback }), portableFallback ? 'Portable student link copied' : 'Quiz link copied');
-  if (!sharedSyncOk) {
-    showNotification(`Portable student link copied because shared sync is down. Students can open that link on another device right now. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
-  }
+  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
+  markQuizzesCloudSynced([quiz.id]);
+  await copyTextToClipboard(encodeQuizToLink(quiz), 'Quiz link copied');
   return true;
 }
 
 async function copyQuizAccessCode(quiz) {
   if (!quiz || !quiz.id) return false;
   const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  if (sharedSyncOk) {
-    markQuizzesCloudSynced([quiz.id]);
-    await copyTextToClipboard(quiz.id, 'Student code copied');
-    return true;
-  }
-  await copyTextToClipboard(encodeQuizToPortableCode(quiz), 'Portable student code copied');
-  showNotification('Shared sync is down, so a portable student code was copied. Students can paste it into the Quiz Code / Magic Link box.', 'warning', 9000);
+  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
+  markQuizzesCloudSynced([quiz.id]);
+  await copyTextToClipboard(quiz.id, 'Student code copied');
   return true;
 }
 
@@ -652,11 +788,21 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
   if (teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) {
     return { active: true, unlimited: true, label: 'Unlimited licence', detail: 'Admin licence never expires', endsAt: '' };
   }
-  if (teacher.licenseStopped) return { active: false, stopped: true, label: 'Licence stopped', detail: 'Contact admin for a higher duration', endsAt: teacher.licenseEndsAt || '' };
-  if (!teacher.licenseEndsAt) return { active: false, label: 'No active licence', detail: 'Request licence to set new questions', endsAt: '' };
+  const trial = getTeacherTrialStatus(teacher);
+  if (trial.available) {
+    return {
+      active: true,
+      trial: true,
+      label: 'Free trial available',
+      detail: 'You may create and analyse one quiz before requesting a paid licence.',
+      endsAt: ''
+    };
+  }
+  if (teacher.licenseStopped) return { active: false, stopped: true, label: 'Licence stopped', detail: 'Previous quizzes remain open for only 3 days from the stop date. Contact admin for a higher duration.', endsAt: teacher.licenseEndsAt || '' };
+  if (!teacher.licenseEndsAt) return { active: false, label: 'No active licence', detail: 'Request a paid licence to keep creating or importing assessment content.', endsAt: '' };
   const ends = new Date(teacher.licenseEndsAt);
   if (Number.isNaN(ends.getTime())) return { active: false, label: 'Invalid licence', detail: 'Contact admin', endsAt: '' };
-  if (ends.getTime() < Date.now()) return { active: false, expired: true, label: 'Licence expired', detail: 'Request a higher duration to set new questions', endsAt: teacher.licenseEndsAt };
+  if (ends.getTime() < Date.now()) return { active: false, expired: true, label: 'Licence expired', detail: 'Previous quizzes remain open for only 3 days from the licence end date. Request a higher duration to keep creating or importing content.', endsAt: teacher.licenseEndsAt };
   return { active: true, label: 'Licensed', detail: 'Licence ends ' + ends.toLocaleString(), endsAt: teacher.licenseEndsAt };
 }
 
@@ -664,43 +810,73 @@ function canSetQuestions() {
   return isSuperAdmin() || getTeacherLicenseStatus().active;
 }
 
-function requestTeacherLicense() {
+function requestTeacherLicense(selectedPlanKey = 'weekly', contactChannel = '') {
   const teacher = getCurrentTeacher();
   if (!teacher) { state.view = 'teacher.login'; render(); return; }
   const teachers = getAllTeachers();
   const id = normalizeEmail(teacher.teacherId || teacher.email);
-  teachers[id] = { ...teachers[id], licenseRequestedAt: new Date().toISOString(), licenseRequestStatus: 'pending' };
+  const pricing = getLicensePricingSettings();
+  const chosenPlan = ['daily', 'weekly', 'monthly', 'yearly'].includes(selectedPlanKey) ? selectedPlanKey : 'weekly';
+  const chosenAmount = (pricing[chosenPlan] || '').toString().trim();
+  teachers[id] = {
+    ...teachers[id],
+    licenseRequestedAt: new Date().toISOString(),
+    licenseRequestStatus: 'pending',
+    licenseRequestedPlan: chosenPlan,
+    licenseRequestedAmount: chosenAmount
+  };
   teachers[id].updatedAt = new Date().toISOString();
   saveAllTeachers(teachers);
-  showNotification('Licence request saved. Please email admin for quicker response.', 'success', 6000);
+  showNotification('Licence request saved.', 'success', 5000);
+  const support = getSupportSettings();
   const subject = encodeURIComponent('OPE Assessor Licence Request');
-  const body = encodeURIComponent(`Hello Admin,\n\nPlease activate or extend my OPE Assessor licence.\n\nTeacher ID: ${id}\nRequest time: ${new Date().toLocaleString()}\n\nThank you.`);
-  setTimeout(() => {
-    if (confirm('Your licence request has been saved. Do you want to email the admin now for quicker response?')) {
-      window.location.href = `mailto:${encodeURIComponent(ADMIN_CONTACT_EMAIL)}?subject=${subject}&body=${body}`;
-    }
-  }, 100);
+  const body = encodeURIComponent(`Hello Admin,\n\nI want to request a paid OPE Assessor licence.\n\nTeacher ID: ${id}\nRequested plan: ${formatLicensePlanLabel(chosenPlan)}\nAmount shown: ${chosenAmount || 'Not set'}\nRequest time: ${new Date().toLocaleString()}\n\nThank you.`);
+  if (contactChannel === 'email') {
+    if (!support.email) return showNotification('Support email has not been set yet', 'error');
+    window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${subject}&body=${body}`;
+  } else if (contactChannel === 'whatsapp') {
+    const phone = normalizeWhatsappNumber(support.whatsapp || '');
+    if (!phone) return showNotification('Support WhatsApp number has not been set yet', 'error');
+    window.open(`https://wa.me/${phone}?text=${body}`, '_blank', 'noopener');
+  }
   render();
 }
 
 function showLicenseRequired() {
   const status = getTeacherLicenseStatus();
+  const pricingList = buildLicensePricingListMarkup();
   let modal = document.getElementById('licenseRequiredModal'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='licenseRequiredModal'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(15,23,42,.45)'; modal.style.zIndex=30000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='min(520px,94%)';
   inner.innerHTML = `
     <div class="h2">${escapeHtml(status.label)}</div>
     <p class="small">${escapeHtml(status.detail)}</p>
-    <p class="small">You can still view your existing quizzes, results, and students. A valid licence is required only to set new questions.</p>
-    <p class="small"><strong>For quicker response:</strong> after requesting, send an email to ${escapeHtml(ADMIN_CONTACT_EMAIL)}.</p>
-    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px">
+    <p class="small">This is a paid licence. You can still view your existing quizzes, results, and students, but importing or creating new assessment content needs either the one free trial quiz or an active paid licence.</p>
+    <div class="small" style="margin-top:10px"><strong>Current licence pricing</strong></div>
+    <ul class="small" style="margin:8px 0 0 18px;line-height:1.8">${pricingList}</ul>
+    <label class="small" style="display:block;margin-top:14px">Select licence plan</label>
+    <select id="licensePlanSelect" class="input-beautiful" style="margin-top:6px">
+      <option value="daily">Daily</option>
+      <option value="weekly" selected>Weekly</option>
+      <option value="monthly">Monthly</option>
+      <option value="yearly">Yearly</option>
+    </select>
+    <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px">
       <button id="closeLicenseRequired" class="btn btn-ghost">Close</button>
-      <button id="requestLicenseBtn" class="btn btn-primary">Request Licence</button>
+      <button id="requestLicenseEmailBtn" class="btn btn-ghost">Request by Email</button>
+      <button id="requestLicenseWhatsappBtn" class="btn btn-primary">Request by WhatsApp</button>
     </div>
   `;
   modal.appendChild(inner); document.body.appendChild(modal);
   document.getElementById('closeLicenseRequired').onclick = () => modal.remove();
-  document.getElementById('requestLicenseBtn').onclick = () => { modal.remove(); requestTeacherLicense(); };
+  document.getElementById('requestLicenseEmailBtn').onclick = () => {
+    modal.remove();
+    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'weekly', 'email');
+  };
+  document.getElementById('requestLicenseWhatsappBtn').onclick = () => {
+    modal.remove();
+    requestTeacherLicense(document.getElementById('licensePlanSelect')?.value || 'weekly', 'whatsapp');
+  };
 }
 
 function requireTeacher() {
@@ -824,6 +1000,7 @@ function ensureSuperAdminAccount() {
     role: 'super_admin',
     supportEmail: teachers[id]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
     supportWhatsapp: teachers[id]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
+    licensePricing: teachers[id]?.licensePricing || DEFAULT_LICENSE_PRICING,
     createdAt: teachers[id]?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -1020,7 +1197,6 @@ function parseQuizAccessInput(value) {
   const raw = (value || '').trim();
   if (!raw) return { code: '', link: '' };
   if (/^https?:\/\//i.test(raw)) return { code: '', link: raw };
-  if (raw.toUpperCase().startsWith(PORTABLE_QUIZ_CODE_PREFIX)) return { code: `${PORTABLE_QUIZ_CODE_PREFIX}${raw.slice(PORTABLE_QUIZ_CODE_PREFIX.length).replace(/\s+/g, '')}`, link: '' };
   const qMatch = raw.match(/[?&]q=([^&]+)/i);
   if (qMatch) return { code: decodeURIComponent(qMatch[1]), link: raw };
   return { code: raw.replace(/\s+/g, ''), link: '' };
@@ -1487,7 +1663,7 @@ function showAlertsPanel() {
   modal.style.padding = '72px 24px 24px';
 
   const quizzes = getAllQuizzes();
-  const quizKeys = Object.keys(quizzes).filter(k => isSuperAdmin() || (state.teacherId && quizzes[k].teacherId === state.teacherId));
+  const quizKeys = Object.keys(quizzes).filter(k => state.teacherId && normalizeEmail(quizzes[k].teacherId) === normalizeEmail(state.teacherId));
   const submissions = getAllSubmissions().filter(s => quizKeys.includes(s.quizId));
   const now = Date.now();
   const alerts = [];
@@ -1651,7 +1827,7 @@ function renderTeacherOverview() {
       </div>
       ${licence.active ? '' : '<button id="requestLicenceInline" class="btn btn-primary btn-sm">Request Licence</button>'}
     `;
-    const req = document.getElementById('requestLicenceInline'); if (req) req.onclick = () => requestTeacherLicense();
+    const req = document.getElementById('requestLicenceInline'); if (req) req.onclick = () => showLicenseRequired();
 
     // populate overview stats from storage
     const quizzes = getAllQuizzes();
@@ -1665,7 +1841,8 @@ function renderTeacherOverview() {
     const active = quizKeys.filter(k => {
       const q = quizzes[k];
       const startOk = !q.scheduleStart || new Date(q.scheduleStart).getTime() <= now;
-      const endOk = !q.scheduleEnd || new Date(q.scheduleEnd).getTime() >= now;
+      const effectiveEnd = getQuizEffectiveEndTime(q);
+      const endOk = !effectiveEnd || effectiveEnd >= now;
       return startOk && endOk;
     }).length;
     document.getElementById('ovActiveExams').textContent = active;
@@ -1710,12 +1887,11 @@ function showTeacherAccessModal() {
 
 function renderTeacherQuizzes() {
   const container = document.createElement('div');
-  const portableMode = networkSyncFailed && !networkSyncReady;
   const syncButton = canUseNetworkSync()
     ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px"><button id="syncLocalToCloudBtn" class="btn btn-primary btn-sm">Sync To Cloud</button></div>`
     : '';
   const syncNotice = networkSyncFailed && !networkSyncReady
-    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Do not send the visible 6-digit quiz number by itself. Use Copy Student Code or Copy Portable Link so the app can send a cross-device version that still works.</div>`
+    ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now. Fix the backend connection before sending quiz IDs or links to students.</div>`
     : '';
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncButton}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
@@ -1725,7 +1901,7 @@ function renderTeacherQuizzes() {
       await syncAllLocalDataToCloud();
     };
     const all = getAllQuizzes();
-    const keys = Object.keys(all).filter(k => isSuperAdmin() || all[k].teacherId === state.teacherId).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
+    const keys = Object.keys(all).filter(k => normalizeEmail(all[k].teacherId) === normalizeEmail(state.teacherId)).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
     const listEl = document.getElementById('teacherQuizzesList');
     if (!keys.length) {
       listEl.innerHTML = '<div class="card small">No quizzes yet. Click Create Quiz to start.</div>';
@@ -1734,7 +1910,8 @@ function renderTeacherQuizzes() {
     listEl.innerHTML = keys.map(k => {
       const q = all[k];
       const syncStatus = getQuizSyncStatus(q);
-      const ended = q.scheduleEnd && new Date(q.scheduleEnd).getTime() <= Date.now();
+      const effectiveEnd = getQuizEffectiveEndTime(q);
+      const ended = effectiveEnd && effectiveEnd <= Date.now();
       return `<div class="card quiz-list-card" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div>
           <div style="font-weight:700">${escapeHtml(q.title)} <span class="small" style="color:var(--muted);font-weight:500">(${q.id})</span></div>
@@ -1746,7 +1923,7 @@ function renderTeacherQuizzes() {
         </div>
         <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy Student Code</button>
-          <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
+          <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">Copy Link</button>
           <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
           <button class="btn btn-ghost btn-sm btnEndQuiz" data-id="${q.id}" ${ended ? 'disabled' : ''}>End Test</button>
           <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
@@ -1767,7 +1944,7 @@ function renderTeacherQuizzes() {
 
 function getTeacherQuizKeys() {
   const all = getAllQuizzes();
-  return Object.keys(all).filter(k => isSuperAdmin() || all[k].teacherId === state.teacherId);
+  return Object.keys(all).filter(k => normalizeEmail(all[k].teacherId) === normalizeEmail(state.teacherId));
 }
 
 function renderQuestionBankView() {
@@ -1822,7 +1999,7 @@ function renderQuestionBankView() {
 function showQuizSetDetails(quizId) {
   const quiz = getAllQuizzes()[quizId];
   if (!quiz || (quiz.teacherId !== state.teacherId && !isSuperAdmin())) return showNotification('Quiz set not found', 'error');
-  const portableMode = networkSyncFailed && !networkSyncReady;
+  const canEditThisQuiz = normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId) && canSetQuestions();
   let modal = document.getElementById('quizSetDetails'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='quizSetDetails'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(0,0,0,0.45)'; modal.style.zIndex=20000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='94%'; inner.style.maxWidth='1000px'; inner.style.maxHeight='86vh'; inner.style.overflow='auto';
@@ -1892,7 +2069,7 @@ function showQuizSetDetails(quizId) {
         <div class="card quiz-editor-question-card" data-source-id="${escapeHtml(question._sourceId || '')}">
           <div class="page-heading" style="margin-bottom:12px">
             <div class="h3 quiz-editor-question-title">Question ${questionIndex + 1}</div>
-            <button type="button" class="btn btn-ghost btn-sm btnRemoveEditorQuestion">Remove</button>
+            ${canEditThisQuiz ? '<button type="button" class="btn btn-ghost btn-sm btnRemoveEditorQuestion">Remove</button>' : ''}
           </div>
           <div class="subject-field">
             <label class="small">Question text</label>
@@ -1934,15 +2111,15 @@ function showQuizSetDetails(quizId) {
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button type="button" id="prevQuizContentSubject" class="btn btn-ghost btn-sm" ${selectedSubjectIndex === 0 ? 'disabled' : ''}>Previous Subject</button>
           <button type="button" id="nextQuizContentSubject" class="btn btn-ghost btn-sm" ${selectedSubjectIndex === subjects.length - 1 ? 'disabled' : ''}>Next Subject</button>
-          <button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>
+          ${canEditThisQuiz ? '<button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>' : ''}
         </div>
       </div>
-      <div class="small" style="margin-bottom:12px;line-height:1.7">Spacing, line breaks, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.</div>
+      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or licence state.'}</div>
       <div class="card" style="padding:14px;margin-bottom:14px">
         <div class="h3">${getSubjectLabel(subject, selectedSubjectIndex)}</div>
         <div id="quizSubjectQuestionCount" class="small" style="margin-top:6px">${questions.length} question(s) in this subject</div>
       </div>
-      <div data-quiz-subject-index="${selectedSubjectIndex}" class="quiz-editor-list">
+      <div data-quiz-subject-index="${selectedSubjectIndex}" class="quiz-editor-list ${canEditThisQuiz ? '' : 'quiz-editor-readonly'}">
         ${questionCards || '<div class="card-beautiful"><div class="small">No questions found in this subject yet.</div></div>'}
       </div>
     `;
@@ -1953,6 +2130,12 @@ function showQuizSetDetails(quizId) {
         renumberQuestionCards();
       };
     });
+    if (!canEditThisQuiz) {
+      inner.querySelectorAll('.quiz-editor-list input, .quiz-editor-list textarea, .quiz-editor-list select').forEach((field) => {
+        field.setAttribute('readonly', 'readonly');
+        field.setAttribute('disabled', 'disabled');
+      });
+    }
     const subjectSelect = inner.querySelector('#quizContentSubjectSelect');
     if (subjectSelect) subjectSelect.onchange = () => {
       captureCurrentSubjectDraft();
@@ -2002,13 +2185,13 @@ function showQuizSetDetails(quizId) {
       <div>
         <div class="h2">${escapeHtml(quiz.title)}</div>
         <div class="small">Quiz ID: ${quiz.id}</div>
-        <div class="small">${isSharedSyncAvailable() ? `Student code: ${escapeHtml(quiz.id)}` : 'Student code: use Copy Student Code for the portable cross-device version'}</div>
+        <div class="small">Student code: ${escapeHtml(quiz.id)}</div>
       </div>
       <button id="closeQuizSetDetails" class="btn btn-ghost">Close</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
       <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>
-      <button id="copyQuizSetLink" class="btn btn-primary btn-sm">${portableMode ? 'Copy Portable Link' : 'Copy Link'}</button>
+      <button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>
     </div>
     <div id="quizSetDetailsBody"></div>
   `;
@@ -2076,6 +2259,21 @@ function renderSettingsView() {
         <div class="small">Show instructions for sharing this app on a local Wi-Fi network.</div>
         <button id="openNetworkGuide" class="btn btn-ghost" style="margin-top:12px">Find IP Guide</button>
       </div>
+      ${isSuperAdmin() ? `
+        <div class="card">
+          <div class="h3">Licensing Plans</div>
+          <div class="small">Set the paid amounts teachers will see before contacting admin for licence approval.</div>
+          <label class="small" style="display:block;margin-top:12px">Daily amount</label>
+          <input id="licensePriceDaily" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().daily || '')}" placeholder="e.g. NGN 2,000" />
+          <label class="small" style="display:block;margin-top:10px">Weekly amount</label>
+          <input id="licensePriceWeekly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().weekly || '')}" placeholder="e.g. NGN 8,000" />
+          <label class="small" style="display:block;margin-top:10px">Monthly amount</label>
+          <input id="licensePriceMonthly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().monthly || '')}" placeholder="e.g. NGN 25,000" />
+          <label class="small" style="display:block;margin-top:10px">Yearly amount</label>
+          <input id="licensePriceYearly" class="input-beautiful" value="${escapeHtml(getLicensePricingSettings().yearly || '')}" placeholder="e.g. NGN 200,000" />
+          <button id="saveLicensePricingBtn" class="btn btn-primary" style="margin-top:12px">Save Licensing</button>
+        </div>
+      ` : ''}
     </div>
     ${isSuperAdmin() ? `
       <div class="card" style="margin-top:var(--space-3)">
@@ -2146,6 +2344,18 @@ function renderSettingsView() {
       showNotification('Backup downloaded', 'success');
     };
     document.getElementById('openNetworkGuide').onclick = () => showLocalNetworkGuide();
+    const savePricingBtn = document.getElementById('saveLicensePricingBtn');
+    if (savePricingBtn) savePricingBtn.onclick = () => {
+      if (!confirmTeacherAction('Save these licensing amounts for teacher requests?')) return;
+      saveLicensePricingSettings({
+        daily: document.getElementById('licensePriceDaily')?.value || '',
+        weekly: document.getElementById('licensePriceWeekly')?.value || '',
+        monthly: document.getElementById('licensePriceMonthly')?.value || '',
+        yearly: document.getElementById('licensePriceYearly')?.value || ''
+      });
+      showNotification('Licensing amounts saved', 'success');
+      render();
+    };
     const search = document.getElementById('teacherSearch');
     if (search) search.oninput = () => {
       const term = normalizeEmail(search.value);
@@ -2247,8 +2457,6 @@ function openSupportChooser() {
       <button id="supportByEmail" class="btn btn-primary">Email Support</button>
       <button id="supportByWhatsapp" class="btn btn-ghost">WhatsApp Support</button>
     </div>
-    <div class="small" style="margin-top:16px">Email: ${escapeHtml(settings.email || 'Not set')}</div>
-    <div class="small">WhatsApp: ${escapeHtml(settings.whatsapp || 'Not set')}</div>
   `;
   modal.appendChild(inner);
   document.body.appendChild(modal);
@@ -2329,7 +2537,7 @@ function renderTeacherGuideView() {
         'Choose who can take the quiz first: Public or Uploaded class.',
         'If you choose Uploaded class, select the class that already exists in Students.',
         'Enter the institution name, quiz title, timing, grading rules, and schedule.',
-        'Choose calculator access if you want no calculator, a basic calculator, or a scientific calculator during the test.',
+        'Calculator access starts on Basic by default, and you can change it to None or Scientific if needed.',
         'Turn on camera requirement only when monitoring is compulsory for that quiz.',
         'Add each subject and upload one file per subject, or paste CSV for a single-subject quiz.',
         'Add certificate signatories only if you need them, and decide whether each signatory name should show or stay hidden on the certificate.',
@@ -2382,7 +2590,7 @@ function renderTeacherGuideView() {
         'Check the status on each quiz card. Cloud synced means the quiz is ready across devices.',
         'If the quiz says Pending cloud sync, click Sync To Cloud first.',
         'Use Copy Student Code or Copy Link after sync.',
-        'If shared sync is temporarily unavailable, use the portable student code or portable link instead.',
+        'If shared sync looks inactive, fix the backend first before sending the quiz code or student link.',
         'When a quiz was created on one phone before cloud sync was fixed, reopen it on that original device and save or sync it once so the shared copy is uploaded.'
       ]
     },
@@ -2462,9 +2670,8 @@ function renderTeacherSupportView() {
     </div>
     <div class="settings-grid">
       <div class="card">
-        <div class="h3">Current Support Contacts</div>
-        <div class="small" style="margin-top:12px">Email: ${escapeHtml(support.email || 'Not set')}</div>
-        <div class="small" style="margin-top:8px">WhatsApp: ${escapeHtml(support.whatsapp || 'Not set')}</div>
+        <div class="h3">Contact Admin</div>
+        <div class="small" style="margin-top:12px;line-height:1.7">Use the buttons above to open email or WhatsApp directly. The support contact details stay hidden from the general teacher view.</div>
       </div>
       ${isSuperAdmin() ? `
         <div class="card">
@@ -2494,7 +2701,7 @@ function renderTeacherSupportView() {
     if (saveBtn) saveBtn.onclick = () => {
       const email = (document.getElementById('supportEmailInput').value || '').trim();
       const whatsapp = (document.getElementById('supportWhatsappInput').value || '').trim();
-      if (!email) return showNotification('Enter a support email', 'error');
+      if (!email && !whatsapp) return showNotification('Enter at least one support contact', 'error');
       if (!confirmTeacherAction('Save these support contact settings?')) return;
       saveSupportSettings({ email, whatsapp });
       showNotification('Support settings saved', 'success');
@@ -2564,7 +2771,8 @@ function openStudentEditorModal(teacherId, student = null, onSaved = null, optio
   };
 }
 
-function buildStudentTableRows(students = []) {
+function buildStudentTableRows(students = [], options = {}) {
+  const editable = options.editable !== false;
   return students.map((student) => `
     <tr>
       <td>${escapeHtml(student.name || '')}</td>
@@ -2573,16 +2781,18 @@ function buildStudentTableRows(students = []) {
       <td>${escapeHtml(normalizeClassName(student.className || student.class || ''))}</td>
       <td>${escapeHtml(student.sourceQuizId || 'General upload')}</td>
       <td>${student.uploadedAt ? new Date(student.uploadedAt).toLocaleString() : ''}</td>
-      <td class="text-right">
-        <div class="row-action-shell">
-          <select class="input-beautiful row-action-select studentRowActionSelect" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">
-            <option value="">Choose action</option>
-            <option value="edit">Edit Student</option>
-            <option value="remove">Remove Student</option>
-          </select>
-          <button class="btn btn-ghost btn-sm btnApplyStudentAction" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">Apply</button>
-        </div>
-      </td>
+      ${editable ? `
+        <td class="text-right">
+          <div class="row-action-shell">
+            <select class="input-beautiful row-action-select studentRowActionSelect" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">
+              <option value="">Choose action</option>
+              <option value="edit">Edit Student</option>
+              <option value="remove">Remove Student</option>
+            </select>
+            <button class="btn btn-ghost btn-sm btnApplyStudentAction" data-key="${escapeHtml(normalizeEmail(student.email || student.id || student.registrationNo || student.name))}">Apply</button>
+          </div>
+        </td>
+      ` : ''}
     </tr>
   `).join('');
 }
@@ -2590,13 +2800,15 @@ function buildStudentTableRows(students = []) {
 function renderStudentClassManager(container, teacherId, options = {}) {
   if (!container) return;
   const scope = options.scope || 'teacher';
-  const includeImport = !!options.includeImport;
+  const ownTeacher = normalizeEmail(teacherId) === normalizeEmail(state.teacherId);
+  const canModify = !!(ownTeacher && canSetQuestions() && !options.readOnly);
+  const includeImport = !!options.includeImport && canModify;
   const includeExport = !!options.includeExport;
-  const includeTemplate = !!options.includeTemplate;
+  const includeTemplate = !!options.includeTemplate && canModify;
   const groups = getStudentClassGroups(teacherId);
   const classNames = Object.keys(groups).sort((left, right) => left.localeCompare(right));
   const preferred = getSelectedClassFilter(teacherId, scope);
-  const selectedClass = preferred && groups[preferred] ? preferred : (classNames[0] || '');
+  const selectedClass = preferred && groups[preferred] ? preferred : '';
   setSelectedClassFilter(teacherId, selectedClass, scope);
   const visibleStudents = selectedClass ? (groups[selectedClass] || []) : [];
   container.innerHTML = `
@@ -2605,16 +2817,18 @@ function renderStudentClassManager(container, teacherId, options = {}) {
         <div>
           <div class="small">Choose class</div>
           <select id="${scope}StudentClassFilter" class="input-beautiful" style="min-width:220px">
-            ${classNames.map((className) => `<option value="${escapeHtml(className)}" ${selectedClass === className ? 'selected' : ''}>${escapeHtml(className)} (${groups[className].length})</option>`).join('') || '<option value="">No classes uploaded</option>'}
+            <option value="">Open a class</option>
+            ${classNames.map((className) => `<option value="${escapeHtml(className)}" ${selectedClass === className ? 'selected' : ''}>${escapeHtml(className)} (${groups[className].length})</option>`).join('')}
           </select>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           ${includeTemplate ? '<button type="button" id="' + scope + 'StudentsTemplate" class="btn btn-ghost">Student Template</button>' : ''}
           ${includeExport ? '<button type="button" id="' + scope + 'StudentsExport" class="btn btn-ghost">Export Excel</button>' : ''}
           ${includeImport ? '<button type="button" id="' + scope + 'StudentsImport" class="btn btn-primary">Import Students</button>' : ''}
-          <button type="button" id="${scope}StudentsAdd" class="btn btn-primary">Add Student Manually</button>
+          ${canModify ? `<button type="button" id="${scope}StudentsAdd" class="btn btn-primary">Add Student Manually</button>` : ''}
         </div>
       </div>
+      ${!canModify && ownTeacher ? '<div class="small" style="margin-bottom:12px;color:#92400E">Your licence or free trial no longer allows importing or editing students. You can still view your uploaded classes here.</div>' : ''}
       <div class="student-class-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
         ${classNames.map((className) => `
           <button type="button" class="card-beautiful studentClassCard ${selectedClass === className ? 'student-class-active' : ''}" data-class="${escapeHtml(className)}" style="text-align:left;border:${selectedClass === className ? '2px solid #4F46E5' : '1px solid #E2E8F0'}">
@@ -2623,14 +2837,25 @@ function renderStudentClassManager(container, teacherId, options = {}) {
           </button>
         `).join('') || '<div class="card-beautiful"><div class="small">No class uploaded yet.</div></div>'}
       </div>
-      <div class="table-wrap">
-        <table class="table-dense">
-          <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Class</th><th>Source Quiz</th><th>Uploaded</th><th class="text-right">Actions</th></tr></thead>
-          <tbody>
-            ${visibleStudents.length ? buildStudentTableRows(visibleStudents) : '<tr><td colspan="7">No students in this class yet.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
+      ${selectedClass ? `
+        <div class="card" style="padding:14px;margin-bottom:14px">
+          <div class="page-heading" style="margin-bottom:0">
+            <div>
+              <div class="h3">${escapeHtml(selectedClass)}</div>
+              <div class="small">${visibleStudents.length} student(s) in this class</div>
+            </div>
+            <button type="button" id="${scope}BackToClasses" class="btn btn-ghost btn-sm">Back to Classes</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-dense">
+            <thead><tr><th>Name</th><th>Email</th><th>Registration No / ID</th><th>Class</th><th>Source Quiz</th><th>Uploaded</th>${canModify ? '<th class="text-right">Actions</th>' : ''}</tr></thead>
+            <tbody>
+              ${visibleStudents.length ? buildStudentTableRows(visibleStudents, { editable: canModify }) : `<tr><td colspan="${canModify ? 7 : 6}">No students in this class yet.</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      ` : '<div class="card-beautiful"><div class="small">Choose a class above to open the students inside it.</div></div>'}
     </div>
   `;
   const rerender = () => renderStudentClassManager(container, teacherId, options);
@@ -2643,6 +2868,11 @@ function renderStudentClassManager(container, teacherId, options = {}) {
   const classFilter = container.querySelector(`#${scope}StudentClassFilter`);
   if (classFilter) classFilter.onchange = () => {
     setSelectedClassFilter(teacherId, classFilter.value || '', scope);
+    rerender();
+  };
+  const backBtn = container.querySelector(`#${scope}BackToClasses`);
+  if (backBtn) backBtn.onclick = () => {
+    setSelectedClassFilter(teacherId, '', scope);
     rerender();
   };
   const addBtn = container.querySelector(`#${scope}StudentsAdd`);
@@ -2752,7 +2982,6 @@ function showAdminTeacherExams(teacherId) {
               <td>${count}</td>
               <td>${q.scheduleStart ? new Date(q.scheduleStart).toLocaleString() : 'Any time'}${q.scheduleEnd ? ' - ' + new Date(q.scheduleEnd).toLocaleString() : ''}</td>
               <td>
-                <button class="btn btn-primary btn-sm adminEditQuiz" data-id="${escapeHtml(q.id)}">Edit</button>
                 <button class="btn btn-ghost btn-sm adminResultsQuiz" data-id="${escapeHtml(q.id)}">Results</button>
                 <button class="btn btn-ghost btn-sm adminContentQuiz" data-id="${escapeHtml(q.id)}">Content</button>
                 <button class="btn btn-ghost btn-sm adminCopyQuizLink" data-id="${escapeHtml(q.id)}">Copy Link</button>
@@ -2767,10 +2996,6 @@ function showAdminTeacherExams(teacherId) {
   document.body.appendChild(modal);
   modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
   document.getElementById('closeAdminTeacherExams').onclick = () => modal.remove();
-  document.querySelectorAll('.adminEditQuiz').forEach(btn => btn.onclick = (ev) => {
-    modal.remove();
-    showCreateQuizModal(ev.currentTarget.dataset.id);
-  });
   document.querySelectorAll('.adminResultsQuiz').forEach(btn => btn.onclick = (ev) => {
     state.currentQuiz = getAllQuizzes()[ev.currentTarget.dataset.id];
     state.view = 'teacher.results';
@@ -2809,9 +3034,10 @@ function showAdminTeacherStudents(teacherId) {
   document.getElementById('closeAdminTeacherStudents').onclick = () => modal.remove();
   renderStudentClassManager(document.getElementById('adminTeacherStudentsHost'), id, {
     scope: 'admin',
-    includeImport: true,
+    includeImport: false,
     includeExport: true,
-    includeTemplate: true
+    includeTemplate: false,
+    readOnly: true
   });
 }
 
@@ -3883,8 +4109,176 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     pdf.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 7, { align: 'right' });
   }
 
-  pdf.save(getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'correction'));
+  const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'correction');
+  if (opts.returnBlob || opts.returnFile || opts.autoSave === false) {
+    const blob = pdf.output('blob');
+    if (opts.returnFile) {
+      try {
+        return Promise.resolve(new File([blob], filename, { type: 'application/pdf' }));
+      } catch (error) {
+        return Promise.resolve(blob);
+      }
+    }
+    if (opts.returnBlob) return Promise.resolve(blob);
+    return Promise.resolve({ blob, filename });
+  }
+  pdf.save(filename);
   return Promise.resolve(true);
+}
+
+function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
+  const all = getAllSubmissions();
+  const index = findSubmissionIndexByIdentity(all, quizId, email, submittedAt || '');
+  if (index < 0) return false;
+  all[index] = {
+    ...all[index],
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+  saveAllSubmissions(all);
+  return true;
+}
+
+async function sendCorrectionByEmail(submission, quiz) {
+  const contact = getSubmissionCorrectionContact(submission);
+  const targetEmail = contact.email || ((submission.email || '').includes('@') ? submission.email : '');
+  if (!targetEmail) return showNotification('This student did not provide an email contact for corrections.', 'error');
+  try {
+    await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
+    const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
+    const body = encodeURIComponent(buildCorrectionShareMessage(submission, quiz));
+    window.location.href = `mailto:${encodeURIComponent(targetEmail)}?subject=${subject}&body=${body}`;
+    markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+      correctionStatus: 'emailed',
+      correctionEmailedAt: new Date().toISOString()
+    });
+    showNotification('Email draft opened. Attach the downloaded PDF and click Send.', 'warning', 9000);
+  } catch (error) {
+    console.error(error);
+    showNotification('Error preparing correction email', 'error');
+  }
+}
+
+async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
+  const contact = getSubmissionCorrectionContact(submission);
+  const phone = contact.whatsapp || normalizeWhatsappNumber(submission.whatsappNumber || '');
+  if (!phone) return showNotification('This student did not provide a WhatsApp number for corrections.', 'error');
+  const message = buildCorrectionShareMessage(submission, quiz);
+  try {
+    if (!options.forceLinkMode && navigator.share) {
+      const file = await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, returnFile: true, autoSave: false });
+      if (file && typeof File !== 'undefined' && file instanceof File && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({
+          title: `Correction for ${quiz.title || submission.quizId}`,
+          text: message,
+          files: [file]
+        });
+        markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+          correctionStatus: 'whatsapp-shared',
+          correctionWhatsappAt: new Date().toISOString()
+        });
+        if (!options.suppressSuccess) showNotification('WhatsApp share opened with the correction PDF.', 'success');
+        return true;
+      }
+    }
+    await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true });
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener');
+    markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+      correctionStatus: 'whatsapp-opened',
+      correctionWhatsappAt: new Date().toISOString()
+    });
+    if (!options.suppressSuccess) {
+      showNotification('WhatsApp chat opened. Attach the downloaded PDF if the browser cannot attach it automatically.', 'warning', 9000);
+    }
+    return true;
+  } catch (error) {
+    if (error && error.name === 'AbortError') return false;
+    console.error(error);
+    showNotification('Error preparing WhatsApp correction share', 'error');
+    return false;
+  }
+}
+
+function openRequestedCorrectionsShareModal(quiz, submissions = []) {
+  const requested = (submissions || []).filter((submission) => !!submission.correctionRequested);
+  let modal = document.getElementById('requestedCorrectionsShareModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'requestedCorrectionsShareModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(960px, 96vw)';
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Share Requested Corrections</div>
+        <div class="small">${escapeHtml(quiz.title || quiz.id || 'Quiz')}</div>
+      </div>
+      <button id="closeRequestedCorrectionsShareModal" class="btn btn-ghost">Close</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <div class="small">Only students who requested correction are listed here.</div>
+      <button id="bulkWhatsappCorrections" class="btn btn-primary btn-sm"${requested.some((item) => getSubmissionCorrectionContact(item).whatsapp) ? '' : ' disabled'}>Open All WhatsApp Chats</button>
+    </div>
+    <div class="table-wrap">
+      <table class="table-dense">
+        <thead><tr><th>Name</th><th>Email / ID</th><th>Preferred Contact</th><th>Request</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${requested.map((submission) => {
+            const contact = getSubmissionCorrectionContact(submission);
+            return `<tr>
+              <td>${escapeHtml(submission.name || '')}</td>
+              <td>${escapeHtml(submission.email || submission.registrationNo || '')}</td>
+              <td>${escapeHtml(contact.label || 'Not provided')}</td>
+              <td>${escapeHtml(submission.correctionMessage || 'Correction review requested.')}</td>
+              <td>
+                <div class="row-action-shell">
+                  <button type="button" class="btn btn-ghost btn-sm btnShareCorrectionEmail" data-email="${encodeURIComponent(submission.email || '')}" data-submitted="${escapeHtml(submission.submittedAt || '')}">Email</button>
+                  <button type="button" class="btn btn-primary btn-sm btnShareCorrectionWhatsapp" data-email="${encodeURIComponent(submission.email || '')}" data-submitted="${escapeHtml(submission.submittedAt || '')}">WhatsApp</button>
+                </div>
+              </td>
+            </tr>`;
+          }).join('') || '<tr><td colspan="5">No correction requests yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeRequestedCorrectionsShareModal').onclick = () => modal.remove();
+  const resolveSubmission = (button) => {
+    const email = decodeURIComponent(button.dataset.email || '');
+    const submittedAt = button.dataset.submitted || '';
+    const all = getAllSubmissions();
+    const index = findSubmissionIndexByIdentity(all, quiz.id, email, submittedAt);
+    return index >= 0 ? all[index] : null;
+  };
+  inner.querySelectorAll('.btnShareCorrectionEmail').forEach((button) => {
+    button.onclick = async () => {
+      const submission = resolveSubmission(button);
+      if (!submission) return showNotification('Submission not found', 'error');
+      await sendCorrectionByEmail(submission, quiz);
+    };
+  });
+  inner.querySelectorAll('.btnShareCorrectionWhatsapp').forEach((button) => {
+    button.onclick = async () => {
+      const submission = resolveSubmission(button);
+      if (!submission) return showNotification('Submission not found', 'error');
+      await shareCorrectionViaWhatsapp(submission, quiz);
+    };
+  });
+  const bulkBtn = document.getElementById('bulkWhatsappCorrections');
+  if (bulkBtn) bulkBtn.onclick = async () => {
+    const whatsappTargets = requested.filter((submission) => !!getSubmissionCorrectionContact(submission).whatsapp);
+    if (!whatsappTargets.length) return showNotification('No requested correction has a WhatsApp number yet.', 'error');
+    if (!confirmTeacherAction(`Open WhatsApp chats for ${whatsappTargets.length} requested correction(s)? Each correction PDF will be prepared one by one.`)) return;
+    for (const submission of whatsappTargets) {
+      await shareCorrectionViaWhatsapp(submission, quiz, { forceLinkMode: true, suppressSuccess: true });
+    }
+    showNotification('Requested WhatsApp correction chats opened. Attach the downloaded PDFs where needed and send them from WhatsApp.', 'warning', 9000);
+  };
 }
 
 function downloadFacilityIndexPdfText(quiz, data) {
@@ -4134,18 +4528,19 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
         }
         .summary-header-school{
           margin:6px 0 0;
-          font-size:18px;
+          font-size:31px;
           font-weight:800;
           letter-spacing:0.04em;
           color:var(--navy);
         }
         .summary-header-title{
           margin:0;
-          font-size:28px;
           font-weight:800;
           letter-spacing:0.02em;
           color:var(--navy);
         }
+        .summary-header-title.with-school{font-size:20px}
+        .summary-header-title.solo{font-size:30px}
         .summary-header-subtitle{
           margin:8px 0 0;
           font-size:12px;
@@ -4324,7 +4719,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions) {
           <div class="summary-header-badge">Generated Result Summary</div>
           <div class="summary-header-brand">OPE ASSESSOR</div>
           ${institutionName ? `<div class="summary-header-school">${institutionName}</div>` : ''}
-          <h1 class="summary-header-title">${quizTitle} &mdash; Result Summary</h1>
+          <h1 class="summary-header-title ${institutionName ? 'with-school' : 'solo'}">${quizTitle} &mdash; Result Summary</h1>
           <div class="summary-header-subtitle">Clean assessment broadsheet for parents, management, and school records.</div>
         </div>
 
@@ -4844,6 +5239,8 @@ function renderResultsView() {
   const institutionLine = q.examName ? `<div class="text-sm text-gray-600">Institution: ${escapeHtml(q.examName)}</div>` : '';
   const div = document.createElement('div');
   div.className = 'max-w-7xl mx-auto';
+  const effectiveEnd = getQuizEffectiveEndTime(q);
+  const alreadyEnded = effectiveEnd && effectiveEnd <= Date.now();
   div.innerHTML = `
     <div class="mb-10 text-center">
       <h2 class="display-font text-4xl font-bold text-gradient mb-3">${q.title} - Results</h2>
@@ -4851,7 +5248,7 @@ function renderResultsView() {
       <div class="text-sm text-gray-600">Facility: ${q.facility || ' '}</div>
       <div class="flex gap-3 justify-center mt-4">
         <button id="btnBackTeacher" class="btn-pastel-primary">Back to Dashboard</button>
-        <button id="btnEndCurrentQuiz" class="btn-pastel-secondary"${q.scheduleEnd && new Date(q.scheduleEnd).getTime() <= Date.now() ? ' disabled' : ''}>End Test</button>
+        <button id="btnEndCurrentQuiz" class="btn-pastel-secondary"${alreadyEnded ? ' disabled' : ''}>End Test</button>
         <button id="btnExamAnalysis" class="btn-pastel-secondary">Exam Analysis</button>
       </div>
     </div>
@@ -4873,6 +5270,7 @@ function renderResultsView() {
         <div class="text-sm text-gray-600 mb-2">Export</div>
         <button id="btnExportXLSX" class="btn-pastel-secondary text-sm w-full">Excel</button>
         <button id="btnExportSummaryPDF" class="btn-pastel-secondary text-sm w-full" style="margin-top:8px">PDF Summary</button>
+        <button id="btnShareRequestedCorrections" class="btn-pastel-secondary text-sm w-full" style="margin-top:8px"${correctionRequestCount ? '' : ' disabled'}>Share Corrections</button>
       </div>
     </div>
 
@@ -4930,6 +5328,8 @@ function renderResultsView() {
         { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
       );
     };
+    const btnShareRequested = document.getElementById('btnShareRequestedCorrections');
+    if (btnShareRequested) btnShareRequested.onclick = () => openRequestedCorrectionsShareModal(q, submissions);
     const endBtn = document.getElementById('btnEndCurrentQuiz');
     if (endBtn) endBtn.onclick = async () => { await endQuizNow(q.id); };
 
@@ -4963,6 +5363,7 @@ function renderResultsView() {
                   <option value="edit-score">Edit Score</option>
                   <option value="download-correction">Download Correction</option>
                   <option value="send-email">Send Email</option>
+                  <option value="send-whatsapp">Send WhatsApp</option>
                   <option value="delete">Delete Result</option>
                 </select>
                 <button class="btn-pastel-secondary btnApplySubmissionAction" data-quiz="${q.id}" data-email="${encodeURIComponent(s.email)}" data-submitted="${escapeHtml(s.submittedAt || '')}">Apply</button>
@@ -5043,28 +5444,19 @@ function renderResultsView() {
           const s = index >= 0 ? subsAll[index] : null;
           if (!s) return showNotification('Submission not found', 'error');
           const quiz = getAllQuizzes()[quizId] || {};
-          downloadCorrectionPdfFast(s, quiz, { showNegativePenalty: true }).then(() => {
-            showNotification('PDF generated. Opening email client...', 'success');
-            const subject = encodeURIComponent(`Correction for ${quiz.title || quizId}`);
-            const reqLine = s.correctionRequested
-              ? `\nStudent request: ${s.correctionMessage || 'Correction review requested.'}\nRequested at: ${s.correctionRequestedAt ? new Date(s.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
-              : '';
-            const body = encodeURIComponent(`Hi ${s.name},\n\nPlease find the correction PDF for quiz ${quiz.title || quizId}.${reqLine}\nBest regards,`);
-            window.location.href = `mailto:${encodeURIComponent(s.email)}?subject=${subject}&body=${body}`;
-            const subsAfterEmail = getAllSubmissions();
-            const emailIndex = findSubmissionIndexByIdentity(subsAfterEmail, quizId, s.email, s.submittedAt || '');
-            if (emailIndex >= 0) {
-              subsAfterEmail[emailIndex] = {
-                ...subsAfterEmail[emailIndex],
-                correctionStatus: 'emailed',
-                correctionEmailedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              };
-              saveAllSubmissions(subsAfterEmail);
-            }
-            showNotification('Email draft opened. Your mail app cannot auto-attach files in browser mode, so attach the downloaded PDF and click Send.', 'warning', 9000);
-          }).catch(() => {});
+          sendCorrectionByEmail(s, quiz);
         } catch (e) { console.error(e); showNotification('Error preparing email', 'error'); }
+          return;
+        }
+        if (action === 'send-whatsapp') {
+        try {
+          const subsAll = getAllSubmissions();
+          const index = findSubmissionIndexByIdentity(subsAll, quizId, email, submittedAt);
+          const s = index >= 0 ? subsAll[index] : null;
+          if (!s) return showNotification('Submission not found', 'error');
+          const quiz = getAllQuizzes()[quizId] || {};
+          shareCorrectionViaWhatsapp(s, quiz);
+        } catch (e) { console.error(e); showNotification('Error preparing WhatsApp share', 'error'); }
           return;
         }
         if (action === 'delete') {
@@ -5269,7 +5661,7 @@ function showCreateQuizModal(editQuizId = '') {
               </select>
               <p class="helper-text">Choose this first. Public means anyone with the student code can enter. Uploaded class means only students from one imported class can open it.</p>
             </div>
-            <div class="form-group">
+            <div class="form-group" id="cqAssignedClassGroup">
               <label class="form-label" for="cqAssignedClass">Class</label>
               <select id="cqAssignedClass" class="input-beautiful">
                 <option value="">Select class</option>
@@ -5436,6 +5828,7 @@ function showCreateQuizModal(editQuizId = '') {
       </aside>
     </div>
     <div class="form-actions">
+      <button id="btnPreviewQuizDraft" class="btn-secondary">Preview Questions</button>
       <button id="btnCancelCreate" class="btn-secondary">Cancel</button>
       <button id="btnCreateSave" class="btn-primary">${editingQuiz ? 'Save Changes' : 'Save Quiz'}</button>
     </div>
@@ -5450,6 +5843,8 @@ function showCreateQuizModal(editQuizId = '') {
     const audienceSelect = document.getElementById('cqAudience');
     const assignedClassSelect = document.getElementById('cqAssignedClass');
     const assignedClassHelp = document.getElementById('cqAssignedClassHelp');
+    const assignedClassGroup = document.getElementById('cqAssignedClassGroup');
+    const trialWasAvailable = !editingQuiz && getTeacherTrialStatus(getCurrentTeacher()).available;
     const createSubjectRow = (subject = {}) => {
       const row = document.createElement('div');
       row.className = 'subject-row';
@@ -5531,6 +5926,7 @@ function showCreateQuizModal(editQuizId = '') {
     const updateAudienceState = () => {
       const classMode = audienceSelect.value === 'class';
       assignedClassSelect.disabled = !classMode || !classNames.length;
+      if (assignedClassGroup) assignedClassGroup.style.display = classMode ? '' : 'none';
       if (assignedClassHelp) {
         assignedClassHelp.textContent = classMode
           ? (classNames.length ? 'Choose the uploaded class that should receive this quiz.' : 'No uploaded class yet. Use the Students menu to import one first.')
@@ -5575,7 +5971,7 @@ function showCreateQuizModal(editQuizId = '') {
       normalizeCertificateSignatories(editingQuiz.certificateSignatories).forEach(createSignatoryRow);
     } else {
       audienceSelect.value = 'public';
-      document.getElementById('cqCalculatorType').value = 'none';
+      document.getElementById('cqCalculatorType').value = 'basic';
     }
     if (!subjectsList.children.length) createSubjectRow();
     updateAudienceState();
@@ -5585,6 +5981,91 @@ function showCreateQuizModal(editQuizId = '') {
     document.getElementById('closeCreate').onclick = ()=>m.remove();
     document.getElementById('btnCancelCreate').onclick = ()=>m.remove();
     document.getElementById('btnExportTemplate').onclick = ()=> exportQuizTemplate();
+    document.getElementById('btnPreviewQuizDraft').onclick = () => {
+      const subjects = getSubjectRows();
+      const pastedBank = (document.getElementById('cqPaste').value || '').trim()
+        ? parseQuestionsFromCSVString(document.getElementById('cqPaste').value.trim()).filter(isMeaningfulQuestion)
+        : [];
+      const previewSubjects = subjects.map((subject, subjectIndex) => {
+        const sourceBank = subject.importedQuestions && subject.importedQuestions.length
+          ? subject.importedQuestions
+          : (subjectIndex === 0 ? pastedBank : []);
+        return {
+          name: subject.name || `Subject ${subjectIndex + 1}`,
+          questions: sourceBank.map((item, index) => normalizeQuestionForStorage({ ...item, subject: subject.name }, index, subject.name || 'General'))
+        };
+      }).filter((subject) => (subject.questions || []).length);
+      if (!previewSubjects.length) return showNotification('No questions to preview yet. Upload or paste questions first.', 'error');
+      let previewModal = document.getElementById('quizDraftPreviewModal');
+      if (previewModal) previewModal.remove();
+      previewModal = document.createElement('div');
+      previewModal.id = 'quizDraftPreviewModal';
+      previewModal.className = 'student-result-modal';
+      const previewCard = document.createElement('div');
+      previewCard.className = 'card-beautiful admin-modal-card';
+      previewCard.style.width = 'min(960px, 96vw)';
+      let previewSubjectIndex = 0;
+      let previewQuestionIndex = 0;
+      const renderPreview = () => {
+        const currentSubject = previewSubjects[previewSubjectIndex];
+        const currentQuestion = (currentSubject.questions || [])[previewQuestionIndex];
+        previewCard.innerHTML = `
+          <div class="page-heading">
+            <div>
+              <div class="h2">Quiz Preview</div>
+              <div class="small">Review the question flow before saving. Close this preview to continue editing in the builder.</div>
+            </div>
+            <button id="closeQuizDraftPreview" class="btn btn-ghost">Close</button>
+          </div>
+          <div class="quiz-content-toolbar">
+            <div>
+              <div class="small">Subject</div>
+              <select id="draftPreviewSubjectSelect" class="input-beautiful" style="min-width:220px">
+                ${previewSubjects.map((subject, index) => `<option value="${index}" ${index === previewSubjectIndex ? 'selected' : ''}>${escapeHtml(subject.name)} (${subject.questions.length})</option>`).join('')}
+              </select>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" id="draftPreviewPrev" class="btn btn-ghost btn-sm"${previewQuestionIndex === 0 ? ' disabled' : ''}>Previous Question</button>
+              <button type="button" id="draftPreviewNext" class="btn btn-primary btn-sm"${previewQuestionIndex >= currentSubject.questions.length - 1 ? ' disabled' : ''}>Next Question</button>
+            </div>
+          </div>
+          <div class="card quiz-editor-question-card">
+            <div class="h3">Question ${previewQuestionIndex + 1} of ${currentSubject.questions.length}</div>
+            <div class="small" style="margin:6px 0 14px">${escapeHtml(currentSubject.name)}</div>
+            <div class="preserve-format" style="font-weight:700;line-height:1.7">${escapeHtml(currentQuestion?.question || '')}</div>
+            <div class="quiz-editor-options-grid" style="margin-top:16px">
+              ${(currentQuestion?.options || []).map((option, optionIndex) => {
+                const letter = String.fromCharCode(65 + optionIndex);
+                const correct = (currentQuestion.answer || '') === letter;
+                return `<div class="card" style="padding:12px;border:${correct ? '2px solid #10B981' : '1px solid #E5E7EB'}"><strong>${letter}.</strong> <span class="preserve-format">${escapeHtml(option)}</span>${correct ? '<div class="small" style="margin-top:6px;color:#047857;font-weight:700">Correct answer</div>' : ''}</div>`;
+              }).join('')}
+            </div>
+            <div class="field-grid-2" style="margin-top:16px">
+              <div class="card" style="padding:12px"><div class="small">Topic</div><div>${escapeHtml(currentQuestion?.topic || 'Not set')}</div></div>
+              <div class="card" style="padding:12px"><div class="small">Difficulty</div><div>${escapeHtml(currentQuestion?.difficulty || 'Medium')}</div></div>
+            </div>
+          </div>
+        `;
+        previewModal.appendChild(previewCard);
+        document.body.appendChild(previewModal);
+        document.getElementById('closeQuizDraftPreview').onclick = () => previewModal.remove();
+        document.getElementById('draftPreviewSubjectSelect').onchange = (event) => {
+          previewSubjectIndex = parseInt(event.target.value || '0', 10) || 0;
+          previewQuestionIndex = 0;
+          renderPreview();
+        };
+        document.getElementById('draftPreviewPrev').onclick = () => {
+          previewQuestionIndex = Math.max(0, previewQuestionIndex - 1);
+          renderPreview();
+        };
+        document.getElementById('draftPreviewNext').onclick = () => {
+          previewQuestionIndex = Math.min((previewSubjects[previewSubjectIndex].questions || []).length - 1, previewQuestionIndex + 1);
+          renderPreview();
+        };
+      };
+      previewModal.onclick = (event) => { if (event.target === previewModal) previewModal.remove(); };
+      renderPreview();
+    };
     enhancePasswordFields(inner);
     const goToStudentsBtn = document.getElementById('goToStudentsFromQuiz');
     if (goToStudentsBtn) goToStudentsBtn.onclick = () => {
@@ -5655,6 +6136,19 @@ function showCreateQuizModal(editQuizId = '') {
       }));
       const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: quizOwnerId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', calculatorType, webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
       const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
+      if (trialWasAvailable) {
+        const teachersMap = getAllTeachers();
+        const teacherId = normalizeEmail(quizOwnerId);
+        if (teachersMap[teacherId]) {
+          teachersMap[teacherId] = {
+            ...teachersMap[teacherId],
+            trialQuizUsedAt: teachersMap[teacherId].trialQuizUsedAt || now,
+            trialQuizId: teachersMap[teacherId].trialQuizId || id,
+            updatedAt: now
+          };
+          saveAllTeachers(teachersMap);
+        }
+      }
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
@@ -5906,7 +6400,17 @@ function computeRankingForQuiz(quizId) {
 function getQuizScheduleStatus(quiz) {
   const now = Date.now();
   if (quiz.scheduleStart && new Date(quiz.scheduleStart).getTime() > now) return { ok: false, message: 'This quiz has not started yet. Start time: ' + new Date(quiz.scheduleStart).toLocaleString() };
-  if (quiz.scheduleEnd && new Date(quiz.scheduleEnd).getTime() < now) return { ok: false, message: 'This quiz has ended. End time: ' + new Date(quiz.scheduleEnd).toLocaleString() };
+  const effectiveEnd = getQuizEffectiveEndTime(quiz);
+  if (effectiveEnd && effectiveEnd < now) {
+    const owner = getTeacherById(quiz.teacherId);
+    const dueToLicense = owner && !getTeacherLicenseStatus(owner).active && getTeacherLicenseGraceDeadline(owner) === effectiveEnd;
+    return {
+      ok: false,
+      message: dueToLicense
+        ? 'This quiz has ended because the teacher licence grace period has closed. End time: ' + new Date(effectiveEnd).toLocaleString()
+        : 'This quiz has ended. End time: ' + new Date(effectiveEnd).toLocaleString()
+    };
+  }
   return { ok: true, message: '' };
 }
 
@@ -6219,15 +6723,19 @@ function renderStudentEntry() {
         <label class="small">Email / Registration No</label>
         <input id="stuIdentity" class="input-beautiful" placeholder="Email or registration number" />
         <div style="height:8px"></div>
+        <label class="small">Correction Contact (Email or WhatsApp)</label>
+        <input id="stuCorrectionContact" class="input-beautiful" placeholder="Optional: email or WhatsApp number for corrections" />
+        <div style="height:8px"></div>
         <label class="small">Quiz Code / Magic Link</label>
-        <input id="stuAccess" class="input-beautiful" placeholder="123456, OPEQUIZ:..., or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
+        <input id="stuAccess" class="input-beautiful" placeholder="123456 or https://..." value="${escapeHtml(state.prefillQuizCode || '')}" />
         <div style="height:12px"></div>
         <div class="student-buttons"><button id="startExamBtn" class="btn-main">Start Exam</button><button id="previewLink" class="btn-secondary">Copy Link</button><button id="checkResultBtn" class="btn-secondary">Check Result</button></div>
         </div>
       </div>
       <div class="info-card">
           <h3 class="display-font">Quick Info</h3>
-          <p class="text-muted">Enter the Quiz Code provided by your teacher, paste the student link, or paste the portable access code that starts with OPEQUIZ:</p>
+          <p class="text-muted">Enter the Quiz Code provided by your teacher or paste the student link.</p>
+          <p class="text-muted">If you enter an email or WhatsApp number in the correction contact field, that is where your teacher will try to send any correction response.</p>
           <p class="text-muted">The app will not show other teachers' quizzes.</p>
       </div>
     </div>
@@ -6237,16 +6745,14 @@ function renderStudentEntry() {
     document.getElementById('startExamBtn').onclick = async () => {
       const name = document.getElementById('stuName').value.trim();
       const studentKey = document.getElementById('stuIdentity').value.trim();
+      const correctionContact = document.getElementById('stuCorrectionContact').value.trim();
       const access = parseQuizAccessInput(document.getElementById('stuAccess').value || '');
       const email = studentKey.includes('@') ? studentKey : '';
       const registrationNo = studentKey.includes('@') ? '' : studentKey;
       if (!name || !studentKey) return showNotification('Please enter name and email or registration number','error');
       let quiz = await resolveQuizFromAccessWithSync(access);
       if (!quiz) {
-        const syncHelp = canUseNetworkSync()
-          ? 'Ask the teacher to resend the student link or portable student code from the Copy Portable Link / Copy Student Code button.'
-          : 'This deployment is not connected to shared sync, so students must use the student link or portable access code instead of only the 6-digit number.';
-        return showNotification(`Quiz not found or invalid code/link. ${syncHelp}`, 'error', 8000);
+        return showNotification('Quiz not found or invalid code/link. Ask the teacher to resend the quiz ID or student link.', 'error', 8000);
       }
       let qid = null;
       qid = quiz.id;
@@ -6270,7 +6776,8 @@ function renderStudentEntry() {
       state.currentSubmission = null; // reset
       state.view = 'take';
       // set student details into submission placeholder
-      state.currentSubmission = { name, email: studentKey, registrationNo, answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' } };
+      const correctionChannel = detectCorrectionContactChannel(correctionContact || email);
+      state.currentSubmission = { name, email: studentKey, registrationNo, correctionContact: correctionContact || email || '', correctionContactChannel: correctionChannel || (email ? 'email' : ''), whatsappNumber: correctionChannel === 'whatsapp' ? normalizeWhatsappNumber(correctionContact) : '', answers: {}, flagged: {}, quizId: quiz.id, allQuestions: [], currentIndex: 0, examStarted: false, startedAt: '', snapshots: [], attemptNo: usedAttempts + 1, monitoring: { tabSwitches: 0, fullscreenExits: 0, copyAttempts: 0, screenshotAttempts: 0, webcamEnabled: false, ipAddress: '', userAgent: navigator.userAgent || '', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '' } };
       const draft = loadExamDraft(quiz.id, studentKey);
       if (draft && confirm('A saved exam draft was found. Resume from where you stopped?')) {
         state.currentSubmission.answers = draft.answers || {};
