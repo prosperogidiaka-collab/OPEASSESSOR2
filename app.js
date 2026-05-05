@@ -14,7 +14,8 @@ const STORAGE_KEYS = {
   teacherId: 'ope_teacher_id',
   teachers: 'ope_teachers_v1',
   teacherSession: 'ope_teacher_session_v1',
-  students: 'ope_teacher_students_v1'
+  students: 'ope_teacher_students_v1',
+  appState: 'ope_app_state_v1'
 };
 const NETWORK_SYNC_KEYS = [
   STORAGE_KEYS.quizzes,
@@ -91,6 +92,10 @@ let networkSyncFailureMessage = '';
 const pendingNetworkWrites = new Set();
 let _historyApplying = false;
 let _lastHistoryView = '';
+let _lastRenderedView = '';
+let _pendingScrollRestore = null;
+let _overlayBodyLockObserver = null;
+const _viewScrollState = {};
 let _calculatorMemory = 0;
 let _calculatorMode = 'DEG';
 let _calculatorExpression = '';
@@ -109,6 +114,130 @@ function writeLocalStorageValue(key, value) {
 function readLocalStorageValue(key) {
   try { return JSON.parse(localStorage[key] || 'null'); }
   catch(e) { return null; }
+}
+
+function getTeacherDisplayName(teacher = getCurrentTeacher(), options = {}) {
+  const record = teacher && typeof teacher === 'object' ? teacher : {};
+  const explicitName = (record.name || record.fullName || '').toString().trim();
+  if (explicitName) return explicitName;
+  if (options.preferPlaceholder) return 'Not set yet';
+  const email = (record.email || record.teacherId || '').toString().trim();
+  if (!email) return options.fallback || 'Teacher';
+  const stem = email.split('@')[0].replace(/[._-]+/g, ' ').trim();
+  if (!stem) return email;
+  return stem.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getTeacherPhoneLabel(teacher = getCurrentTeacher(), options = {}) {
+  const phone = (teacher?.phone || teacher?.phoneNumber || '').toString().trim();
+  return phone || options.fallback || 'Not set yet';
+}
+
+function getTeacherUserBadgeLabel() {
+  if (isSuperAdmin()) return `Admin: ${SUPER_ADMIN_EMAIL}`;
+  if (!isTeacherLoggedIn()) return 'Guest';
+  return `Teacher: ${getTeacherDisplayName(getCurrentTeacher())}`;
+}
+
+function getTeacherSignatureLabel(teacherId = state.teacherId) {
+  const teacher = getTeacherById(teacherId) || getCurrentTeacher();
+  return getTeacherDisplayName(teacher, { fallback: (teacher?.email || teacher?.teacherId || 'Teacher') });
+}
+
+function getQuizSubjectSummaries(quiz = {}) {
+  return (quiz.subjects || []).map((subject, index) => ({
+    name: (subject?.name || `Subject ${index + 1}`).toString().trim() || `Subject ${index + 1}`,
+    questionCount: getQuestionCountForSubject(subject),
+    totalMarks: getSubjectTotalMarks(subject)
+  })).filter((item) => item.questionCount > 0 || item.totalMarks > 0 || item.name);
+}
+
+function captureViewScrollState(viewName = _lastRenderedView) {
+  const key = (viewName || '').toString().trim();
+  if (!key || typeof window === 'undefined' || typeof document === 'undefined') return null;
+  const snapshot = {
+    pageX: window.scrollX || 0,
+    pageY: window.scrollY || window.pageYOffset || 0,
+    containers: Array.from(document.querySelectorAll('[data-scroll-key]')).map((node) => ({
+      key: node.dataset.scrollKey || '',
+      left: node.scrollLeft || 0,
+      top: node.scrollTop || 0
+    })).filter((item) => item.key)
+  };
+  _viewScrollState[key] = snapshot;
+  return snapshot;
+}
+
+function restoreViewScrollState(snapshot = null, options = {}) {
+  const target = snapshot && typeof snapshot === 'object' ? snapshot : null;
+  const forceTop = !!options.forceTop;
+  const nextX = forceTop ? 0 : Number(target?.pageX || 0);
+  const nextY = forceTop ? 0 : Number(target?.pageY || 0);
+  requestAnimationFrame(() => {
+    window.scrollTo({ left: nextX, top: nextY, behavior: 'auto' });
+    if (!target || !Array.isArray(target.containers)) return;
+    const currentContainers = Array.from(document.querySelectorAll('[data-scroll-key]'));
+    target.containers.forEach((item) => {
+      const node = currentContainers.find((entry) => (entry.dataset.scrollKey || '') === item.key);
+      if (!node) return;
+      node.scrollLeft = Number(item.left || 0);
+      node.scrollTop = Number(item.top || 0);
+    });
+  });
+}
+
+function persistAppUiState() {
+  if (typeof window === 'undefined' || state.view === 'take') return;
+  const activeView = (_lastRenderedView || state.view || '').toString().trim();
+  if (!activeView) return;
+  const scroll = activeView === state.view
+    ? (captureViewScrollState(activeView) || _viewScrollState[activeView] || null)
+    : (_viewScrollState[state.view] || null);
+  writeLocalStorageValue(STORAGE_KEYS.appState, {
+    view: state.view,
+    quizId: state.currentQuiz?.id || '',
+    teacherGuideTopic: state.teacherGuideTopic || '',
+    prefillQuizCode: state.prefillQuizCode || '',
+    teacherId: state.teacherId || '',
+    scroll,
+    savedAt: new Date().toISOString()
+  });
+}
+
+function applyPersistedAppUiState() {
+  const stored = readLocalStorageValue(STORAGE_KEYS.appState);
+  if (!stored || typeof stored !== 'object') return false;
+  if (stored.view && stored.view !== 'take') state.view = stored.view;
+  state.teacherGuideTopic = stored.teacherGuideTopic || '';
+  state.prefillQuizCode = stored.prefillQuizCode || '';
+  if (stored.quizId) {
+    state.currentQuiz = getAllQuizzes()[stored.quizId] || null;
+    if (!state.currentQuiz && (state.view === 'results' || state.view === 'teacher.results')) {
+      state.view = isTeacherLoggedIn() ? 'teacher.quizzes' : 'home';
+    }
+  }
+  _pendingScrollRestore = stored.scroll || null;
+  return true;
+}
+
+function syncOverlayBodyLock() {
+  const locked = !!document.querySelector(
+    '.student-result-modal,#createQuizModal,#analysisModal,#teacherAccess,#quizSetDetails,#licenseRequiredModal,#alertsPanel,#localNetGuide'
+  );
+  document.documentElement.style.overflow = locked ? 'hidden' : '';
+  document.body.style.overflow = locked ? 'hidden' : '';
+}
+
+function startOverlayBodyLockObserver() {
+  if (_overlayBodyLockObserver || typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
+  _overlayBodyLockObserver = new MutationObserver(() => syncOverlayBodyLock());
+  _overlayBodyLockObserver.observe(document.body, { childList: true, subtree: true });
+  syncOverlayBodyLock();
+}
+
+function refreshCurrentQuizReference() {
+  if (!state.currentQuiz?.id) return;
+  state.currentQuiz = getAllQuizzes()[state.currentQuiz.id] || state.currentQuiz;
 }
 
 function copyTextToClipboard(text, successMessage = 'Copied') {
@@ -396,7 +525,7 @@ function buildCorrectionShareMessage(submission, quiz) {
   const requestLine = submission.correctionRequested
     ? `Requested at: ${submission.correctionRequestedAt ? new Date(submission.correctionRequestedAt).toLocaleString() : 'N/A'}\n`
     : '';
-  return `Hi ${submission.name || 'Student'},\n\nYour correction for ${quiz.title || submission.quizId} is ready.\n${requestLine}${subjectLinks}\nBest regards,`;
+  return `Hi ${submission.name || 'Student'},\n\nYour correction for ${quiz.title || submission.quizId} is ready.\n${requestLine}${subjectLinks}\nRegards,\n${getTeacherSignatureLabel(quiz?.teacherId || state.teacherId)}`;
 }
 
 function formatCorrectionActivityStamp(timestamp = '') {
@@ -439,6 +568,21 @@ function openWhatsappChat(phone, message = '') {
   const encodedMessage = encodeURIComponent((message || '').toString());
   const nativeUrl = `whatsapp://send?phone=${normalizedPhone}&text=${encodedMessage}`;
   const webUrl = `https://wa.me/${normalizedPhone}?text=${encodedMessage}`;
+  if (isLikelyMobileDevice()) {
+    window.location.href = nativeUrl;
+    setTimeout(() => {
+      if (document.visibilityState !== 'hidden') window.open(webUrl, '_blank', 'noopener');
+    }, 900);
+    return true;
+  }
+  window.open(webUrl, '_blank', 'noopener');
+  return true;
+}
+
+function openWhatsappShareIntent(message = '') {
+  const encodedMessage = encodeURIComponent((message || '').toString());
+  const nativeUrl = `whatsapp://send?text=${encodedMessage}`;
+  const webUrl = `https://wa.me/?text=${encodedMessage}`;
   if (isLikelyMobileDevice()) {
     window.location.href = nativeUrl;
     setTimeout(() => {
@@ -713,10 +857,36 @@ async function copyQuizAccessCode(quiz) {
 
 function buildQuizSharePayload(quiz) {
   const url = encodeQuizToLink(quiz);
+  const subjectSummaries = getQuizSubjectSummaries(quiz);
+  const totalQuestions = subjectSummaries.reduce((sum, item) => sum + (Number(item.questionCount) || 0), 0);
+  const subjectBreakdown = subjectSummaries.length
+    ? subjectSummaries.map((item) => `- ${item.name}: ${item.questionCount} question(s)`).join('\n')
+    : '- General: 0 question(s)';
+  const teacherLabel = getTeacherSignatureLabel(quiz?.teacherId || state.teacherId);
+  const detailedMessage = [
+    `Hello Student,`,
+    ``,
+    `You are invited to attempt ${quiz?.title || 'this quiz'} on OPE Assessor.`,
+    `Quiz Code: ${quiz?.id || ''}`,
+    `Subjects: ${subjectSummaries.length || 1}`,
+    `Total Questions: ${totalQuestions || 0}`,
+    `Question Breakdown:`,
+    subjectBreakdown,
+    ``,
+    `Open quiz: ${url}`,
+    ``,
+    `Important rules:`,
+    `- Full screen is required throughout the quiz.`,
+    `- Screenshots and screen recording are not allowed.`,
+    `- Copy, paste, or similar shortcuts are restricted.`,
+    `- Minimizing, closing the tab, or leaving full screen can lead to the quiz being flagged or auto-submitted.`,
+    ``,
+    `${teacherLabel}`
+  ].join('\n');
   return {
     url,
     title: quiz?.title || 'OPE Assessor Quiz',
-    text: `Open ${quiz?.title || 'this quiz'} on OPE Assessor.`
+    text: detailedMessage
   };
 }
 
@@ -726,20 +896,8 @@ async function shareQuizAccessLink(quiz) {
   if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
   markQuizzesCloudSynced([quiz.id]);
   const sharePayload = buildQuizSharePayload(quiz);
-  if (navigator.share) {
-    try {
-      await navigator.share({
-        title: sharePayload.title,
-        text: sharePayload.text,
-        url: sharePayload.url
-      });
-      showNotification('Quiz link shared', 'success');
-      return true;
-    } catch (error) {
-      if (error && error.name === 'AbortError') return false;
-    }
-  }
-  await copyTextToClipboard(sharePayload.url, 'Quiz link copied');
+  openWhatsappShareIntent(sharePayload.text);
+  showNotification('WhatsApp opened with the quiz invite message', 'success', 7000);
   return true;
 }
 
@@ -810,16 +968,23 @@ function startNetworkSyncLoop() {
   if (!canUseNetworkSync() || networkSyncTimer) return;
   networkSyncTimer = setInterval(() => {
     pullNetworkState().then((changed) => {
+      if (changed) refreshCurrentQuizReference();
       if (changed && state.view !== 'take') render();
     });
   }, NETWORK_SYNC_CONFIG.pollIntervalMs);
-  window.addEventListener('focus', () => { pullNetworkState(true).then(() => render()); });
+  window.addEventListener('focus', () => {
+    pullNetworkState(true).then((changed) => {
+      if (changed) refreshCurrentQuizReference();
+      render();
+    });
+  });
 }
 
 async function initializeApp() {
-  await pullNetworkState(true);
   ensureSuperAdminAccount();
   migrateAndNormalizeSubmissions();
+  startOverlayBodyLockObserver();
+  applyPersistedAppUiState();
   const params = new URLSearchParams(window.location.search);
   if (params.has('q')) {
     const id = params.get('q');
@@ -849,8 +1014,12 @@ async function initializeApp() {
     };
     state.view = 'student';
   }
-  startNetworkSyncLoop();
   render();
+  startNetworkSyncLoop();
+  pullNetworkState(true).then((changed) => {
+    refreshCurrentQuizReference();
+    if (changed && state.view !== 'take') render();
+  });
 }
 
 function save(key, value) {
@@ -952,6 +1121,77 @@ function getCurrentTeacher() {
   return getAllTeachers()[normalizeEmail(state.teacherId)] || null;
 }
 
+function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options = {}) {
+  const oldId = normalizeEmail(existingTeacherId);
+  const teachers = getAllTeachers();
+  const current = teachers[oldId];
+  if (!current) return { ok: false, message: 'Teacher account not found' };
+  const emailLocked = !!options.lockEmail || normalizeEmail(current.teacherId || current.email) === SUPER_ADMIN_EMAIL;
+  const nextId = emailLocked
+    ? oldId
+    : normalizeEmail(nextProfile.email || current.email || current.teacherId);
+  if (!nextId) return { ok: false, message: 'Enter a valid teacher email ID' };
+  if (nextId !== oldId && teachers[nextId]) return { ok: false, message: 'That teacher email ID already exists' };
+  const now = new Date().toISOString();
+  const nextTeacher = {
+    ...current,
+    teacherId: nextId,
+    email: nextId,
+    name: (nextProfile.name ?? current.name ?? '').toString().trim(),
+    phone: (nextProfile.phone ?? current.phone ?? current.phoneNumber ?? '').toString().trim(),
+    updatedAt: now
+  };
+
+  if (nextId !== oldId) {
+    teachers[nextId] = nextTeacher;
+    delete teachers[oldId];
+  } else {
+    teachers[oldId] = nextTeacher;
+  }
+  saveAllTeachers(teachers);
+
+  if (nextId !== oldId) {
+    const quizzes = getAllStoredQuizzes();
+    Object.keys(quizzes).forEach((quizId) => {
+      if (normalizeEmail(quizzes[quizId]?.teacherId) === oldId) quizzes[quizId].teacherId = nextId;
+    });
+    saveAllQuizzes(quizzes);
+
+    const allStudents = getAllTeacherStudents();
+    if (allStudents[oldId]) {
+      allStudents[nextId] = allStudents[oldId];
+      delete allStudents[oldId];
+      saveAllTeacherStudents(allStudents);
+    }
+
+    const nextFilters = {};
+    Object.keys(state.classFilters || {}).forEach((key) => {
+      const parts = key.split(':');
+      const scope = parts[0] || 'teacher';
+      const teacherKey = parts.slice(1).join(':');
+      if (teacherKey === oldId) nextFilters[`${scope}:${nextId}`] = state.classFilters[key];
+      else nextFilters[key] = state.classFilters[key];
+    });
+    state.classFilters = nextFilters;
+  }
+
+  if (normalizeEmail(state.teacherId) === oldId) {
+    state.teacherId = nextId;
+    const session = load(STORAGE_KEYS.teacherSession) || {};
+    save(STORAGE_KEYS.teacherSession, {
+      ...session,
+      teacherId: nextId,
+      updatedAt: now
+    });
+    localStorage.setItem(STORAGE_KEYS.teacherId, nextId);
+  }
+  if (state.currentQuiz && normalizeEmail(state.currentQuiz.teacherId) === oldId) {
+    state.currentQuiz = { ...state.currentQuiz, teacherId: nextId };
+  }
+  persistAppUiState();
+  return { ok: true, teacher: nextTeacher, changedId: nextId !== oldId, teacherId: nextId };
+}
+
 function isTeacherLoggedIn() { return !!getCurrentTeacher(); }
 function isSuperAdmin() { return normalizeEmail(state.teacherId) === SUPER_ADMIN_EMAIL; }
 
@@ -1001,8 +1241,10 @@ function requestTeacherLicense(selectedPlanKey = 'weekly', contactChannel = '') 
   saveAllTeachers(teachers);
   showNotification('Licence request saved.', 'success', 5000);
   const support = getSupportSettings();
+  const teacherName = getTeacherDisplayName(teacher, { fallback: id });
+  const teacherPhone = getTeacherPhoneLabel(teacher, { fallback: '' });
   const subject = encodeURIComponent('OPE Assessor Licence Request');
-  const body = encodeURIComponent(`Hello Admin,\n\nI want to request a paid OPE Assessor licence.\n\nTeacher ID: ${id}\nRequested plan: ${formatLicensePlanLabel(chosenPlan)}\nAmount shown: ${chosenAmount || 'Not set'}\nRequest time: ${new Date().toLocaleString()}\n\nThank you.`);
+  const body = encodeURIComponent(`Hello Admin,\n\nI want to request a paid OPE Assessor licence.\n\nTeacher Name: ${teacherName}\nTeacher ID: ${id}${teacherPhone ? `\nPhone Number: ${teacherPhone}` : ''}\nRequested plan: ${formatLicensePlanLabel(chosenPlan)}\nAmount shown: ${chosenAmount || 'Not set'}\nRequest time: ${new Date().toLocaleString()}\n\nRegards,\n${teacherName}`);
   if (contactChannel === 'email') {
     if (!support.email) return showNotification('Support email has not been set yet', 'error');
     window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${subject}&body=${body}`;
@@ -1170,6 +1412,8 @@ function ensureSuperAdminAccount() {
     email: id,
     password: SUPER_ADMIN_PASSWORD,
     role: 'super_admin',
+    name: teachers[id]?.name || '',
+    phone: teachers[id]?.phone || '',
     supportEmail: teachers[id]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
     supportWhatsapp: teachers[id]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
     licensePricing: teachers[id]?.licensePricing || DEFAULT_LICENSE_PRICING,
@@ -1613,6 +1857,8 @@ function render() {
     compactStoredSubmissions();
     _didCompactSubmissions = true;
   }
+  const previousRenderedView = _lastRenderedView;
+  if (previousRenderedView) captureViewScrollState(previousRenderedView);
   if (window.history && !_historyApplying && state.view !== _lastHistoryView) {
     const historyState = { view: state.view, quizId: state.currentQuiz && state.currentQuiz.id ? state.currentQuiz.id : '' };
     if (!_lastHistoryView) window.history.replaceState(historyState, '', window.location.href);
@@ -1645,7 +1891,7 @@ function render() {
           <button id="openTeacherQuiz" class="btn btn-ghost btn-sm">Open Quiz</button>
           ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topSupport" class="btn btn-ghost btn-sm" aria-label="Support">Support</button>' : ''}
           ${isTeacherLoggedIn() || isSuperAdmin() ? '<button id="topAlerts" class="btn btn-ghost btn-sm" aria-label="Notifications">Alerts</button>' : ''}
-          <div class="small" id="userBadge">${isSuperAdmin() ? 'Admin: ' + escapeHtml(SUPER_ADMIN_EMAIL) : isTeacherLoggedIn() ? 'Teacher' : 'Guest'}</div>
+          <div class="small" id="userBadge">${escapeHtml(getTeacherUserBadgeLabel())}</div>
           ${isTeacherLoggedIn() ? '<button id="logoutTeacher" class="btn btn-ghost btn-sm">Logout</button>' : ''}
         </div>
       </div>
@@ -1727,10 +1973,12 @@ function render() {
   // Wire header and sidebar nav, set active classes
   setTimeout(() => {
     // header nav
-    if (!document.getElementById('topHome')) return;
-    document.getElementById('topHome').onclick = () => { state.view = 'home'; render(); };
-    document.getElementById('topTeacher').onclick = () => { state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login'; render(); };
-    document.getElementById('topStudent').onclick = () => { state.view = 'student'; render(); };
+    const topHomeBtn = document.getElementById('topHome');
+    if (topHomeBtn) topHomeBtn.onclick = () => { state.view = 'home'; render(); };
+    const topTeacherBtn = document.getElementById('topTeacher');
+    if (topTeacherBtn) topTeacherBtn.onclick = () => { state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login'; render(); };
+    const topStudentBtn = document.getElementById('topStudent');
+    if (topStudentBtn) topStudentBtn.onclick = () => { state.view = 'student'; render(); };
     const openBtn = document.getElementById('openTeacherQuiz'); if (openBtn) openBtn.onclick = ()=> showTeacherAccessModal();
     const supportBtn = document.getElementById('topSupport'); if (supportBtn) supportBtn.onclick = () => openSupportChooser();
     const alertsBtn = document.getElementById('topAlerts'); if (alertsBtn) alertsBtn.onclick = () => showAlertsPanel();
@@ -1763,9 +2011,9 @@ function render() {
 
     // header active style
     document.querySelectorAll('.header-nav .nav-btn').forEach(b => b.classList.remove('active'));
-    if (state.view === 'home') document.getElementById('topHome').classList.add('active');
-    if (state.view === 'teacher' || state.view.startsWith('teacher')) document.getElementById('topTeacher').classList.add('active');
-    if (state.view === 'student') document.getElementById('topStudent').classList.add('active');
+    if (state.view === 'home') document.getElementById('topHome')?.classList.add('active');
+    if (state.view === 'teacher' || state.view.startsWith('teacher')) document.getElementById('topTeacher')?.classList.add('active');
+    if (state.view === 'student') document.getElementById('topStudent')?.classList.add('active');
     enhancePasswordFields(app);
     if (state.pendingResultLookup && state.view !== 'take') {
       const pending = { ...state.pendingResultLookup };
@@ -1778,6 +2026,20 @@ function render() {
         });
       }, 50);
     }
+    const sameViewRerender = previousRenderedView && previousRenderedView === state.view;
+    if (_pendingScrollRestore) {
+      restoreViewScrollState(_pendingScrollRestore);
+      _pendingScrollRestore = null;
+    } else if (sameViewRerender) {
+      restoreViewScrollState(_viewScrollState[state.view] || null);
+    } else if (_historyApplying && _viewScrollState[state.view]) {
+      restoreViewScrollState(_viewScrollState[state.view]);
+    } else {
+      restoreViewScrollState(null, { forceTop: true });
+    }
+    _lastRenderedView = state.view;
+    persistAppUiState();
+    syncOverlayBodyLock();
   }, 0);
 }
 
@@ -1791,9 +2053,15 @@ window.addEventListener('popstate', (event) => {
   _historyApplying = true;
   state.view = view;
   if (event.state && event.state.quizId) state.currentQuiz = getAllQuizzes()[event.state.quizId] || state.currentQuiz;
+  _pendingScrollRestore = _viewScrollState[view] || _pendingScrollRestore;
   render();
   _lastHistoryView = state.view;
   _historyApplying = false;
+});
+
+window.addEventListener('pagehide', () => {
+  captureViewScrollState(_lastRenderedView || state.view);
+  persistAppUiState();
 });
 
 // ============================================================================
@@ -2050,7 +2318,7 @@ function renderTeacherAuth() {
       if (createMode) {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
         if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
-        teachers[id] = { teacherId: id, email: id, password, role: 'teacher', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        teachers[id] = { teacherId: id, email: id, password, role: 'teacher', name: '', phone: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
         saveAllTeachers(teachers);
         showNotification('Teacher ID created', 'success');
       } else {
@@ -2068,7 +2336,71 @@ function renderTeacherAuth() {
   return wrapper;
 }
 
+function openTeacherProfileEditor() {
+  const teacher = getCurrentTeacher();
+  if (!teacher) return showNotification('Teacher account not found', 'error');
+  let modal = document.getElementById('teacherProfileEditorModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'teacherProfileEditorModal';
+  modal.className = 'student-result-modal';
+  const lockEmail = isSuperAdmin();
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(560px, 94vw)';
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Teacher Profile</div>
+        <div class="small">Update the identity that appears on your dashboard and correction messages.</div>
+      </div>
+      <button id="closeTeacherProfileEditor" class="btn btn-ghost">Close</button>
+    </div>
+    <label class="small">Full name</label>
+    <input id="teacherProfileName" class="input-beautiful" value="${escapeHtml(teacher.name || '')}" placeholder="e.g. Chinedu Okafor" />
+    <div style="height:10px"></div>
+    <label class="small">Phone number</label>
+    <input id="teacherProfilePhone" class="input-beautiful" value="${escapeHtml(teacher.phone || teacher.phoneNumber || '')}" placeholder="e.g. 08012345678" />
+    <div style="height:10px"></div>
+    <label class="small">Teacher email ID</label>
+    <input id="teacherProfileEmail" class="input-beautiful" value="${escapeHtml(teacher.email || teacher.teacherId || state.teacherId || '')}" ${lockEmail ? 'readonly' : ''} />
+    <div class="small" style="margin-top:8px;line-height:1.7">${lockEmail ? 'The super admin email ID stays fixed on this installation.' : 'Changing your teacher email ID will move your quizzes and uploaded students to the new ID automatically.'}</div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;flex-wrap:wrap">
+      <button id="cancelTeacherProfileEditor" class="btn btn-ghost">Cancel</button>
+      <button id="saveTeacherProfileEditor" class="btn btn-primary">Save Profile</button>
+    </div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeTeacherProfileEditor').onclick = () => modal.remove();
+  document.getElementById('cancelTeacherProfileEditor').onclick = () => modal.remove();
+  document.getElementById('saveTeacherProfileEditor').onclick = () => {
+    const payload = {
+      name: (document.getElementById('teacherProfileName').value || '').trim(),
+      phone: (document.getElementById('teacherProfilePhone').value || '').trim(),
+      email: (document.getElementById('teacherProfileEmail').value || '').trim()
+    };
+    if (!payload.email) return showNotification('Enter a teacher email ID', 'error');
+    const currentId = normalizeEmail(teacher.teacherId || teacher.email || state.teacherId);
+    const nextId = lockEmail ? currentId : normalizeEmail(payload.email);
+    const message = !lockEmail && nextId !== currentId
+      ? `Save this profile and change your teacher email ID from ${currentId} to ${nextId}? Your quizzes and uploaded students will move to the new ID.`
+      : 'Save your teacher profile now?';
+    if (!confirmTeacherAction(message)) return;
+    const result = updateTeacherProfileRecord(currentId, payload, { lockEmail });
+    if (!result.ok) return showNotification(result.message || 'Could not save teacher profile', 'error');
+    modal.remove();
+    showNotification(result.changedId ? `Profile updated. Your teacher ID is now ${result.teacherId}` : 'Teacher profile updated', 'success', 7000);
+    render();
+  };
+}
+
 function renderTeacherOverview() {
+  const teacher = getCurrentTeacher() || {};
+  const profileName = (teacher.name || '').toString().trim() || 'Not set yet';
+  const profilePhone = getTeacherPhoneLabel(teacher);
+  const profileEmail = (teacher.email || teacher.teacherId || state.teacherId || '').toString().trim();
   const wrapper = document.createElement('div');
   wrapper.innerHTML = `
     <div class="dashboard-heading">
@@ -2112,6 +2444,30 @@ function renderTeacherOverview() {
     </div>
 
     <div class="card" style="margin-bottom:var(--space-3);margin-top:var(--space-3)">
+      <div class="page-heading" style="margin-bottom:0">
+        <div>
+          <div class="h3">Teacher Profile</div>
+          <div class="small">This identity appears on your dashboard and signs your correction messages.</div>
+        </div>
+        <button id="editTeacherProfileBtn" class="btn btn-ghost btn-sm">Edit Profile</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:14px">
+        <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+          <div class="small">Name</div>
+          <div style="font-weight:800;margin-top:6px">${escapeHtml(profileName)}</div>
+        </div>
+        <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+          <div class="small">Phone Number</div>
+          <div style="font-weight:800;margin-top:6px">${escapeHtml(profilePhone)}</div>
+        </div>
+        <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+          <div class="small">Teacher Email ID</div>
+          <div style="font-weight:800;margin-top:6px;word-break:break-word">${escapeHtml(profileEmail)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:var(--space-3)">
       <div class="h3">Recent activity</div>
       <div class="small" style="margin-top:8px">Your recent quizzes and submissions</div>
       <div id="recentActivity" style="margin-top:12px"></div>
@@ -2123,6 +2479,7 @@ function renderTeacherOverview() {
     document.getElementById('quickUpload').onclick = () => { canSetQuestions() ? showCreateQuizModal() : showLicenseRequired(); };
     document.getElementById('btnFindIP').onclick = () => { showLocalNetworkGuide(); };
     document.getElementById('gotoQuizzes').onclick = () => { state.view = 'teacher.quizzes'; render(); };
+    document.getElementById('editTeacherProfileBtn').onclick = () => openTeacherProfileEditor();
     const licence = getTeacherLicenseStatus();
     const banner = document.getElementById('licenseBanner');
     banner.className = 'license-banner ' + (licence.active ? 'license-active' : 'license-inactive');
@@ -2137,7 +2494,7 @@ function renderTeacherOverview() {
 
     // populate overview stats from storage
     const quizzes = getAllQuizzes();
-    const quizKeys = Object.keys(quizzes).filter(k => isSuperAdmin() || quizzes[k].teacherId === state.teacherId);
+    const quizKeys = Object.keys(quizzes).filter(k => isSuperAdmin() || normalizeEmail(quizzes[k].teacherId) === normalizeEmail(state.teacherId));
     document.getElementById('ovTotalQuizzes').textContent = quizKeys.length;
     const subs = getAllSubmissions().filter(s => quizKeys.includes(s.quizId));
     document.getElementById('ovTotalSubmissions').textContent = subs.length;
@@ -2218,8 +2575,8 @@ function renderTeacherQuizzes() {
       const syncStatus = getQuizSyncStatus(q);
       const effectiveEnd = getQuizEffectiveEndTime(q);
       const ended = effectiveEnd && effectiveEnd <= Date.now();
-      return `<div class="card quiz-list-card" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div>
+      return `<div class="card quiz-list-card" style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="min-width:240px;flex:1">
           <div style="font-weight:700">${escapeHtml(q.title)} <span class="small" style="color:var(--muted);font-weight:500">(${q.id})</span></div>
           <div class="small">${(q.subjects || []).length} subject(s)   ${q.timeLimit}m   ${q.maxGrade} points</div>
           <div class="small" style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap">
@@ -2227,29 +2584,69 @@ function renderTeacherQuizzes() {
             ${ended ? '<span class="status-chip">Ended</span>' : '<span class="status-chip status-success">Open</span>'}
           </div>
         </div>
-        <div class="quiz-list-actions" style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm btnCopyId" data-id="${q.id}">Copy Student Code</button>
-          <button class="btn btn-ghost btn-sm btnCopyLink" data-id="${q.id}">Copy Link</button>
-          <button class="btn btn-ghost btn-sm btnShareLink" data-id="${q.id}">Share</button>
-          <button class="btn btn-ghost btn-sm btnEditQuiz" data-id="${q.id}">Edit</button>
-          <button class="btn btn-ghost btn-sm btnEndQuiz" data-id="${q.id}" ${ended ? 'disabled' : ''}>End Test</button>
-          <button class="btn btn-ghost btn-sm btnDeleteQuiz" data-id="${q.id}">Delete</button>
-          <button class="btn btn-ghost btn-sm btnView" data-id="${q.id}">View Results</button>
+        <div class="quiz-list-actions" style="min-width:min(320px,100%);display:flex;justify-content:flex-end">
+          <div class="row-action-shell" style="width:min(320px,100%)">
+            <select class="input-beautiful row-action-select teacherQuizActionSelect" data-id="${q.id}">
+              <option value="">Test Manager</option>
+              <option value="copy-code">Copy Student Code</option>
+              <option value="copy-link">Copy Link</option>
+              <option value="share-whatsapp">Share on WhatsApp</option>
+              <option value="edit">Edit</option>
+              <option value="end"${ended ? ' disabled' : ''}>End Test</option>
+              <option value="delete">Delete</option>
+              <option value="results">View Results</option>
+            </select>
+            <button class="btn btn-ghost btn-sm btnApplyTeacherQuizAction" data-id="${q.id}">Apply</button>
+          </div>
         </div>
       </div>`;
     }).join('');
     // wire actions
     setTimeout(()=> {
-      document.querySelectorAll('.btnCopyId').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessCode(q);});
-      document.querySelectorAll('.btnCopyLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await copyQuizAccessLink(q);});
-      document.querySelectorAll('.btnShareLink').forEach(b=>b.onclick=async (e)=>{const q=getAllQuizzes()[e.currentTarget.dataset.id]; await shareQuizAccessLink(q);});
-      document.querySelectorAll('.btnEditQuiz').forEach(b=>b.onclick=(e)=>{ canSetQuestions() ? showCreateQuizModal(e.currentTarget.dataset.id) : showLicenseRequired(); });
-      document.querySelectorAll('.btnEndQuiz').forEach(b=>b.onclick=async (e)=>{ await endQuizNow(e.currentTarget.dataset.id); });
-      document.querySelectorAll('.btnDeleteQuiz').forEach(b=>b.onclick=async (e)=>{ await deleteQuizById(e.currentTarget.dataset.id); });
-      document.querySelectorAll('.btnView').forEach(b=>b.onclick=(e)=>{state.currentQuiz=getAllQuizzes()[e.currentTarget.dataset.id]; state.view='results'; render();});
+      document.querySelectorAll('.btnApplyTeacherQuizAction').forEach((button) => button.onclick = async (event) => {
+        const selector = event.currentTarget.parentElement.querySelector('.teacherQuizActionSelect');
+        const action = selector ? selector.value : '';
+        const quiz = getAllQuizzes()[event.currentTarget.dataset.id];
+        if (!quiz) return showNotification('Quiz not found', 'error');
+        if (!action) return showNotification('Choose a quiz action first', 'error');
+        if (action === 'copy-code') await copyQuizAccessCode(quiz);
+        if (action === 'copy-link') await copyQuizAccessLink(quiz);
+        if (action === 'share-whatsapp') await shareQuizAccessLink(quiz);
+        if (action === 'edit') {
+          canSetQuestions() ? showCreateQuizModal(quiz.id) : showLicenseRequired();
+        }
+        if (action === 'end') await endQuizNow(quiz.id);
+        if (action === 'delete') await deleteQuizById(quiz.id);
+        if (action === 'results') {
+          state.currentQuiz = quiz;
+          state.view = 'teacher.results';
+          render();
+        }
+        if (selector) selector.value = '';
+      });
     },0);
   },0);
   return container;
+}
+
+function buildTeacherSupportRequestMessage() {
+  const teacher = getCurrentTeacher() || {};
+  const name = getTeacherDisplayName(teacher, { fallback: 'Teacher' });
+  const phone = getTeacherPhoneLabel(teacher, { fallback: '' });
+  const teacherId = (teacher.email || teacher.teacherId || state.teacherId || '').toString().trim();
+  return [
+    'Hello Admin,',
+    '',
+    `Teacher Name: ${name}`,
+    `Teacher ID: ${teacherId}`,
+    phone ? `Phone Number: ${phone}` : '',
+    '',
+    'Please help me with:',
+    '',
+    '',
+    'Regards,',
+    name
+  ].filter(Boolean).join('\n');
 }
 
 function getTeacherQuizKeys() {
@@ -2552,9 +2949,13 @@ function renderSettingsView() {
     <div class="settings-grid">
       <div class="card">
         <div class="h3">Teacher Identity</div>
-        <div class="small">You are logged in with this teacher email ID.</div>
+        <div class="small">You are logged in with this teacher email ID. Your profile name signs correction messages.</div>
         <input class="input-beautiful" value="${escapeHtml(state.teacherId)}" readonly style="margin-top:12px" />
-        <button id="copyTeacherId" class="btn btn-ghost" style="margin-top:12px">Copy Teacher ID</button>
+        <div class="small" style="margin-top:10px;line-height:1.7">Name: <strong>${escapeHtml(getTeacherDisplayName(getCurrentTeacher(), { preferPlaceholder: true }))}</strong><br/>Phone: <strong>${escapeHtml(getTeacherPhoneLabel(getCurrentTeacher()))}</strong></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button id="copyTeacherId" class="btn btn-ghost">Copy Teacher ID</button>
+          <button id="editTeacherProfileFromSettings" class="btn btn-primary">Edit Profile</button>
+        </div>
       </div>
       <div class="card">
         <div class="h3">Change Password</div>
@@ -2615,6 +3016,8 @@ function renderSettingsView() {
     document.getElementById('copyTeacherId').onclick = () => {
       copyTextToClipboard(state.teacherId, 'Teacher ID copied');
     };
+    const editProfileBtn = document.getElementById('editTeacherProfileFromSettings');
+    if (editProfileBtn) editProfileBtn.onclick = () => openTeacherProfileEditor();
     const ownPasswordBtn = document.getElementById('saveOwnPassword');
     if (ownPasswordBtn) ownPasswordBtn.onclick = () => {
       const teacher = getCurrentTeacher();
@@ -2730,20 +3133,18 @@ function renderSettingsView() {
         saveAllTeachers(all);
         showNotification('Password reset', 'success');
       } else if (action === 'change-id') {
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin email ID cannot be changed here', 'info');
         const newId = normalizeEmail(prompt('Enter new teacher email ID for ' + id) || '');
         if (!newId || newId === id) return;
         if (!confirmTeacherAction(`Change teacher ID from ${id} to ${newId}?`)) return;
-        const teachersAll = getAllTeachers();
-        if (!teachersAll[id]) return showNotification('Teacher not found', 'error');
-        if (teachersAll[newId]) return showNotification('New teacher ID already exists', 'error');
-        teachersAll[newId] = { ...teachersAll[id], teacherId: newId, email: newId, idChangedFrom: id, idChangedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-        delete teachersAll[id];
-        saveAllTeachers(teachersAll);
-        const quizzesAll = getAllQuizzes();
-        Object.values(quizzesAll).forEach(q => { if (normalizeEmail(q.teacherId) === id) q.teacherId = newId; });
-        saveAllQuizzes(quizzesAll);
-        const studentsAll = getAllTeacherStudents();
-        if (studentsAll[id]) { studentsAll[newId] = studentsAll[id]; delete studentsAll[id]; saveAllTeacherStudents(studentsAll); }
+        const teacher = getAllTeachers()[id];
+        if (!teacher) return showNotification('Teacher not found', 'error');
+        const result = updateTeacherProfileRecord(id, {
+          email: newId,
+          name: teacher.name || '',
+          phone: teacher.phone || teacher.phoneNumber || ''
+        });
+        if (!result.ok) return showNotification(result.message || 'Could not change teacher ID', 'error');
         showNotification('Teacher ID changed', 'success');
         render();
       }
@@ -2782,12 +3183,12 @@ function openSupportChooser() {
   document.getElementById('closeSupportChooser').onclick = () => modal.remove();
   document.getElementById('supportByEmail').onclick = () => {
     if (!settings.email) return showNotification('Support email has not been set yet', 'error');
-    window.location.href = `mailto:${encodeURIComponent(settings.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}`;
+    window.location.href = `mailto:${encodeURIComponent(settings.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}&body=${encodeURIComponent(buildTeacherSupportRequestMessage())}`;
   };
   document.getElementById('supportByWhatsapp').onclick = () => {
     const phone = (settings.whatsapp || '').replace(/[^\d]/g, '');
     if (!phone) return showNotification('Support WhatsApp number has not been set yet', 'error');
-    window.open(`https://wa.me/${phone}`, '_blank', 'noopener');
+    openWhatsappChat(phone, buildTeacherSupportRequestMessage());
   };
 }
 
@@ -2895,6 +3296,7 @@ function renderTeacherGuideView() {
       steps: [
         'Open Settings from the teacher navigation.',
         'Use Teacher Identity if you want to copy your teacher email ID quickly.',
+        'Use Edit Profile when you want to update the name, phone number, or teacher email ID attached to your account.',
         'Use Change Password to enter your current password, then your new password twice.',
         'Click Update Password and confirm when the warning message appears.',
         'Use Download Backup when you want a local copy of quizzes and submissions from this device.'
@@ -3009,12 +3411,12 @@ function renderTeacherSupportView() {
   setTimeout(() => {
     document.getElementById('supportPageEmail').onclick = () => {
       if (!support.email) return showNotification('Support email has not been set yet', 'error');
-      window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}`;
+      window.location.href = `mailto:${encodeURIComponent(support.email)}?subject=${encodeURIComponent('OPE Assessor Support Request')}&body=${encodeURIComponent(buildTeacherSupportRequestMessage())}`;
     };
     document.getElementById('supportPageWhatsapp').onclick = () => {
       const phone = (support.whatsapp || '').replace(/[^\d]/g, '');
       if (!phone) return showNotification('Support WhatsApp number has not been set yet', 'error');
-      window.open(`https://wa.me/${phone}`, '_blank', 'noopener');
+      openWhatsappChat(phone, buildTeacherSupportRequestMessage());
     };
     const saveBtn = document.getElementById('saveSupportSettingsBtn');
     if (saveBtn) saveBtn.onclick = () => {
@@ -3374,6 +3776,23 @@ function renderQuizWelcome(quiz, questions) {
   wrapper.className = 'exam-shell quiz-welcome-shell';
   const totalMinutes = parseInt(quiz.timeLimit || 0, 10) || 0;
   const calculatorType = getQuizCalculatorType(quiz);
+  const subjectSummaries = getQuizSubjectSummaries(quiz);
+  const subjectBreakdownMarkup = subjectSummaries.length > 1
+    ? `
+      <div class="card" style="margin-top:16px;padding:16px;border:1px solid #DBEAFE;box-shadow:none;text-align:left">
+        <div class="h3" style="margin-bottom:6px">Subject Breakdown</div>
+        <div class="small" style="margin-bottom:10px">This quiz has ${subjectSummaries.length} subjects. Review each subject and question count below before you start.</div>
+        <div style="display:grid;gap:8px">
+          ${subjectSummaries.map((item) => `
+            <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;background:#F8FAFC;border:1px solid #E2E8F0">
+              <strong>${escapeHtml(item.name)}</strong>
+              <span>${item.questionCount} question(s)</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `
+    : '';
   wrapper.innerHTML = `
     <div class="card-beautiful quiz-welcome-card">
       <div class="small">OPE Assessor</div>
@@ -3384,12 +3803,15 @@ function renderQuizWelcome(quiz, questions) {
         <div><strong>${(quiz.subjects || []).length || 1}</strong><span>Subject(s)</span></div>
         <div><strong>${totalMinutes || 'No limit'}</strong><span>${totalMinutes ? 'Minutes' : 'Timer'}</span></div>
       </div>
+      ${subjectBreakdownMarkup}
       <div class="quiz-instructions">
         <p><strong>Before you start:</strong> you may still leave this screen without penalty.</p>
         <p><strong>After Start Quiz:</strong> leaving the exam tab, exiting fullscreen, refreshing, closing the page, or using copy/screenshot shortcuts may be recorded and can submit the quiz automatically.</p>
+        <p><strong>Full screen:</strong> stay in full screen until you submit. Escaping full screen or minimizing the browser can lead to automatic submission.</p>
         ${calculatorType !== 'none' ? `<p><strong>Calculator:</strong> this quiz allows a ${escapeHtml(calculatorType)} calculator from the Calc button during the test.</p>` : ''}
         ${quiz.webcamRequired ? '<p><strong>Camera requirement:</strong> this quiz needs camera monitoring. The camera window can be moved during the test.</p>' : ''}
         <p><strong>Correction PDF:</strong> if you later request a correction, you will enter the WhatsApp number for delivery at the end of the quiz. Your email or registration details from the start screen are already saved.</p>
+        <p><strong>Guide:</strong> if you need a quick explanation of the student steps, open the Student Guide from the previous screen before starting.</p>
         <p><strong>Desktop keys:</strong> A/B/C/D choose options, N moves next, P moves previous, and S submits.</p>
         <p>Click Start Quiz only when you are ready to begin.</p>
       </div>
@@ -6223,6 +6645,8 @@ function renderResultsView() {
     } else {
       const ranks = computeRankingForQuiz(q.id);
       const renderSubmissionTable = (query = '') => {
+        const previousScrollWrap = list.querySelector('[data-scroll-key="results-submissions-table"]');
+        const previousScrollLeft = previousScrollWrap ? previousScrollWrap.scrollLeft : 0;
         const normalizedQuery = (query || '').toString().trim().toLowerCase();
         const visibleSubmissions = normalizedQuery
           ? submissions.filter((item) => `${item.name || ''} ${item.email || ''} ${item.registrationNo || ''}`.toLowerCase().includes(normalizedQuery))
@@ -6273,7 +6697,7 @@ function renderResultsView() {
 
         list.innerHTML = `
           <div class="card-beautiful p-4">
-            <div class="overflow-x-auto">
+            <div class="overflow-x-auto" data-scroll-key="results-submissions-table">
               <table class="table-dense w-full">
                 <thead>
                   <tr>
@@ -6300,6 +6724,8 @@ function renderResultsView() {
             </div>
           </div>
         `;
+        const nextScrollWrap = list.querySelector('[data-scroll-key="results-submissions-table"]');
+        if (nextScrollWrap) nextScrollWrap.scrollLeft = previousScrollLeft;
         list.querySelectorAll('[data-student-row]').forEach((row) => {
           row.onclick = () => {
             list.querySelectorAll('[data-student-row]').forEach((item) => {
@@ -7193,7 +7619,10 @@ function showCreateQuizModal(editQuizId = '') {
       } else {
         showNotification(`${editingQuiz ? 'Quiz updated' : 'Quiz saved'}   ID: ${id}. ${getSharedSyncWarningMessage()} Quiz IDs may not open on other devices yet.`, 'warning', 8000);
       }
-      m.remove(); render();
+      state.currentQuiz = qobj;
+      state.view = 'teacher.quizzes';
+      m.remove();
+      render();
     };
   },0);
 }
@@ -7901,6 +8330,52 @@ function showEditSubmissionScoreModal(quiz, submission) {
   };
 }
 
+function openStudentGuideModal() {
+  let modal = document.getElementById('studentGuideModal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'studentGuideModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'card-beautiful admin-modal-card';
+  inner.style.width = 'min(760px, 96vw)';
+  inner.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <div class="h2">Student Guide</div>
+        <div class="small">A simple guide to help students know what to expect before the quiz starts.</div>
+      </div>
+      <button id="closeStudentGuide" class="btn btn-ghost">Close</button>
+    </div>
+    <div style="display:grid;gap:14px;line-height:1.75;color:#334155">
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <strong>1. Enter your details correctly.</strong>
+        <div class="small" style="margin-top:6px">Use your real name and the same email or registration number you want attached to your result.</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <strong>2. Use the exact quiz code or link from your teacher.</strong>
+        <div class="small" style="margin-top:6px">If the quiz has more than one subject, the welcome screen will show the subject names and question count for each subject before you begin.</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <strong>3. Stay in full screen during the quiz.</strong>
+        <div class="small" style="margin-top:6px">Leaving the tab, minimizing the browser, or escaping full screen can be flagged and may auto-submit the quiz.</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <strong>4. Screenshots, screen recording, copy, and similar shortcuts are not allowed.</strong>
+        <div class="small" style="margin-top:6px">On supported devices, these actions can be tracked and may affect the quiz session.</div>
+      </div>
+      <div class="card" style="padding:14px;border:1px solid #DBEAFE;box-shadow:none">
+        <strong>5. Results and corrections.</strong>
+        <div class="small" style="margin-top:6px">After submission, your teacher may allow instant results. If you request a correction PDF later, the correction can be sent by email or WhatsApp.</div>
+      </div>
+    </div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
+  document.getElementById('closeStudentGuide').onclick = () => modal.remove();
+}
+
 function renderStudentEntry() {
   const wrapper = document.createElement('div');
   wrapper.className = 'student-page';
@@ -7928,11 +8403,13 @@ function renderStudentEntry() {
           <p class="text-muted">Enter the Quiz Code provided by your teacher or paste the student link.</p>
           <p class="text-muted">If you later request a correction PDF, the app will ask for your WhatsApp number at the end of the quiz. Your email or registration details from this screen are already saved.</p>
           <p class="text-muted">The app will not show other teachers' quizzes.</p>
+          <p class="text-muted">To view the student guide, <button id="openStudentGuideBtn" type="button" class="btn btn-ghost btn-sm" style="padding:4px 10px;vertical-align:middle">click here</button>.</p>
       </div>
     </div>
   `;
 
   setTimeout(()=>{
+    document.getElementById('openStudentGuideBtn').onclick = () => openStudentGuideModal();
     document.getElementById('startExamBtn').onclick = async () => {
       const name = document.getElementById('stuName').value.trim();
       const studentKey = document.getElementById('stuIdentity').value.trim();
