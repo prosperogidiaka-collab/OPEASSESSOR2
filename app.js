@@ -33,7 +33,9 @@ const NETWORK_STATE_KEY_MAP = {
   [STORAGE_KEYS.tokenTransactions]: 'tokenTransactions'
 };
 const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
+const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
+const MAX_PORTABLE_LINK_LENGTH = 3500;
 const DEFAULT_SUPPORT_SETTINGS = {
   email: ADMIN_CONTACT_EMAIL,
   whatsapp: ''
@@ -114,6 +116,9 @@ let networkSyncInFlight = null;
 let networkSyncFailed = false;
 let networkSyncFailureMessage = '';
 const pendingNetworkWrites = new Set();
+const dirtyNetworkKeys = new Set();
+let networkSyncRetryTimer = null;
+let networkSyncEventsBound = false;
 let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
@@ -134,6 +139,44 @@ function canUseNetworkSync() {
   if (typeof window === 'undefined' || typeof fetch !== 'function') return false;
   if (NETWORK_SYNC_CONFIG.apiBaseUrl) return /^https?:\/\//i.test(NETWORK_SYNC_CONFIG.apiBaseUrl);
   return /^https?:$/i.test(window.location.protocol || '');
+}
+
+function resolveNetworkSyncKeys(keys = []) {
+  return [...new Set((Array.isArray(keys) ? keys : []).filter((key) => NETWORK_SYNC_KEYS.includes(key)))];
+}
+
+function markNetworkKeyDirty(key) {
+  if (!NETWORK_SYNC_KEYS.includes(key)) return;
+  dirtyNetworkKeys.add(key);
+}
+
+function clearNetworkKeyDirty(key) {
+  dirtyNetworkKeys.delete(key);
+}
+
+function schedulePendingNetworkFlush(delayMs = DEFAULT_NETWORK_SYNC_RETRY_MS) {
+  if (!canUseNetworkSync()) return;
+  if (networkSyncRetryTimer) clearTimeout(networkSyncRetryTimer);
+  const waitMs = Math.max(250, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
+  networkSyncRetryTimer = setTimeout(() => {
+    networkSyncRetryTimer = null;
+    flushPendingNetworkWrites();
+  }, waitMs);
+}
+
+async function flushPendingNetworkWrites(keys = [], options = {}) {
+  if (!canUseNetworkSync()) return false;
+  const explicitKeys = resolveNetworkSyncKeys(keys);
+  const targetKeys = explicitKeys.length ? explicitKeys : resolveNetworkSyncKeys(Array.from(dirtyNetworkKeys));
+  if (!targetKeys.length) return true;
+  let ok = true;
+  for (const key of targetKeys) {
+    const pushed = await pushNetworkValue(key, readLocalStorageValue(key), { skipRetrySchedule: true });
+    if (!pushed) ok = false;
+  }
+  if (ok && options.pullAfter) await pullNetworkState(true);
+  if (!ok && options.retryOnFailure !== false) schedulePendingNetworkFlush();
+  return ok;
 }
 
 function writeLocalStorageValue(key, value) {
@@ -276,7 +319,87 @@ function startOverlayBodyLockObserver() {
 
 function refreshCurrentQuizReference() {
   if (!state.currentQuiz?.id) return;
-  state.currentQuiz = getAllQuizzes()[state.currentQuiz.id] || state.currentQuiz;
+  const refreshedQuiz = getAllStoredQuizzes()[state.currentQuiz.id] || null;
+  state.currentQuiz = refreshedQuiz && !isDeletedQuiz(refreshedQuiz) ? refreshedQuiz : null;
+}
+
+function hydratePrefilledQuizFromAccess() {
+  if (state.currentQuiz || !state.prefillQuizCode) return false;
+  const quiz = resolveQuizFromAccess(parseQuizAccessInput(state.prefillQuizCode));
+  if (!quiz) return false;
+  state.currentQuiz = quiz;
+  if (!state.view || state.view === 'home') state.view = 'student';
+  return true;
+}
+
+function queueExamSubmissionFromSync(message) {
+  if (state.view !== 'take' || !state.currentSubmission?.examStarted) return false;
+  if (state.currentSubmission._networkSubmitQueued) return true;
+  state.currentSubmission._networkSubmitQueued = true;
+  showNotification(message, 'warning', 7000);
+  setTimeout(() => collectAndSubmit(), 800);
+  return true;
+}
+
+function handleActiveExamSyncState() {
+  if (state.view !== 'take' || !state.currentSubmission?.examStarted) return false;
+  const quizId = state.currentSubmission?.quizId || state.currentQuiz?.id || '';
+  if (!quizId) return false;
+  const latestQuiz = getAllStoredQuizzes()[quizId] || null;
+  if (!latestQuiz || isDeletedQuiz(latestQuiz)) {
+    return queueExamSubmissionFromSync('This quiz is no longer available. Your current attempt is being submitted now.');
+  }
+  state.currentQuiz = latestQuiz;
+  const schedule = getQuizScheduleStatus(latestQuiz);
+  if (!schedule.ok) {
+    return queueExamSubmissionFromSync(`${schedule.message} Your current attempt is being submitted now.`);
+  }
+  return false;
+}
+
+function applySharedStateUiRefresh(changed = false, options = {}) {
+  const hydratedPrefill = hydratePrefilledQuizFromAccess();
+  if (changed || hydratedPrefill) refreshCurrentQuizReference();
+  const examHandled = handleActiveExamSyncState();
+  if (examHandled) return changed || hydratedPrefill;
+  if (state.view !== 'take' && (changed || hydratedPrefill || options.forceRender)) render();
+  return changed || hydratedPrefill;
+}
+
+async function runSharedSyncCycle(options = {}) {
+  if (!canUseNetworkSync()) return false;
+  await flushPendingNetworkWrites([], { pullAfter: false });
+  const changed = await pullNetworkState(!!options.forcePull);
+  return applySharedStateUiRefresh(changed, options);
+}
+
+function bindNetworkSyncWindowEvents() {
+  if (networkSyncEventsBound || typeof window === 'undefined') return;
+  networkSyncEventsBound = true;
+  window.addEventListener('focus', () => {
+    runSharedSyncCycle({ forcePull: true, forceRender: true });
+  });
+  window.addEventListener('online', () => {
+    networkSyncFailed = false;
+    networkSyncFailureMessage = '';
+    schedulePendingNetworkFlush(250);
+    runSharedSyncCycle({ forcePull: true, forceRender: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    runSharedSyncCycle({ forcePull: true, forceRender: true });
+  });
+  window.addEventListener('storage', (event) => {
+    const changedKey = (event && event.key) || '';
+    if (!changedKey || event.oldValue === event.newValue) return;
+    if (changedKey === STORAGE_KEYS.appState) {
+      applyPersistedAppUiState();
+      if (state.view !== 'take') render();
+      return;
+    }
+    if (!NETWORK_SYNC_KEYS.includes(changedKey)) return;
+    applySharedStateUiRefresh(true, { forceRender: true });
+  });
 }
 
 function copyTextToClipboard(text, successMessage = 'Copied') {
@@ -415,6 +538,10 @@ function isDeletedSubmission(item) {
   return !!(item && item.deletedAt);
 }
 
+function isDeletedStudent(item) {
+  return !!(item && item.deletedAt);
+}
+
 function isDeletedQuiz(item) {
   return !!(item && item.deletedAt);
 }
@@ -470,7 +597,7 @@ function normalizeClassName(value) {
 function getTeacherClassNames(teacherId = state.teacherId) {
   const key = normalizeEmail(teacherId);
   const classes = new Set();
-  (getAllTeacherStudents()[key] || []).forEach((student) => {
+  getStudentsForTeacher(key).forEach((student) => {
     const className = normalizeClassName(student.className || student.class || '');
     if (className) classes.add(className);
   });
@@ -916,7 +1043,7 @@ function mergeSharedValue(storageKey, localValue, remoteValue) {
   if (storageKey === STORAGE_KEYS.teachers) {
     return mergeTeacherMapForSync(localValue || {}, remoteValue || {});
   }
-  if (storageKey === STORAGE_KEYS.quizzes || storageKey === STORAGE_KEYS.teachers || storageKey === STORAGE_KEYS.students) {
+  if (storageKey === STORAGE_KEYS.quizzes || storageKey === STORAGE_KEYS.students) {
     return mergeRecordMapForSync(localValue || {}, remoteValue || {});
   }
   if (localValue && typeof localValue === 'object' && remoteValue && typeof remoteValue === 'object' && !Array.isArray(localValue) && !Array.isArray(remoteValue)) {
@@ -952,6 +1079,7 @@ function applyNetworkSnapshot(snapshot) {
     if (mergedText !== localText) changed = true;
     writeLocalStorageValue(storageKey, mergedValue);
     if (mergedText !== remoteText) {
+      markNetworkKeyDirty(storageKey);
       pushNetworkValue(storageKey, mergedValue);
     }
   });
@@ -980,8 +1108,13 @@ async function pullNetworkState(force = false) {
   return networkSyncInFlight;
 }
 
-async function pushNetworkValue(key, value) {
+async function pushNetworkValue(key, value, options = {}) {
   if (!canUseNetworkSync() || !NETWORK_STATE_KEY_MAP[key]) return false;
+  if (pendingNetworkWrites.has(key)) {
+    markNetworkKeyDirty(key);
+    if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
+    return false;
+  }
   pendingNetworkWrites.add(key);
   try {
     const res = await fetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
@@ -993,11 +1126,20 @@ async function pushNetworkValue(key, value) {
     networkSyncReady = true;
     networkSyncFailed = false;
     networkSyncFailureMessage = '';
+    const latestValue = readLocalStorageValue(key);
+    if (JSON.stringify(latestValue) === JSON.stringify(value)) {
+      clearNetworkKeyDirty(key);
+    } else {
+      markNetworkKeyDirty(key);
+      schedulePendingNetworkFlush(300);
+    }
     return true;
   } catch (err) {
     networkSyncFailed = true;
     networkSyncFailureMessage = err && err.message ? err.message : 'Failed to save shared state';
+    markNetworkKeyDirty(key);
     console.error('Network sync save failed for', key, err);
+    if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
     return false;
   } finally {
     pendingNetworkWrites.delete(key);
@@ -1020,15 +1162,10 @@ function getSharedSyncWarningMessage() {
 
 async function syncSharedKeys(keys = []) {
   if (!canUseNetworkSync()) return false;
-  const targetKeys = [...new Set((Array.isArray(keys) ? keys : []).filter((key) => NETWORK_SYNC_KEYS.includes(key)))];
+  const targetKeys = resolveNetworkSyncKeys(keys);
   if (!targetKeys.length) return isSharedSyncAvailable();
-  let ok = true;
-  for (const key of targetKeys) {
-    const saved = await pushNetworkValue(key, readLocalStorageValue(key));
-    if (!saved) ok = false;
-  }
-  if (ok) await pullNetworkState(true);
-  return ok;
+  targetKeys.forEach(markNetworkKeyDirty);
+  return flushPendingNetworkWrites(targetKeys, { pullAfter: true });
 }
 
 function encodeTextToBase64(value) {
@@ -1095,32 +1232,86 @@ function encodeQuizToPortableCode(quiz) {
   return `${PORTABLE_QUIZ_CODE_PREFIX}${encodeQuizToPortablePayload(quiz)}`;
 }
 
+function buildPortableQuizAccessTransport(quiz) {
+  const portableUrl = encodeQuizToLink(quiz, { portable: true });
+  const portableCode = encodeQuizToPortableCode(quiz);
+  const canUsePortableLink = portableUrl.length <= MAX_PORTABLE_LINK_LENGTH;
+  return {
+    portable: true,
+    url: canUsePortableLink ? portableUrl : '',
+    code: portableCode,
+    mode: canUsePortableLink ? 'portable-link' : 'portable-code'
+  };
+}
+
+async function prepareQuizAccessTransport(quiz) {
+  if (!quiz || !quiz.id) return null;
+  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
+  if (sharedSyncOk) {
+    markQuizzesCloudSynced([quiz.id]);
+    return {
+      portable: false,
+      url: encodeQuizToLink(quiz),
+      code: quiz.id,
+      mode: 'cloud',
+      sharedSyncOk: true,
+      warningMessage: ''
+    };
+  }
+  return {
+    ...buildPortableQuizAccessTransport(quiz),
+    sharedSyncOk: false,
+    warningMessage: getSharedSyncWarningMessage()
+  };
+}
+
 async function copyQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
-  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
-  markQuizzesCloudSynced([quiz.id]);
-  await copyTextToClipboard(encodeQuizToLink(quiz), 'Quiz link copied');
+  const transport = await prepareQuizAccessTransport(quiz);
+  if (!transport) return false;
+  const copiedValue = transport.url || transport.code;
+  const successMessage = transport.sharedSyncOk
+    ? 'Quiz link copied'
+    : transport.url
+      ? 'Portable quiz link copied'
+      : 'Portable quiz code copied';
+  await copyTextToClipboard(copiedValue, successMessage);
+  if (!transport.sharedSyncOk) {
+    showNotification(`Cloud sync is unavailable. A portable ${transport.url ? 'link' : 'code'} was copied so this quiz can still open on another device. ${transport.warningMessage}`, 'warning', 9000);
+  }
   return true;
 }
 
 async function copyQuizAccessCode(quiz) {
   if (!quiz || !quiz.id) return false;
-  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
-  markQuizzesCloudSynced([quiz.id]);
-  await copyTextToClipboard(quiz.id, 'Student code copied');
+  const transport = await prepareQuizAccessTransport(quiz);
+  if (!transport) return false;
+  await copyTextToClipboard(transport.code, transport.sharedSyncOk ? 'Student code copied' : 'Portable quiz code copied');
+  if (!transport.sharedSyncOk) {
+    showNotification(`Cloud sync is unavailable. A portable quiz code was copied so this quiz can still be opened on another device. ${transport.warningMessage}`, 'warning', 9000);
+  }
   return true;
 }
 
-function buildQuizSharePayload(quiz) {
-  const url = encodeQuizToLink(quiz);
+function buildQuizSharePayload(quiz, transport = {}) {
+  const url = transport.url || encodeQuizToLink(quiz);
   const subjectSummaries = getQuizSubjectSummaries(quiz);
   const totalQuestions = subjectSummaries.reduce((sum, item) => sum + (Number(item.questionCount) || 0), 0);
   const subjectBreakdown = subjectSummaries.length
     ? subjectSummaries.map((item) => `- ${item.name}: ${item.questionCount} question(s)`).join('\n')
     : '- General: 0 question(s)';
   const teacherLabel = getTeacherSignatureLabel(quiz?.teacherId || state.teacherId);
+  const accessLines = transport.portable
+    ? (transport.url
+      ? [
+          `Portable access link: ${transport.url}`,
+          `If the regular quiz ID does not open immediately on another device, use this portable link instead.`
+        ]
+      : [
+          `Portable Quiz Code:`,
+          transport.code
+        ])
+    : [`Open quiz: ${url}`];
   const detailedMessage = [
     `Hello Student,`,
     ``,
@@ -1131,7 +1322,7 @@ function buildQuizSharePayload(quiz) {
     `Question Breakdown:`,
     subjectBreakdown,
     ``,
-    `Open quiz: ${url}`,
+    ...accessLines,
     ``,
     `Important rules:`,
     `- Full screen is required throughout the quiz.`,
@@ -1150,12 +1341,15 @@ function buildQuizSharePayload(quiz) {
 
 async function shareQuizAccessLink(quiz) {
   if (!quiz || !quiz.id) return false;
-  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  if (!sharedSyncOk) return showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 7000);
-  markQuizzesCloudSynced([quiz.id]);
-  const sharePayload = buildQuizSharePayload(quiz);
+  const transport = await prepareQuizAccessTransport(quiz);
+  if (!transport) return false;
+  const sharePayload = buildQuizSharePayload(quiz, transport);
   openWhatsappShareIntent(sharePayload.text);
-  showNotification('WhatsApp opened with the quiz invite message', 'success', 7000);
+  if (transport.sharedSyncOk) {
+    showNotification('WhatsApp opened with the quiz invite message', 'success', 7000);
+  } else {
+    showNotification(`WhatsApp opened with portable quiz access because cloud sync is unavailable. ${transport.warningMessage}`, 'warning', 9000);
+  }
   return true;
 }
 
@@ -1215,7 +1409,8 @@ async function syncAllLocalDataToCloud() {
     STORAGE_KEYS.quizzes,
     STORAGE_KEYS.students,
     STORAGE_KEYS.submissions,
-    STORAGE_KEYS.teachers
+    STORAGE_KEYS.teachers,
+    STORAGE_KEYS.tokenTransactions
   ]);
   if (ok) {
     const quizIds = Object.keys(getAllQuizzes() || {});
@@ -1229,19 +1424,12 @@ async function syncAllLocalDataToCloud() {
 }
 
 function startNetworkSyncLoop() {
-  if (!canUseNetworkSync() || networkSyncTimer) return;
+  if (!canUseNetworkSync()) return;
+  bindNetworkSyncWindowEvents();
+  if (networkSyncTimer) return;
   networkSyncTimer = setInterval(() => {
-    pullNetworkState().then((changed) => {
-      if (changed) refreshCurrentQuizReference();
-      if (changed && state.view !== 'take') render();
-    });
+    runSharedSyncCycle();
   }, NETWORK_SYNC_CONFIG.pollIntervalMs);
-  window.addEventListener('focus', () => {
-    pullNetworkState(true).then((changed) => {
-      if (changed) refreshCurrentQuizReference();
-      render();
-    });
-  });
 }
 
 async function initializeApp() {
@@ -1259,12 +1447,9 @@ async function initializeApp() {
   const params = new URLSearchParams(window.location.search);
   if (params.has('q')) {
     const id = params.get('q');
-    const quiz = getAllQuizzes()[id];
-    if (quiz) {
-      state.currentQuiz = quiz;
-      state.prefillQuizCode = id;
-      state.view = 'student';
-    }
+    state.prefillQuizCode = id;
+    state.view = 'student';
+    hydratePrefilledQuizFromAccess();
   }
   if (params.has('import')) {
     const quiz = decodeQuizFromString(params.get('import'));
@@ -1288,15 +1473,15 @@ async function initializeApp() {
   }
   render();
   startNetworkSyncLoop();
-  pullNetworkState(true).then((changed) => {
-    refreshCurrentQuizReference();
-    if (changed && state.view !== 'take') render();
-  });
+  runSharedSyncCycle({ forcePull: true, forceRender: true });
 }
 
 function save(key, value) {
   if (!writeLocalStorageValue(key, value)) return;
-  if (NETWORK_SYNC_KEYS.includes(key)) pushNetworkValue(key, value);
+  if (NETWORK_SYNC_KEYS.includes(key)) {
+    markNetworkKeyDirty(key);
+    pushNetworkValue(key, value);
+  }
 }
 
 function load(key) {
@@ -1713,23 +1898,34 @@ function addStudentsToTeacher(list, sourceQuizId = '') {
       updatedAt: item.updatedAt || new Date().toISOString()
     };
     const studentKey = normalizeEmail(student.email || student.id || student.registrationNo || student.name);
-    if (studentKey) byKey[studentKey] = { ...(byKey[studentKey] || {}), ...student };
+    if (studentKey) {
+      byKey[studentKey] = { ...(byKey[studentKey] || {}), ...student };
+      delete byKey[studentKey].deletedAt;
+      delete byKey[studentKey].deletedBy;
+    }
   });
   all[key] = Object.values(byKey);
   saveAllTeacherStudents(all);
 }
 
-function getTeacherStudents() {
-  return getAllTeacherStudents()[normalizeEmail(state.teacherId)] || [];
+function getTeacherStudents(options = {}) {
+  return getStudentsForTeacher(state.teacherId, options);
 }
 
-function getStudentsForTeacher(teacherId = state.teacherId) {
-  return getAllTeacherStudents()[normalizeEmail(teacherId)] || [];
+function getStudentsForTeacher(teacherId = state.teacherId, options = {}) {
+  const includeDeleted = !!options.includeDeleted;
+  const list = getAllTeacherStudents()[normalizeEmail(teacherId)] || [];
+  return includeDeleted ? list : list.filter((student) => !isDeletedStudent(student));
 }
 
-function saveStudentsForTeacher(teacherId, students = []) {
+function saveStudentsForTeacher(teacherId, students = [], options = {}) {
   const all = getAllTeacherStudents();
-  all[normalizeEmail(teacherId)] = (students || []).slice();
+  const teacherKey = normalizeEmail(teacherId);
+  const nextStudents = Array.isArray(students) ? students.slice() : [];
+  const existingDeleted = options.keepDeleted === false
+    ? []
+    : (all[teacherKey] || []).filter(isDeletedStudent);
+  all[teacherKey] = mergeStudentListsForSync(nextStudents, existingDeleted);
   saveAllTeacherStudents(all);
 }
 
@@ -1759,7 +1955,7 @@ function setSelectedClassFilter(teacherId, value, scope = 'teacher') {
 }
 
 function upsertStudentForTeacher(teacherId, incomingStudent, sourceQuizId = '') {
-  const students = getStudentsForTeacher(teacherId).slice();
+  const students = getStudentsForTeacher(teacherId, { includeDeleted: true }).slice();
   const student = {
     name: (incomingStudent.name || '').toString().trim(),
     email: (incomingStudent.email || '').toString().trim(),
@@ -1773,18 +1969,29 @@ function upsertStudentForTeacher(teacherId, incomingStudent, sourceQuizId = '') 
   const key = normalizeEmail(student.email || student.id || student.registrationNo || student.name);
   if (!key) return false;
   const index = students.findIndex((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) === key);
-  if (index >= 0) students[index] = { ...students[index], ...student };
+  if (index >= 0) {
+    students[index] = { ...students[index], ...student };
+    delete students[index].deletedAt;
+    delete students[index].deletedBy;
+  }
   else students.push(student);
   saveStudentsForTeacher(teacherId, students);
   return true;
 }
 
 function removeStudentForTeacher(teacherId, student) {
-  const students = getStudentsForTeacher(teacherId).slice();
+  const students = getStudentsForTeacher(teacherId, { includeDeleted: true }).slice();
   const targetKey = normalizeEmail(student?.email || student?.id || student?.registrationNo || student?.name);
-  const next = students.filter((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) !== targetKey);
-  if (next.length === students.length) return false;
-  saveStudentsForTeacher(teacherId, next);
+  const index = students.findIndex((item) => normalizeEmail(item.email || item.id || item.registrationNo || item.name) === targetKey);
+  if (index < 0) return false;
+  const deletedAt = new Date().toISOString();
+  students[index] = {
+    ...students[index],
+    deletedAt,
+    deletedBy: normalizeEmail(state.teacherId || teacherId || 'teacher'),
+    updatedAt: deletedAt
+  };
+  saveStudentsForTeacher(teacherId, students);
   return true;
 }
 
