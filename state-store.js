@@ -256,7 +256,7 @@ function buildTeacherRow(id, item) {
     email: normalizeLowerKey(item && (item.email || item.teacherId), teacherId),
     role: normalizeKey(item && item.role, 'teacher') || 'teacher',
     created_at: toIsoOrNull(item && item.createdAt),
-    updated_at: toIsoOrNull(item && (item.updatedAt || item.licenseUpdatedAt || item.passwordResetAt || item.createdAt)),
+    updated_at: toIsoOrNull(item && (item.updatedAt || item.tokenUpdatedAt || item.tokenRequestedAt || item.licenseUpdatedAt || item.passwordResetAt || item.createdAt)),
     payload: { ...(item || {}), teacherId, email: normalizeLowerKey(item && (item.email || item.teacherId), teacherId) }
   };
 }

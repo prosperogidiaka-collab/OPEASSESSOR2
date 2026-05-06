@@ -1567,7 +1567,7 @@ function canSetQuestions() {
   return isTeacherLoggedIn();
 }
 
-function requestTeacherLicense(selectedPlanKey = 'starter', contactChannel = '') {
+async function requestTeacherLicense(selectedPlanKey = 'starter', contactChannel = '') {
   const teacher = getCurrentTeacher();
   if (!teacher) { state.view = 'teacher.login'; render(); return; }
   const selectedPackage = getTokenPackageByKey(selectedPlanKey) || getTokenPackageByKey('starter');
@@ -1584,7 +1584,8 @@ function requestTeacherLicense(selectedPlanKey = 'starter', contactChannel = '')
     updatedAt: new Date().toISOString()
   };
   saveAllTeachers(teachers);
-  showNotification('Token purchase request saved.', 'success', 5000);
+  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers]);
+  showNotification(sharedSyncOk ? 'Token purchase request saved.' : `Token purchase request saved locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 6000);
   const support = getSupportSettings();
   const teacherName = getTeacherDisplayName(teacher, { fallback: id });
   const teacherPhone = getTeacherPhoneLabel(teacher, { fallback: '' });
@@ -3545,7 +3546,7 @@ function showQuizSetDetails(quizId) {
           ${canEditThisQuiz ? '<button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>' : ''}
         </div>
       </div>
-      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, bold text, lists, superscript, subscript, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or licence state.'}</div>
+      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, bold text, lists, superscript, subscript, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or current token access state.'}</div>
       <div class="card" style="padding:14px;margin-bottom:14px">
         <div class="h3">${getSubjectLabel(subject, selectedSubjectIndex)}</div>
         <div id="quizSubjectQuestionCount" class="small" style="margin-top:6px">${questions.length} question(s) in this subject</div>
@@ -4048,7 +4049,9 @@ function renderTeacherGuideView() {
         'Calculator access starts on Basic by default, and you can change it to None or Scientific if needed.',
         'Turn on camera requirement only when monitoring is compulsory for that quiz.',
         'Add each subject and upload one file per subject, or paste CSV for a single-subject quiz.',
+        'Use Add Question Image inside each subject when a diagram or illustration should appear in selected question numbers. Enter the numbers with commas such as 1, 3, 5 and choose whether the image should show before or after the question text.',
         'Add certificate signatories only if you need them, and decide whether each signatory name should show or stay hidden on the certificate.',
+        'Saving a brand-new quiz uses either 1 Token or your active unlimited plan on the registered device. Editing an existing quiz does not deduct a token.',
         'Save the quiz, then use Sync To Cloud if the quiz still shows Pending cloud sync.'
       ]
     },
@@ -4076,20 +4079,23 @@ function renderTeacherGuideView() {
         'When you edit a score, save it so the new score appears in teacher exports, broadsheet PDFs, and student result views.',
         'Use PDF Summary when you need the broadsheet PDF. The broadsheet now keeps only the student name, score, percent, and status columns for cleaner printing.',
         'Student correction links now open into a direct verified-result loading page and start the correction PDF automatically after the result is found.',
+        'Student result summaries now show the grading band, second-person remark, and captured IP address for easier tracking.',
+        'Question images assigned in the quiz builder also appear in the quiz interface, correction PDF, and facility index PDF.',
         'When you delete a result, confirm the warning so the result is removed and stays removed.',
         'Use End Test when you want to stop the quiz before the scheduled end time.'
       ]
     },
     {
       id: 'licensing',
-      title: 'Licensing and Access',
-      description: 'Request and grant paid access using the current licence plans.',
+      title: 'Tokens and Unlimited Access',
+      description: 'Request and manage token bundles or the 3-month unlimited plan.',
       steps: [
-        'If your free trial has already been used, open the licence banner or the Request Licence button.',
-        'Choose Daily, Weekly, Monthly, or Yearly before you contact the admin.',
-        'Request the plan by Email or WhatsApp so the selected amount and plan are saved with your teacher record.',
-        'Super admins can open Settings, review the requested plan, and grant the matching licence plan directly from the teacher table.',
-        'If a special duration is needed, the admin can still enter a custom number of days during licence approval.'
+        'Open the token banner or Buy Tokens whenever your token balance is low or you want unlimited access.',
+        '1 Token = 1 Quiz Attempt = N1,000. Token bundles are Single, Starter, Standard, Pro, and School.',
+        'The 3-month unlimited plan is locked to the device ID shown in the request modal, so copy that ID correctly when you contact the admin.',
+        'Request the selected token bundle or unlimited plan by Email or WhatsApp so the package, amount, and device ID are saved with your teacher record.',
+        'Super admins can open Settings and either grant tokens, grant unlimited, transfer the unlimited device, or clear unlimited access directly from the teacher table.',
+        'If unlimited is active on another device, you can still continue on this device with tokens until the admin transfers the unlimited device.'
       ]
     },
     {
@@ -4353,7 +4359,7 @@ function renderStudentClassManager(container, teacherId, options = {}) {
           ${canModify ? `<button type="button" id="${scope}StudentsAdd" class="btn btn-primary">Add Student Manually</button>` : ''}
         </div>
       </div>
-      ${!canModify && ownTeacher ? '<div class="small" style="margin-bottom:12px;color:#92400E">Your licence or free trial no longer allows importing or editing students. You can still view your uploaded classes here.</div>' : ''}
+      ${!canModify && ownTeacher ? '<div class="small" style="margin-bottom:12px;color:#92400E">Your account cannot edit this class right now. You can still view your uploaded classes here.</div>' : ''}
       <div class="student-class-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px">
         ${classNames.map((className) => `
           <button type="button" class="card-beautiful studentClassCard ${selectedClass === className ? 'student-class-active' : ''}" data-class="${escapeHtml(className)}" style="text-align:left;border:${selectedClass === className ? '2px solid #4F46E5' : '1px solid #E2E8F0'}">
@@ -5976,6 +5982,7 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   const metaCards = [
     { label: 'Student', value: submission.name || 'Student' },
     { label: 'Email / ID', value: submission.email || submission.registrationNo || '' },
+    { label: 'IP Address', value: getSubmissionIpAddress(submission) || 'Not captured' },
     { label: 'Quiz', value: quiz.title || submission.quizId || 'Quiz' },
     { label: 'Submitted', value: submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A' },
     { label: 'Score', value: `${formatScoreValue(displayScore)} / ${formatScoreValue(displayTotalMarks)}` },
@@ -6001,7 +6008,9 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
           <div class="pdf-question-number">Question ${entry.originalIndex + 1}</div>
           <div class="pdf-question-status">${statusText}</div>
         </div>
+        ${renderQuestionMediaAssets(question, 'before')}
         <div class="pdf-question-text rich-text-output">${renderRichTextHtml(question.question || '')}</div>
+        ${renderQuestionMediaAssets(question, 'after')}
         <div class="pdf-meta-line"><strong>Status:</strong> ${escapeHtml(statusText)}</div>
         <div class="pdf-meta-line"><strong>Key concept:</strong> <div class="rich-text-output">${renderRichTextHtml(keyConcept)}</div></div>
         ${breakdown.length > 1 ? `<div class="pdf-meta-line"><strong>Subject:</strong> ${escapeHtml(sanitizeScientificText(entry.subject || 'General'))}</div>` : ''}
@@ -6332,7 +6341,9 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
                       <div class="facility-question-title">Question ${item.index} • ${percentText} • ${escapeHtml(section.label)}</div>
                       <div class="facility-question-chip">${escapeHtml(section.label)}</div>
                     </div>
+                    ${renderQuestionMediaAssets(item, 'before')}
                     <div class="facility-question-text rich-text-output">${renderRichTextHtml(item.question || '')}</div>
+                    ${renderQuestionMediaAssets(item, 'after')}
                     <div class="facility-meta-line"><strong>Options:</strong></div>
                     ${buildPdfOptionListHtml(item, { correctAnswer: item.answer || '' })}
                     <div class="facility-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
@@ -7359,7 +7370,7 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
   const percent = clampPercent(submission.percent || 0);
   const gradeProfile = getCertificateGradeProfile(percent);
   const identityLabel = (submission.email || '').includes('@') ? 'Email' : 'Registration No';
-  const ipAddress = (submission.monitoring && submission.monitoring.ipAddress) ? submission.monitoring.ipAddress : (submission.ipAddress || '');
+  const ipAddress = getSubmissionIpAddress(submission);
   const hasAdjustedScore = hasManualScoreOverride(submission);
   const adjustedNote = hasAdjustedScore
     ? (submission.manualScoreEditedAt
@@ -7696,7 +7707,7 @@ function renderResultsView() {
           const item = breakdown.find((entry) => normalizeSubjectName(entry.name) === normalizeSubjectName(subjectName));
           return item ? `${formatScoreValue(item.score)}/${formatScoreValue(item.totalMarks || item.total)}` : '';
         });
-        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), (s.monitoring && s.monitoring.ipAddress) || '', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
+        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), getSubmissionIpAddress(s), (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
       });
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(data);
@@ -7746,7 +7757,7 @@ function renderResultsView() {
               <td class="text-right">${getSubmissionAveragePercent(s, q)}%</td>
               <td class="text-right">${s.percent}%</td>
               <td class="text-right">${escapeHtml(s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'))}</td>
-              <td class="text-right">${escapeHtml((s.monitoring && s.monitoring.ipAddress) || '')}</td>
+              <td class="text-right">${escapeHtml(getSubmissionIpAddress(s))}</td>
               <td class="text-right">${(s.monitoring && s.monitoring.tabSwitches) || 0}</td>
               <td class="text-right">${Math.floor((s.timeSpent||0) / 60)}m</td>
               <td class="text-right">${ranks[normalizeEmail(s.email)] || ''}</td>
@@ -8741,22 +8752,38 @@ function showCreateQuizModal(editQuizId = '') {
           const sourceBank = subject.importedQuestions && subject.importedQuestions.length
             ? subject.importedQuestions
             : (subjectIndex === 0 ? pastedBank : []);
-          const questions = sourceBank.map((item, index) => normalizeQuestionForStorage({ ...item, subject: subject.name }, index, subject.name));
+          const questionImages = normalizeSubjectQuestionImages(subject.questionImages || []);
+          const questions = buildQuestionsWithSubjectImages(sourceBank, subject.name, questionImages);
           return {
             name: subject.name,
             questions,
             bankQuestions: questions.slice(),
+            questionImages,
             questionCount: subject.questionCount || null,
             totalMarks: getSubjectTotalMarks(subject)
           };
         });
       } else {
-        subjectsArr = (editingQuiz.subjects || []).map((subject, idx) => ({
-          ...subject,
-          name: subjects[idx]?.name || subject.name || 'General',
-          questionCount: subjects[idx]?.questionCount ?? subject.questionCount ?? null,
-          totalMarks: getSubjectTotalMarks(subjects[idx] || subject)
-        }));
+        subjectsArr = (editingQuiz.subjects || []).map((subject, idx) => {
+          const nextSubject = subjects[idx] || {};
+          const nextName = nextSubject.name || subject.name || 'General';
+          const sourceQuestions = Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions;
+          const questionImages = normalizeSubjectQuestionImages(
+            nextSubject.questionImages
+            || subject.questionImages
+            || deriveSubjectQuestionImagesFromQuestions(sourceQuestions)
+          );
+          const questions = buildQuestionsWithSubjectImages(sourceQuestions || [], nextName, questionImages);
+          return {
+            ...subject,
+            name: nextName,
+            questions,
+            bankQuestions: questions.slice(),
+            questionImages,
+            questionCount: nextSubject.questionCount ?? subject.questionCount ?? null,
+            totalMarks: getSubjectTotalMarks(nextSubject || subject)
+          };
+        });
       }
 
       const id = editingQuiz ? editingQuiz.id : gen6DigitId();
@@ -8774,26 +8801,25 @@ function showCreateQuizModal(editQuizId = '') {
         className: normalizeClassName(student.className || student.class || '')
       }));
       const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: quizOwnerId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', calculatorType, webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
-      const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
-      if (trialWasAvailable) {
-        const teachersMap = getAllTeachers();
-        const teacherId = normalizeEmail(quizOwnerId);
-        if (teachersMap[teacherId]) {
-          teachersMap[teacherId] = {
-            ...teachersMap[teacherId],
-            trialQuizUsedAt: teachersMap[teacherId].trialQuizUsedAt || now,
-            trialQuizId: teachersMap[teacherId].trialQuizId || id,
-            updatedAt: now
-          };
-          saveAllTeachers(teachersMap);
-        }
+      const accessResult = consumeTeacherAccessForQuizSave({
+        teacherId: quizOwnerId,
+        quizId: id,
+        quizTitle: qobj.title,
+        isEditingExisting: !!editingQuiz
+      });
+      if (!accessResult.ok) {
+        showNotification(accessResult.message || 'You need tokens before saving this quiz.', 'error', 7000);
+        showLicenseRequired();
+        return;
       }
+      const quizzes = getAllQuizzes(); quizzes[id]=qobj; saveAllQuizzes(quizzes);
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
       const sharedSyncOk = await syncSharedKeys([
         STORAGE_KEYS.quizzes,
         STORAGE_KEYS.students,
+        ...((accessResult.mode === 'token' || accessResult.mode === 'unlimited') ? [STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions] : []),
         ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
       ]);
       if (sharedSyncOk) {
@@ -9109,12 +9135,15 @@ async function getClientTrackingContext() {
     const response = await fetch(buildApiUrl('/api/client-context'), { cache: 'no-store' });
     if (response.ok) {
       const data = await response.json();
-      return {
-        ipAddress: (data.ipAddress || '').toString().trim(),
-        userAgent: (data.userAgent || navigator.userAgent || '').toString(),
-        requestedAt: data.requestedAt || new Date().toISOString(),
-        deviceId: getAppDeviceId()
-      };
+      const ipAddress = (data.ipAddress || '').toString().trim();
+      if (ipAddress) {
+        return {
+          ipAddress,
+          userAgent: (data.userAgent || navigator.userAgent || '').toString(),
+          requestedAt: data.requestedAt || new Date().toISOString(),
+          deviceId: getAppDeviceId()
+        };
+      }
     }
   } catch (error) {}
   try {
@@ -9150,13 +9179,9 @@ function getQuizScheduleStatus(quiz) {
   if (quiz.scheduleStart && new Date(quiz.scheduleStart).getTime() > now) return { ok: false, message: 'This quiz has not started yet. Start time: ' + new Date(quiz.scheduleStart).toLocaleString() };
   const effectiveEnd = getQuizEffectiveEndTime(quiz);
   if (effectiveEnd && effectiveEnd < now) {
-    const owner = getTeacherById(quiz.teacherId);
-    const dueToLicense = owner && !getTeacherLicenseStatus(owner).active && getTeacherLicenseGraceDeadline(owner) === effectiveEnd;
     return {
       ok: false,
-      message: dueToLicense
-        ? 'This quiz has ended because the teacher licence grace period has closed. End time: ' + new Date(effectiveEnd).toLocaleString()
-        : 'This quiz has ended. End time: ' + new Date(effectiveEnd).toLocaleString()
+      message: 'This quiz has ended. End time: ' + new Date(effectiveEnd).toLocaleString()
     };
   }
   return { ok: true, message: '' };
@@ -9714,6 +9739,10 @@ function renderStudentEntry() {
           state.currentSubmission.monitoring.userAgent = context.userAgent || navigator.userAgent || '';
           state.currentSubmission.monitoring.deviceId = context.deviceId || getAppDeviceId();
           state.currentSubmission.monitoring.ipCapturedAt = context.requestedAt || new Date().toISOString();
+          state.currentSubmission.ipAddress = context.ipAddress || '';
+          state.currentSubmission.userAgent = context.userAgent || navigator.userAgent || '';
+          state.currentSubmission.deviceId = context.deviceId || getAppDeviceId();
+          state.currentSubmission.ipCapturedAt = context.requestedAt || new Date().toISOString();
         }
       });
       render();
@@ -9848,6 +9877,10 @@ async function collectAndSubmit() {
       deviceId: (sub.monitoring && sub.monitoring.deviceId) || trackingContext.deviceId || getAppDeviceId(),
       ipCapturedAt: (sub.monitoring && sub.monitoring.ipCapturedAt) || trackingContext.requestedAt || new Date().toISOString()
     };
+    sub.ipAddress = sub.monitoring.ipAddress || trackingContext.ipAddress || '';
+    sub.userAgent = sub.monitoring.userAgent || trackingContext.userAgent || navigator.userAgent || '';
+    sub.deviceId = sub.monitoring.deviceId || trackingContext.deviceId || getAppDeviceId();
+    sub.ipCapturedAt = sub.monitoring.ipCapturedAt || trackingContext.requestedAt || new Date().toISOString();
     const all = sub.allQuestions || [];
     const grade = buildSubmissionGradeState(sub, quiz, gradeSubmissionForQuiz(sub, quiz));
     const score = grade.score;
