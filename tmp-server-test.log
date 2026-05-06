@@ -1,0 +1,5 @@
+OPE Assessor server is running at http://localhost:8000
+Storage backend: file
+Shared quiz data file: C:\Users\HP\Documents\OPEASSESSOR\ope-shared-state.json
+Allowed CORS origins: same-origin only
+Open from another device on this Wi-Fi: http://192.168.200.133:8000
