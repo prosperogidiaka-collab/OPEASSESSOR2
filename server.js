@@ -716,10 +716,20 @@ async function handleApi(req, res) {
     }
   }
 
-  if (route === '/api/export/pdf' && req.method === 'POST') {
+  if (route === '/api/export/pdf' && (req.method === 'POST' || req.method === 'GET')) {
     try {
-      const body = await readRequestBody(req);
-      const parsed = JSON.parse(body || '{}');
+      const parsed = req.method === 'POST'
+        ? JSON.parse((await readRequestBody(req)) || '{}')
+        : {
+            html: typeof url.searchParams.get('html') === 'string' ? url.searchParams.get('html') : '',
+            routePath: typeof url.searchParams.get('routePath') === 'string' ? url.searchParams.get('routePath').trim() : '',
+            filename: url.searchParams.get('filename') || 'ope-export.pdf',
+            inline: ['1', 'true', 'yes'].includes(((url.searchParams.get('inline') || '')).toLowerCase()),
+            options: {
+              title: url.searchParams.get('title') || '',
+              orientation: url.searchParams.get('orientation') || 'portrait'
+            }
+          };
       const html = typeof parsed.html === 'string' ? parsed.html : '';
       const routePath = typeof parsed.routePath === 'string' ? parsed.routePath.trim() : '';
       if (!routePath && !html.trim()) return sendJson(req, res, 400, { error: 'Missing routePath or html' });

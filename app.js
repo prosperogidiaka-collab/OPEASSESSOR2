@@ -735,7 +735,11 @@ function getQuestionSubjectLabel(question = {}) {
 
 function buildCorrectionShareLinksText(quiz, submission) {
   const resultUrl = buildCertificateVerificationUrl(quiz, submission);
-  const correctionUrl = buildCertificateVerificationUrl(quiz, submission, { downloadCorrection: true });
+  const correctionUrl = buildServerPdfDownloadUrl(
+    buildStudentCorrectionPdfRoute(submission),
+    getStudentResultPdfFilename(submission, quiz?.id || submission?.quizId, 'correction'),
+    { inline: true }
+  );
   return [
     'Result Summary',
     resultUrl,
@@ -921,6 +925,18 @@ function mergeSharedValue(storageKey, localValue, remoteValue) {
   return isEmptySharedValue(remoteValue) && !isEmptySharedValue(localValue) ? localValue : remoteValue;
 }
 
+async function readApiErrorMessage(response, fallbackMessage = 'Request failed') {
+  try {
+    const payload = await response.json();
+    if (payload && payload.error) return payload.error;
+  } catch (error) {}
+  try {
+    const text = await response.text();
+    if (text && text.trim()) return text.trim();
+  } catch (error) {}
+  return fallbackMessage;
+}
+
 function applyNetworkSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return false;
   let changed = false;
@@ -947,7 +963,7 @@ async function pullNetworkState(force = false) {
   if (networkSyncInFlight && !force) return networkSyncInFlight;
   networkSyncInFlight = fetch(buildApiUrl('/api/state'), { cache: 'no-store' })
     .then(async (res) => {
-      if (!res.ok) throw new Error('Network sync unavailable');
+      if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Network sync unavailable'));
       const snapshot = await res.json();
       const changed = applyNetworkSnapshot(snapshot);
       networkSyncReady = true;
@@ -973,7 +989,7 @@ async function pushNetworkValue(key, value) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value })
     });
-    if (!res.ok) throw new Error('Failed to save shared state');
+    if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Failed to save shared state'));
     networkSyncReady = true;
     networkSyncFailed = false;
     networkSyncFailureMessage = '';
@@ -993,8 +1009,13 @@ function isSharedSyncAvailable() {
 }
 
 function getSharedSyncWarningMessage() {
-  if (!canUseNetworkSync()) return 'Shared sync is not available in this browser session.';
-  return networkSyncFailureMessage || 'Shared sync is not active on this deployment.';
+  if (!canUseNetworkSync()) {
+    return 'Saved on this device only. Cloud sync is not available in this browser session.';
+  }
+  if (networkSyncFailureMessage) {
+    return `Saved on this device only. Cloud sync failed: ${networkSyncFailureMessage}`;
+  }
+  return 'Saved on this device only. Cloud sync is not active on this deployment.';
 }
 
 async function syncSharedKeys(keys = []) {
@@ -2759,10 +2780,18 @@ function render() {
           autoDownloadCorrection: pending.downloadCorrection,
           correctionSubject: pending.correctionSubject || ''
         };
+        if (pending.downloadCorrection) {
+          if (pending.shareKey) {
+            await openStudentCorrectionByShareKey(pending.shareKey, openOptions);
+          } else {
+            await openStudentCorrectionBySubmissionKey(pending.quizId, pending.submissionId, openOptions);
+          }
+          return;
+        }
         if (pending.shareKey) {
-          showStudentResultModalByShareKey(pending.shareKey, false, openOptions);
+          await showStudentResultModalByShareKey(pending.shareKey, true, openOptions);
         } else {
-          showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, false, openOptions);
+          await showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, true, openOptions);
         }
       }, 50);
     }
@@ -5399,11 +5428,148 @@ function buildTeacherSummaryPdfRoute(quiz = {}, options = {}) {
   return `/pdf/teacher-summary/${encodeURIComponent(quiz.id || '')}${params.toString() ? `?${params.toString()}` : ''}`;
 }
 
+function getPublicAppBaseUrl() {
+  const pdfBootstrap = getPdfBootstrapPayload();
+  const configuredBase = (pdfBootstrap?.verificationBaseUrl || '').toString().trim();
+  if (configuredBase) return new URL('/', configuredBase).toString();
+  if (typeof window !== 'undefined' && window.location && window.location.href) {
+    return new URL('/', window.location.href).toString();
+  }
+  return '/';
+}
+
+function parsePdfRoutePathOnClient(routePath = '') {
+  try {
+    const url = new URL((routePath || '').toString(), getPublicAppBaseUrl());
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] !== 'pdf' || parts.length < 3) return null;
+    return {
+      url,
+      type: parts[1],
+      recordId: decodeURIComponent(parts.slice(2).join('/'))
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function findSubmissionByShareKey(shareKey = '') {
+  const key = (shareKey || '').toString().trim().toLowerCase();
+  if (!key) return null;
+  const matches = getAllSubmissions().filter((item) => {
+    const candidate = (item.shareKey || buildSubmissionShareKeyCandidate(item)).toString().trim().toLowerCase();
+    return candidate === key;
+  });
+  return matches.length ? matches.slice().sort(sortSubmissionRecords)[matches.length - 1] : null;
+}
+
+function findSubmissionBySubmissionKey(quizId = '', submissionKey = '') {
+  const id = (quizId || '').toString().trim();
+  const key = (submissionKey || '').toString().trim();
+  if (!id || !key) return null;
+  const subs = getAllSubmissions().filter((item) => item.quizId === id && (item.submissionId || buildSubmissionIdentity(item)) === key);
+  return subs.length ? subs.slice().sort(sortSubmissionRecords)[subs.length - 1] : null;
+}
+
+function buildClientPdfBootstrapPayload(routePath = '') {
+  const parsed = parsePdfRoutePathOnClient(routePath);
+  if (!parsed) return null;
+  const quizzes = getAllQuizzes();
+  const submissions = getAllSubmissions();
+  const verificationBaseUrl = getPublicAppBaseUrl();
+  const pagePortrait = {
+    orientation: 'portrait',
+    rootWidthMm: 190,
+    marginsMm: { top: 12, right: 10, bottom: 12, left: 10 }
+  };
+
+  if (parsed.type === 'result-summary') {
+    const submission = findSubmissionByShareKey(parsed.recordId);
+    const quiz = submission ? quizzes[submission.quizId] : null;
+    if (!submission || !quiz) return null;
+    const shareUrl = buildCertificateVerificationUrl(quiz, submission);
+    return {
+      type: 'result-summary',
+      title: 'Student Result Summary PDF',
+      quiz,
+      submission,
+      rankValue: computeRankingForQuiz(submission.quizId)[normalizeEmail(submission.email)] || '-',
+      verificationBaseUrl,
+      verificationQrSvg: buildCertificateVerificationQrSvg(shareUrl),
+      page: pagePortrait
+    };
+  }
+
+  if (parsed.type === 'student-correction') {
+    const submission = findSubmissionByShareKey(parsed.recordId);
+    const quiz = submission ? quizzes[submission.quizId] : null;
+    if (!submission || !quiz) return null;
+    return {
+      type: 'student-correction',
+      title: 'Student Correction PDF',
+      quiz,
+      submission,
+      subjectName: (parsed.url.searchParams.get('subject') || '').trim(),
+      showNegativePenalty: true,
+      verificationBaseUrl,
+      page: pagePortrait
+    };
+  }
+
+  if (parsed.type === 'facility-index') {
+    const quiz = quizzes[parsed.recordId];
+    if (!quiz) return null;
+    return {
+      type: 'facility-index',
+      title: 'Facility Index PDF',
+      quiz,
+      submissions: submissions.filter((item) => item && item.quizId === quiz.id),
+      subjectName: (parsed.url.searchParams.get('subject') || '').trim(),
+      verificationBaseUrl,
+      page: pagePortrait
+    };
+  }
+
+  if (parsed.type === 'teacher-summary') {
+    const quiz = quizzes[parsed.recordId];
+    if (!quiz) return null;
+    const format = (parsed.url.searchParams.get('format') || '').trim();
+    const subjectCount = Array.isArray(quiz.subjects) ? quiz.subjects.length : 0;
+    const useLandscape = format === 'separate' && subjectCount > 4;
+    return {
+      type: 'teacher-summary',
+      title: 'Teacher Result Summary PDF',
+      quiz,
+      submissions: submissions.filter((item) => item && item.quizId === quiz.id),
+      format,
+      verificationBaseUrl,
+      page: {
+        orientation: useLandscape ? 'landscape' : 'portrait',
+        rootWidthMm: useLandscape ? 277 : 190,
+        marginsMm: { top: 12, right: 10, bottom: 12, left: 10 }
+      }
+    };
+  }
+
+  return null;
+}
+
+function buildServerPdfDownloadUrl(routePath = '', filename = '', options = {}) {
+  const apiPath = buildApiUrl('/api/export/pdf');
+  const baseUrl = getPublicAppBaseUrl();
+  const url = /^https?:\/\//i.test(apiPath) ? new URL(apiPath) : new URL(apiPath, baseUrl);
+  if (routePath) url.searchParams.set('routePath', routePath);
+  if (filename) url.searchParams.set('filename', filename);
+  if (options.inline !== false) url.searchParams.set('inline', '1');
+  return url.toString();
+}
+
 async function requestServerPdfRouteExport(routePath, filename, exportOptions = {}, requestOptions = {}) {
   const syncKeys = Array.isArray(requestOptions.syncKeys) ? requestOptions.syncKeys.filter(Boolean) : [];
   if (syncKeys.length && canUseNetworkSync()) {
     await syncSharedKeys(syncKeys);
   }
+  const bootstrapPayload = requestOptions.bootstrap || buildClientPdfBootstrapPayload(routePath);
   const response = await fetch(buildApiUrl('/api/export/pdf'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5411,6 +5577,7 @@ async function requestServerPdfRouteExport(routePath, filename, exportOptions = 
       routePath,
       filename,
       inline: !!requestOptions.inline,
+      bootstrap: bootstrapPayload || undefined,
       options: {
         title: exportOptions.title || filename.replace(/\.pdf$/i, ''),
         orientation: exportOptions.orientation === 'l' || exportOptions.orientation === 'landscape' ? 'landscape' : 'portrait',
@@ -6270,6 +6437,20 @@ async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch 
   return true;
 }
 
+async function markCorrectionPdfDownloaded(submission) {
+  if (!submission) return false;
+  const downloadedAt = new Date().toISOString();
+  await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
+    correctionStatus: 'downloaded',
+    correctionDownloadedAt: downloadedAt,
+    _correctionDownloaded: true
+  });
+  submission.correctionStatus = 'downloaded';
+  submission.correctionDownloadedAt = downloadedAt;
+  submission._correctionDownloaded = true;
+  return true;
+}
+
 async function sendCorrectionByEmail(submission, quiz) {
   const contact = getSubmissionCorrectionContact(submission);
   const targetEmail = contact.email || ((submission.email || '').includes('@') ? submission.email : '');
@@ -6278,6 +6459,11 @@ async function sendCorrectionByEmail(submission, quiz) {
     return false;
   }
   try {
+    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes]);
+    if (!sharedSyncOk) {
+      showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 8000);
+      return false;
+    }
     const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
     const body = encodeURIComponent(buildCorrectionShareMessage(submission, quiz));
     window.location.href = `mailto:${encodeURIComponent(targetEmail)}?subject=${subject}&body=${body}`;
@@ -6301,8 +6487,13 @@ async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
     showNotification('This student did not provide a WhatsApp number for corrections.', 'error');
     return false;
   }
-  const message = buildCorrectionShareMessage(submission, quiz);
   try {
+    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes]);
+    if (!sharedSyncOk) {
+      showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 8000);
+      return false;
+    }
+    const message = buildCorrectionShareMessage(submission, quiz);
     openWhatsappChat(phone, message);
     await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
       correctionStatus: 'whatsapp-opened',
@@ -9813,6 +10004,43 @@ function showCorrectionRequestModal(quiz, submission, onSave) {
   };
 }
 
+async function openStudentCorrectionByShareKey(shareKey, options = {}) {
+  const key = (shareKey || '').trim().toLowerCase();
+  if (!key) return showNotification('Correction link is incomplete', 'error');
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  const submission = findSubmissionByShareKey(key);
+  if (!submission) return showNotification('That correction could not be verified on this device yet.', 'error', 7000);
+  return openStudentCorrectionBySubmissionKey(
+    submission.quizId,
+    submission.submissionId || buildSubmissionIdentity(submission),
+    { ...options, refreshSync: false }
+  );
+}
+
+async function openStudentCorrectionBySubmissionKey(quizId, submissionKey, options = {}) {
+  const id = (quizId || '').trim();
+  const key = (submissionKey || '').trim();
+  if (!id || !key) return showNotification('Correction link is incomplete', 'error');
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  const quizForRegrade = getAllQuizzes()[id];
+  if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
+  const submission = findSubmissionBySubmissionKey(id, key);
+  if (!submission) return showNotification('That correction could not be verified on this device yet.', 'error', 7000);
+  const quiz = getAllQuizzes()[id] || { id };
+  try {
+    await downloadCorrectionPdfFast(submission, quiz, {
+      showNegativePenalty: true,
+      subjectName: options.correctionSubject || ''
+    });
+    await markCorrectionPdfDownloaded(submission);
+    return submission;
+  } catch (error) {
+    console.error(error);
+    showNotification('Error preparing correction PDF', 'error');
+    return null;
+  }
+}
+
 async function showStudentResultModalByLookup(quizId, identifier, includeActions = true) {
   const id = (quizId || '').trim();
   const key = normalizeEmail(identifier || '');
@@ -9873,26 +10101,26 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
 async function showStudentResultModalByShareKey(shareKey, includeActions = true, options = {}) {
   const key = (shareKey || '').trim().toLowerCase();
   if (!key) return showNotification('Result link is incomplete', 'error');
-  if (canUseNetworkSync()) await pullNetworkState(true);
-  const matches = getAllSubmissions().filter((item) => {
-    const candidate = (item.shareKey || buildSubmissionShareKeyCandidate(item)).toString().trim().toLowerCase();
-    return candidate === key;
-  });
-  if (!matches.length) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
-  const submission = matches.slice().sort(sortSubmissionRecords)[matches.length - 1];
-  return showStudentResultModalBySubmissionKey(submission.quizId, submission.submissionId || buildSubmissionIdentity(submission), includeActions, options);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
+  const submission = findSubmissionByShareKey(key);
+  if (!submission) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
+  return showStudentResultModalBySubmissionKey(
+    submission.quizId,
+    submission.submissionId || buildSubmissionIdentity(submission),
+    includeActions,
+    { ...options, refreshSync: false }
+  );
 }
 
 async function showStudentResultModalBySubmissionKey(quizId, submissionKey, includeActions = true, options = {}) {
   const id = (quizId || '').trim();
   const key = (submissionKey || '').trim();
   if (!id || !key) return showNotification('Result link is incomplete', 'error');
-  if (canUseNetworkSync()) await pullNetworkState(true);
+  if (options.refreshSync !== false && canUseNetworkSync()) await pullNetworkState(true);
   const quizForRegrade = getAllQuizzes()[id];
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
-  const subs = getAllSubmissions().filter((item) => item.quizId === id && (item.submissionId || buildSubmissionIdentity(item)) === key);
-  if (!subs.length) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
-  const submission = subs.slice().sort(sortSubmissionRecords)[subs.length - 1];
+  const submission = findSubmissionBySubmissionKey(id, key);
+  if (!submission) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
   const ranks = computeRankingForQuiz(id);
   let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
   modal = document.createElement('div');
@@ -9936,15 +10164,7 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
     setTimeout(async () => {
       try {
         await downloadCorrectionPdfFast(submission, quiz, { showNegativePenalty: true, subjectName: options.correctionSubject || '' });
-        const downloadedAt = new Date().toISOString();
-        await markSubmissionCorrectionShared(submission.quizId, submission.email, submission.submittedAt, {
-          correctionStatus: 'downloaded',
-          correctionDownloadedAt: downloadedAt,
-          _correctionDownloaded: true
-        });
-        submission.correctionStatus = 'downloaded';
-        submission.correctionDownloadedAt = downloadedAt;
-        submission._correctionDownloaded = true;
+        await markCorrectionPdfDownloaded(submission);
       } catch (error) {
         console.error(error);
         showNotification('Error preparing correction PDF', 'error');
