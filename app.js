@@ -104,7 +104,8 @@ const state = {
   prefillQuizCode: '',
   pendingResultLookup: null,
   teacherGuideTopic: '',
-  classFilters: {}
+  classFilters: {},
+  pdfBootstrap: null
 };
 let _didCompactSubmissions = false;
 let networkSyncReady = false;
@@ -118,6 +119,12 @@ let _lastHistoryView = '';
 let _lastRenderedView = '';
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
+
+function getPdfBootstrapPayload() {
+  if (typeof window === 'undefined') return null;
+  const payload = window.__OPE_PDF_BOOTSTRAP__;
+  return payload && typeof payload === 'object' ? payload : null;
+}
 const _viewScrollState = {};
 let _calculatorMemory = 0;
 let _calculatorMode = 'DEG';
@@ -1217,6 +1224,13 @@ function startNetworkSyncLoop() {
 }
 
 async function initializeApp() {
+  const pdfBootstrap = getPdfBootstrapPayload();
+  if (pdfBootstrap) {
+    state.pdfBootstrap = pdfBootstrap;
+    state.view = 'pdf.render';
+    render();
+    return;
+  }
   ensureSuperAdminAccount();
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
@@ -2243,12 +2257,8 @@ function getQuizSubjectMetaMap(quiz = {}) {
   return map;
 }
 
-// Compute facility index for a quiz by aggregating stored submissions
-function computeFacilityIndex(quizId) {
-  const submissions = getAllSubmissions().filter(s => s.quizId === quizId);
-  const quiz = getAllQuizzes()[quizId];
-  if (!quiz) return [];
-
+function computeFacilityIndexFromQuizAndSubmissions(quiz = {}, submissions = []) {
+  if (!quiz || typeof quiz !== 'object' || !quiz.id) return [];
   // Build a stable source-question map. This lets a 100-question bank with per-student
   // random 50-question draws analyze all 100 questions correctly.
   const quizQuestions = [];
@@ -2331,6 +2341,14 @@ function computeFacilityIndex(quizId) {
   });
 
   return results;
+}
+
+// Compute facility index for a quiz by aggregating stored submissions
+function computeFacilityIndex(quizId) {
+  const quiz = getAllQuizzes()[quizId];
+  if (!quiz) return [];
+  const submissions = getAllSubmissions().filter((submission) => submission.quizId === quizId);
+  return computeFacilityIndexFromQuizAndSubmissions(quiz, submissions);
 }
 
 function getFacilityDifficultyBand(facilityIndex) {
@@ -2555,13 +2573,21 @@ function render() {
   }
   const previousRenderedView = _lastRenderedView;
   if (previousRenderedView) captureViewScrollState(previousRenderedView);
+  document.body.classList.toggle('pdf-route-active', state.view === 'pdf.render');
+  const app = document.getElementById('app');
+  if (state.view === 'pdf.render') {
+    app.innerHTML = '';
+    app.appendChild(renderPdfExportView());
+    _lastRenderedView = state.view;
+    persistAppUiState();
+    return;
+  }
   if (window.history && !_historyApplying && state.view !== _lastHistoryView) {
     const historyState = { view: state.view, quizId: state.currentQuiz && state.currentQuiz.id ? state.currentQuiz.id : '' };
     if (!_lastHistoryView) window.history.replaceState(historyState, '', window.location.href);
     else window.history.pushState(historyState, '', window.location.href);
     _lastHistoryView = state.view;
   }
-  const app = document.getElementById('app');
   app.innerHTML = '';
 
   // Topbar (updated with Home / Teacher / Student nav)
@@ -5346,6 +5372,63 @@ async function requestServerPdfExport(html, filename, exportOptions = {}, reques
   return response.blob();
 }
 
+function buildStudentResultPdfRoute(submission = {}) {
+  const shareKey = getSubmissionShareKey(submission);
+  return `/pdf/result-summary/${encodeURIComponent(shareKey)}`;
+}
+
+function buildStudentCorrectionPdfRoute(submission = {}, options = {}) {
+  const shareKey = getSubmissionShareKey(submission);
+  const params = new URLSearchParams();
+  const subjectName = (options.subjectName || '').toString().trim();
+  if (subjectName) params.set('subject', subjectName);
+  return `/pdf/student-correction/${encodeURIComponent(shareKey)}${params.toString() ? `?${params.toString()}` : ''}`;
+}
+
+function buildFacilityIndexPdfRoute(quiz = {}, options = {}) {
+  const params = new URLSearchParams();
+  const subjectName = (options.subjectName || '').toString().trim();
+  if (subjectName) params.set('subject', subjectName);
+  return `/pdf/facility-index/${encodeURIComponent(quiz.id || '')}${params.toString() ? `?${params.toString()}` : ''}`;
+}
+
+function buildTeacherSummaryPdfRoute(quiz = {}, options = {}) {
+  const params = new URLSearchParams();
+  const format = (options.format || '').toString().trim();
+  if (format) params.set('format', format);
+  return `/pdf/teacher-summary/${encodeURIComponent(quiz.id || '')}${params.toString() ? `?${params.toString()}` : ''}`;
+}
+
+async function requestServerPdfRouteExport(routePath, filename, exportOptions = {}, requestOptions = {}) {
+  const syncKeys = Array.isArray(requestOptions.syncKeys) ? requestOptions.syncKeys.filter(Boolean) : [];
+  if (syncKeys.length && canUseNetworkSync()) {
+    await syncSharedKeys(syncKeys);
+  }
+  const response = await fetch(buildApiUrl('/api/export/pdf'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      routePath,
+      filename,
+      inline: !!requestOptions.inline,
+      options: {
+        title: exportOptions.title || filename.replace(/\.pdf$/i, ''),
+        orientation: exportOptions.orientation === 'l' || exportOptions.orientation === 'landscape' ? 'landscape' : 'portrait',
+        margins: normalizePdfExportMargins(exportOptions)
+      }
+    })
+  });
+  if (!response.ok) {
+    let message = 'PDF export failed';
+    try {
+      const payload = await response.json();
+      if (payload && payload.error) message = payload.error;
+    } catch (error) {}
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
 async function downloadPdfThroughServer(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
   const blob = await requestServerPdfExport(html, filename, exportOptions);
   triggerBlobDownload(blob, filename);
@@ -5355,6 +5438,29 @@ async function downloadPdfThroughServer(html, filename, successMessage = 'PDF do
 
 async function openServerPdfPreview(html, filename, exportOptions = {}) {
   const blob = await requestServerPdfExport(html, filename, exportOptions, { inline: true });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank', 'noopener');
+  if (!win) {
+    URL.revokeObjectURL(url);
+    throw new Error('Unable to open PDF preview window');
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  showNotification('PDF preview opened in a new tab', 'success', 5000);
+  return true;
+}
+
+async function downloadPdfRouteThroughServer(routePath, filename, successMessage = 'PDF downloaded', exportOptions = {}, requestOptions = {}) {
+  const blob = await requestServerPdfRouteExport(routePath, filename, exportOptions, requestOptions);
+  triggerBlobDownload(blob, filename);
+  if (successMessage) showNotification(successMessage, 'success');
+  return true;
+}
+
+async function openServerPdfRoutePreview(routePath, filename, exportOptions = {}, requestOptions = {}) {
+  const blob = await requestServerPdfRouteExport(routePath, filename, exportOptions, {
+    ...requestOptions,
+    inline: true
+  });
   const url = URL.createObjectURL(blob);
   const win = window.open(url, '_blank', 'noopener');
   if (!win) {
@@ -6112,10 +6218,35 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     quiz.id || submission.quizId,
     resolvedSubjectName ? `correction-${resolvedSubjectName}` : 'correction'
   );
+  const successMessage = resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded';
+  const routePath = buildStudentCorrectionPdfRoute(submission, { subjectName: resolvedSubjectName || opts.subjectName || '' });
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    return downloadPdfRouteThroughServer(
+      routePath,
+      filename,
+      successMessage,
+      { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
+    ).catch((error) => {
+      console.warn('Server correction PDF export failed. Falling back to browser rendering.', error);
+      return downloadPagedPdfFromHtml(
+        buildCorrectionPdfDocumentHtml(submission, quiz, opts),
+        filename,
+        successMessage,
+        {
+          scale: 2.35,
+          contentWidthMm: 180,
+          marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
+          pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
+        }
+      );
+    });
+  }
   return downloadPagedPdfFromHtml(
     buildCorrectionPdfDocumentHtml(submission, quiz, opts),
     filename,
-    resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded',
+    successMessage,
     {
       scale: 2.35,
       contentWidthMm: 180,
@@ -6376,10 +6507,36 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
 
 function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
+  const filename = `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`;
+  const successMessage = Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded';
+  const routePath = buildFacilityIndexPdfRoute(quiz, { subjectName });
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    return downloadPdfRouteThroughServer(
+      routePath,
+      filename,
+      successMessage,
+      { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
+    ).catch((error) => {
+      console.warn('Server facility PDF export failed. Falling back to browser rendering.', error);
+      return downloadPagedPdfFromHtml(
+        buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
+        filename,
+        successMessage,
+        {
+          scale: 2.3,
+          contentWidthMm: 180,
+          marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
+          pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
+        }
+      );
+    });
+  }
   return downloadPagedPdfFromHtml(
     buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
-    `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`,
-    Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded',
+    filename,
+    successMessage,
     {
       scale: 2.3,
       contentWidthMm: 180,
@@ -6986,9 +7143,30 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
   document.getElementById('closeTeacherSummaryPdfFormatModal').onclick = () => modal.remove();
   document.getElementById('summaryPdfGrouped').onclick = () => {
     modal.remove();
+    const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) GROUPED.pdf`;
+    const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'grouped' });
+    const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+    if (serverReady) {
+      downloadPdfRouteThroughServer(
+        routePath,
+        filename,
+        'Teacher result summary PDF downloaded',
+        { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+        { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
+      ).catch((error) => {
+        console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
+        downloadPdfFromHtml(
+          buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
+          filename,
+          'Teacher result summary PDF downloaded',
+          { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
+        );
+      });
+      return;
+    }
     downloadPdfFromHtml(
       buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
-      `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) GROUPED.pdf`,
+      filename,
       'Teacher result summary PDF downloaded',
       { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
     );
@@ -6996,9 +7174,30 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
   document.getElementById('summaryPdfSeparate').onclick = () => {
     modal.remove();
     const useLandscape = subjectColumns.length > 4;
+    const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) SEPARATE.pdf`;
+    const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'separate' });
+    const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+    if (serverReady) {
+      downloadPdfRouteThroughServer(
+        routePath,
+        filename,
+        'Teacher result summary PDF downloaded',
+        { orientation: useLandscape ? 'l' : 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+        { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
+      ).catch((error) => {
+        console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
+        downloadPdfFromHtml(
+          buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
+          filename,
+          'Teacher result summary PDF downloaded',
+          { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794 }
+        );
+      });
+      return;
+    }
     downloadPdfFromHtml(
       buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
-      `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) SEPARATE.pdf`,
+      filename,
       'Teacher result summary PDF downloaded',
       { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794 }
     );
@@ -7185,7 +7384,11 @@ function buildCertificateSignatureSvg(item, index = 0) {
 }
 
 function buildCertificateVerificationUrl(quiz, submission, options = {}) {
-  const base = window.location.href.split('?')[0];
+  const pdfBootstrap = getPdfBootstrapPayload();
+  const configuredBase = pdfBootstrap && pdfBootstrap.verificationBaseUrl
+    ? pdfBootstrap.verificationBaseUrl
+    : '';
+  const base = (configuredBase || window.location.href.split('?')[0]).toString().replace(/\?.*$/, '');
   const shareKey = getSubmissionShareKey(submission);
   const params = new URLSearchParams();
   params.set('r', shareKey);
@@ -7210,7 +7413,8 @@ function buildCertificateVerificationQrSvg(url) {
 
 function renderCertificateVerificationMarkup(quiz, submission) {
   const url = buildCertificateVerificationUrl(quiz, submission);
-  const qrSvg = buildCertificateVerificationQrSvg(url);
+  const pdfBootstrap = getPdfBootstrapPayload();
+  const qrSvg = (pdfBootstrap && pdfBootstrap.verificationQrSvg) || buildCertificateVerificationQrSvg(url);
   const shareKey = getSubmissionShareKey(submission, { persist: false }).toUpperCase();
   const submittedAt = submission?.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A';
   return `
@@ -7577,9 +7781,8 @@ function getCertificateResultCss() {
   `;
 }
 
-function buildStudentSummaryPdfHtml(quiz, submission) {
-  const ranks = computeRankingForQuiz(submission.quizId);
-  const rankValue = ranks[normalizeEmail(submission.email)] || '-';
+function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
+  const rankValue = (options.rankValue || '').toString().trim() || (computeRankingForQuiz(submission.quizId)[normalizeEmail(submission.email)] || '-');
   const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   return `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
@@ -7596,6 +7799,172 @@ function buildStudentSummaryPdfHtml(quiz, submission) {
       ${resultHtml}
     </div>
   `;
+}
+
+function renderPdfExportView() {
+  const payload = state.pdfBootstrap || getPdfBootstrapPayload() || {};
+  const page = payload.page && typeof payload.page === 'object' ? payload.page : {};
+  const orientation = page.orientation === 'landscape' ? 'landscape' : 'portrait';
+  const marginsMm = page.marginsMm && typeof page.marginsMm === 'object'
+    ? page.marginsMm
+    : { top: 12, right: 10, bottom: 12, left: 10 };
+  const pageWidthMm = orientation === 'landscape' ? 297 : 210;
+  const defaultRootWidthMm = Math.max(160, pageWidthMm - (Number(marginsMm.left) || 0) - (Number(marginsMm.right) || 0));
+  const rootWidthMm = Number(page.rootWidthMm) > 0 ? Number(page.rootWidthMm) : defaultRootWidthMm;
+  const subjectName = (payload.subjectName || '').toString().trim();
+  let contentHtml = '';
+
+  if (payload.type === 'result-summary' && payload.quiz && payload.submission) {
+    contentHtml = buildStudentSummaryPdfHtml(payload.quiz, payload.submission, { rankValue: payload.rankValue || '-' });
+  } else if (payload.type === 'student-correction' && payload.quiz && payload.submission) {
+    contentHtml = buildCorrectionPdfDocumentHtml(payload.submission, payload.quiz, {
+      showNegativePenalty: payload.showNegativePenalty !== false,
+      subjectName
+    });
+  } else if (payload.type === 'facility-index' && payload.quiz) {
+    const facilityData = computeFacilityIndexFromQuizAndSubmissions(payload.quiz, payload.submissions || []);
+    const visibleData = subjectName
+      ? facilityData.filter((item) => normalizeSubjectName(item.subject || 'General') === normalizeSubjectName(subjectName))
+      : facilityData;
+    contentHtml = buildFacilityIndexPdfDocumentHtml(payload.quiz, visibleData, { subjectName: subjectName || 'General' });
+  } else if (payload.type === 'teacher-summary' && payload.quiz) {
+    contentHtml = buildTeacherSummaryPdfHtml(payload.quiz, payload.submissions || [], { format: payload.format || '' });
+  }
+
+  if (!contentHtml) {
+    contentHtml = `
+      <div class="pdf-render-error">
+        <h1>PDF export could not be prepared.</h1>
+        <p>The requested record was not found or the PDF data is incomplete.</p>
+      </div>
+    `;
+  }
+
+  if (payload.title) document.title = payload.title;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'pdf-route-shell';
+  wrapper.innerHTML = `
+    <style>
+      @page {
+        size: A4 ${orientation};
+        margin: ${Number(marginsMm.top) || 12}mm ${Number(marginsMm.right) || 10}mm ${Number(marginsMm.bottom) || 12}mm ${Number(marginsMm.left) || 10}mm;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        color: #111827;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        font-family: "Noto Sans", "DejaVu Sans", "Segoe UI", Arial, sans-serif;
+      }
+      body.pdf-route-active {
+        background: #ffffff !important;
+      }
+      #app {
+        width: 100%;
+        min-height: 100vh;
+        background: #ffffff;
+      }
+      #pdf-root {
+        width: ${rootWidthMm}mm;
+        min-height: 297mm;
+        margin: 0 auto;
+        padding: 0;
+        background: #ffffff;
+        color: #111827;
+        overflow: visible;
+      }
+      .pdf-card,
+      .avoid-break,
+      .pdf-question-card,
+      .pdf-summary-card,
+      .pdf-meta-card,
+      .facility-question-card,
+      .facility-summary-card,
+      .summary-row {
+        break-inside: avoid;
+        page-break-inside: avoid;
+        overflow: visible;
+      }
+      .long-card {
+        break-inside: auto;
+        page-break-inside: auto;
+      }
+      .pdf-render-error {
+        border: 1px solid #E5E7EB;
+        border-radius: 18px;
+        padding: 24px;
+        margin: 24px auto;
+        background: #ffffff;
+      }
+      .pdf-render-error h1 {
+        margin: 0 0 10px;
+        font-size: 24px;
+        color: #0F172A;
+      }
+      .pdf-render-error p {
+        margin: 0;
+        color: #475569;
+        line-height: 1.6;
+      }
+      * {
+        box-sizing: border-box;
+      }
+    </style>
+    <div id="pdf-root">${contentHtml}</div>
+  `;
+
+  window.__OPE_PDF_READY__ = false;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.__OPE_PDF_READY__ = true;
+  }));
+  return wrapper;
+}
+
+async function downloadStudentResultPdfDocument(quiz, submission) {
+  const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId);
+  const routePath = buildStudentResultPdfRoute(submission);
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    try {
+      return await downloadPdfRouteThroughServer(
+        routePath,
+        filename,
+        'Student result summary PDF downloaded',
+        { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+        { syncKeys: [STORAGE_KEYS.submissions] }
+      );
+    } catch (error) {
+      console.warn('Server result PDF export failed. Falling back to browser rendering.', error);
+    }
+  }
+  return downloadPdfFromHtml(
+    buildStudentSummaryPdfHtml(quiz, submission),
+    filename,
+    'Student result summary PDF downloaded',
+    { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
+  );
+}
+
+async function openStudentResultPdfPreview(quiz, submission) {
+  const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'print-preview');
+  const routePath = buildStudentResultPdfRoute(submission);
+  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  if (serverReady) {
+    try {
+      return await openServerPdfRoutePreview(
+        routePath,
+        filename,
+        { title: 'Student Result Summary', orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+        { syncKeys: [STORAGE_KEYS.submissions] }
+      );
+    } catch (error) {
+      console.warn('Server print preview failed. Falling back to browser canvas print.', error);
+    }
+  }
+  return printHtmlAsSinglePage(buildStudentSummaryPdfHtml(quiz, submission), { title: 'Student Result Summary', paddingPx: 0 });
 }
 
 function printStudentSummary(quiz, submission) {
@@ -7616,7 +7985,8 @@ function printStudentSummary(quiz, submission) {
       ${html}
     </div>
   `;
-  printHtmlAsSinglePage(printHtml, { title: 'Student Result Summary', paddingPx: 0 })
+  openStudentResultPdfPreview(quiz, submission)
+    .catch(() => printHtmlAsSinglePage(printHtml, { title: 'Student Result Summary', paddingPx: 0 }))
     .catch(() => showNotification('Unable to open print window', 'error'));
 }
 
@@ -7730,9 +8100,30 @@ function renderResultsView() {
     };
     document.getElementById('btnExportSummaryPDF').onclick = () => {
       if ((q.subjects || []).length > 1) return showTeacherSummaryPdfFormatModal(q, submissions);
+      const filename = `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).pdf`;
+      const routePath = buildTeacherSummaryPdfRoute(q);
+      const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+      if (serverReady) {
+        downloadPdfRouteThroughServer(
+          routePath,
+          filename,
+          'Teacher result summary PDF downloaded',
+          { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+          { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
+        ).catch((error) => {
+          console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
+          downloadPdfFromHtml(
+            buildTeacherSummaryPdfHtml(q, submissions),
+            filename,
+            'Teacher result summary PDF downloaded',
+            { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
+          );
+        });
+        return;
+      }
       downloadPdfFromHtml(
         buildTeacherSummaryPdfHtml(q, submissions),
-        `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).pdf`,
+        filename,
         'Teacher result summary PDF downloaded',
         { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
       );
@@ -8160,8 +8551,8 @@ function showCreateQuizModal(editQuizId = '') {
   const classNames = getTeacherClassNames(quizOwnerId);
   const classOptionsMarkup = classNames.map((className) => `<option value="${escapeHtml(className)}">${escapeHtml(className)}</option>`).join('');
   let m = document.getElementById('createQuizModal'); if (m) m.remove();
-  m = document.createElement('div'); m.id = 'createQuizModal'; m.style.position='fixed'; m.style.inset='0'; m.style.zIndex=20000; m.style.background='rgba(0,0,0,0.35)'; m.style.overflowY='auto'; m.style.padding='24px 12px';
-  const inner = document.createElement('div'); inner.className='card-beautiful quiz-builder-shell'; inner.style.width='1180px'; inner.style.maxWidth='96%'; inner.style.maxHeight='calc(100vh - 48px)'; inner.style.margin='0 auto'; inner.style.padding='24px'; inner.style.overflowY='auto';
+  m = document.createElement('div'); m.id = 'createQuizModal'; m.style.position='fixed'; m.style.inset='0'; m.style.zIndex=20000; m.style.background='rgba(0,0,0,0.35)'; m.style.overflowY='auto'; m.style.padding='18px 14px';
+  const inner = document.createElement('div'); inner.className='card-beautiful quiz-builder-shell'; inner.style.width='1320px'; inner.style.maxWidth='96vw'; inner.style.maxHeight='calc(100vh - 36px)'; inner.style.margin='0 auto'; inner.style.padding='28px'; inner.style.overflowY='auto';
   inner.innerHTML = `
     <div class="quiz-builder-header">
       <div>
@@ -8386,12 +8777,14 @@ function showCreateQuizModal(editQuizId = '') {
     const assignedClassSelect = document.getElementById('cqAssignedClass');
     const assignedClassHelp = document.getElementById('cqAssignedClassHelp');
     const assignedClassGroup = document.getElementById('cqAssignedClassGroup');
+    let updateSubjectRowSummary = () => {};
     const renderSubjectQuestionImages = (row) => {
       const host = row.querySelector('.subject-image-list');
       if (!host) return;
       const groups = Array.isArray(row._questionImages) ? row._questionImages : [];
       if (!groups.length) {
         host.innerHTML = '<div class="small" style="padding:12px;border:1px dashed #BFDBFE;border-radius:14px;background:#F8FAFC;color:#475569">No question image added for this subject yet.</div>';
+        updateSubjectRowSummary(row);
         return;
       }
       host.innerHTML = groups.map((group, index) => `
@@ -8450,6 +8843,7 @@ function showCreateQuizModal(editQuizId = '') {
                 altText: file.name || row._questionImages[imageIndex].altText || 'Question image'
               };
               renderSubjectQuestionImages(row);
+              updateSubjectRowSummary(row);
               showNotification('Question image added for this subject', 'success');
             } catch (error) {
               console.error(error);
@@ -8461,8 +8855,57 @@ function showCreateQuizModal(editQuizId = '') {
         if (removeBtn) removeBtn.onclick = () => {
           row._questionImages.splice(imageIndex, 1);
           renderSubjectQuestionImages(row);
+          updateSubjectRowSummary(row);
         };
       });
+      updateSubjectRowSummary(row);
+    };
+    const setSubjectRowExpanded = (row, expanded) => {
+      if (!row) return;
+      row.classList.toggle('subject-collapsed', !expanded);
+      const toggle = row.querySelector('.subject-card-toggle');
+      const toggleText = row.querySelector('.subject-card-toggle-text');
+      if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      if (toggleText) toggleText.textContent = expanded ? 'Collapse' : 'Expand';
+    };
+    updateSubjectRowSummary = (row) => {
+      if (!row) return;
+      const allRows = Array.from(subjectsList.querySelectorAll('.subject-row'));
+      const rowIndex = allRows.indexOf(row) + 1;
+      const subjectName = row.querySelector('.subject-name')?.value.trim() || `Subject ${rowIndex || 1}`;
+      const questionCountValue = row.querySelector('.subject-count')?.value || '';
+      const totalMarksValue = row.querySelector('.subject-marks')?.value || '';
+      const fileStatusText = row._importedQuestions && row._importedQuestions.length
+        ? `${row._importedQuestions.length} question(s) loaded`
+        : 'No file uploaded';
+      const countText = questionCountValue
+        ? `${questionCountValue} question${Number(questionCountValue) === 1 ? '' : 's'} per student`
+        : 'Questions per student not set';
+      const marksText = totalMarksValue
+        ? `${formatScoreValue(totalMarksValue)} total mark${Number(totalMarksValue) === 1 ? '' : 's'}`
+        : 'Total marks not set';
+      const imageCount = Array.isArray(row._questionImages) ? row._questionImages.length : 0;
+      const titleEl = row.querySelector('.subject-card-title');
+      const pillEl = row.querySelector('.subject-card-pill');
+      const subtitleEl = row.querySelector('.subject-card-subtitle');
+      const fileChip = row.querySelector('[data-subject-summary="file"]');
+      const countChip = row.querySelector('[data-subject-summary="count"]');
+      const marksChip = row.querySelector('[data-subject-summary="marks"]');
+      if (titleEl) titleEl.textContent = subjectName;
+      if (pillEl) pillEl.textContent = `Subject ${rowIndex || 1}`;
+      if (subtitleEl) subtitleEl.textContent = imageCount
+        ? `${imageCount} optional image group${imageCount === 1 ? '' : 's'} attached for this subject`
+        : 'Open this dropdown to manage the file, question count, marks, and optional diagrams.';
+      if (fileChip) fileChip.textContent = fileStatusText;
+      if (countChip) countChip.textContent = countText;
+      if (marksChip) marksChip.textContent = marksText;
+      const fileStatusEl = row.querySelector('.subject-file-status');
+      if (fileStatusEl) fileStatusEl.textContent = fileStatusText;
+      const removeBtn = row.querySelector('.subject-remove-inline');
+      if (removeBtn) removeBtn.disabled = allRows.length <= 1;
+    };
+    const refreshSubjectRowSummaries = () => {
+      Array.from(subjectsList.querySelectorAll('.subject-row')).forEach((row) => updateSubjectRowSummary(row));
     };
     const createSubjectRow = (subject = {}) => {
       const row = document.createElement('div');
@@ -8474,40 +8917,70 @@ function showCreateQuizModal(editQuizId = '') {
           : deriveSubjectQuestionImagesFromQuestions(row._importedQuestions)
       ).map((group, index) => createEditableSubjectQuestionImage(group, index));
       row.innerHTML = `
-        <div class="subject-field">
-          <label class="small">Subject name</label>
-          <input type="text" class="input-beautiful subject-name" placeholder="Subject name (e.g. Math)" value="${escapeHtml(subject.name || '')}" />
+        <div class="subject-card-head">
+          <button type="button" class="subject-card-toggle" aria-expanded="true">
+            <div class="subject-card-title-wrap">
+              <div class="subject-card-topline">
+                <span class="subject-card-pill">Subject</span>
+                <span class="subject-card-subtitle">Open this dropdown to manage the file, question count, marks, and optional diagrams.</span>
+              </div>
+              <div class="subject-card-title">${escapeHtml(subject.name || 'New subject')}</div>
+              <div class="subject-card-summary">
+                <span class="subject-summary-chip" data-subject-summary="file">No file uploaded</span>
+                <span class="subject-summary-chip" data-subject-summary="count">Questions per student not set</span>
+                <span class="subject-summary-chip" data-subject-summary="marks">Total marks not set</span>
+              </div>
+            </div>
+            <div class="subject-card-toggle-side">
+              <span class="subject-card-toggle-text">Collapse</span>
+              <span class="subject-card-chevron" aria-hidden="true">⌄</span>
+            </div>
+          </button>
+          <button type="button" class="subject-remove-btn subject-remove-inline" aria-label="Remove subject">Remove</button>
         </div>
-        <div class="subject-field">
-          <label class="small">Upload quiz CSV/Excel</label>
-          <button type="button" class="btn-secondary subject-upload-btn">Upload File</button>
-          <div class="small subject-file-status">${row._importedQuestions.length ? row._importedQuestions.length + ' question(s) loaded' : 'No file uploaded'}</div>
-        </div>
-        <div class="subject-field">
-          <label class="small">Questions per student</label>
-          <div class="subject-time-wrap">
-            <input type="number" class="input-beautiful subject-count" min="0" placeholder="Questions per student" value="${subject.questionCount ? escapeHtml(subject.questionCount) : ''}" />
-            <span class="subject-time-unit">questions</span>
+        <div class="subject-card-body">
+          <div class="subject-body-grid">
+            <div class="subject-field">
+              <label class="small">Subject name</label>
+              <input type="text" class="input-beautiful subject-name" placeholder="Subject name (e.g. Math)" value="${escapeHtml(subject.name || '')}" />
+            </div>
+            <div class="subject-field">
+              <label class="small">Upload quiz CSV/Excel</label>
+              <button type="button" class="btn-secondary subject-upload-btn">Upload File</button>
+              <div class="small subject-file-status">${row._importedQuestions.length ? row._importedQuestions.length + ' question(s) loaded' : 'No file uploaded'}</div>
+            </div>
+            <div class="subject-field">
+              <label class="small">Questions per student</label>
+              <div class="subject-time-wrap">
+                <input type="number" class="input-beautiful subject-count" min="0" placeholder="Questions per student" value="${subject.questionCount ? escapeHtml(subject.questionCount) : ''}" />
+                <span class="subject-time-unit">questions</span>
+              </div>
+            </div>
+            <div class="subject-field">
+              <label class="small">Total marks for this subject</label>
+              <div class="subject-time-wrap">
+                <input type="number" class="input-beautiful subject-marks" min="0" step="0.01" placeholder="e.g. 100" value="${subject.totalMarks ? escapeHtml(subject.totalMarks) : ''}" />
+                <span class="subject-time-unit">marks</span>
+              </div>
+            </div>
+          </div>
+          <div class="subject-field subject-image-field">
+            <label class="small">Question images (optional)</label>
+            <div class="small" style="margin-top:6px;line-height:1.65">Add an image for any question that needs a diagram, chart, or illustration. You can use the same image for many question numbers and choose whether it shows before or after the question text.</div>
+            <div class="subject-image-list" style="display:grid;gap:10px;margin-top:10px"></div>
+            <div style="display:flex;justify-content:flex-start;margin-top:10px">
+              <button type="button" class="btn btn-ghost btn-sm subject-add-image-btn">Add Question Image</button>
+            </div>
           </div>
         </div>
-        <div class="subject-field">
-          <label class="small">Total marks for this subject</label>
-          <div class="subject-time-wrap">
-            <input type="number" class="input-beautiful subject-marks" min="0" step="0.01" placeholder="e.g. 100" value="${subject.totalMarks ? escapeHtml(subject.totalMarks) : ''}" />
-            <span class="subject-time-unit">marks</span>
-          </div>
-        </div>
-        <div class="subject-field" style="grid-column:1/-1">
-          <label class="small">Question images (optional)</label>
-          <div class="small" style="margin-top:6px;line-height:1.65">Add an image for any question that needs a diagram, chart, or illustration. You can use the same image for many question numbers and choose whether it shows before or after the question text.</div>
-          <div class="subject-image-list" style="display:grid;gap:10px;margin-top:10px"></div>
-          <div style="display:flex;justify-content:flex-start;margin-top:10px">
-            <button type="button" class="btn btn-ghost btn-sm subject-add-image-btn">Add Question Image</button>
-          </div>
-        </div>
-        <button type="button" class="subject-remove-btn" aria-label="Remove subject">✕</button>
       `;
       renderSubjectQuestionImages(row);
+      row.querySelector('.subject-card-toggle').onclick = () => {
+        setSubjectRowExpanded(row, row.classList.contains('subject-collapsed'));
+      };
+      row.querySelector('.subject-name').oninput = () => updateSubjectRowSummary(row);
+      row.querySelector('.subject-count').oninput = () => updateSubjectRowSummary(row);
+      row.querySelector('.subject-marks').oninput = () => updateSubjectRowSummary(row);
       row.querySelector('.subject-upload-btn').onclick = () => {
         const inp = document.createElement('input');
         inp.type = 'file';
@@ -8517,6 +8990,7 @@ function showCreateQuizModal(editQuizId = '') {
           try {
             row._importedQuestions = (await parseQuestionsFile(f, false)).filter(isMeaningfulQuestion);
             row.querySelector('.subject-file-status').textContent = `${row._importedQuestions.length} question(s) loaded`;
+            updateSubjectRowSummary(row);
             showNotification(`${row._importedQuestions.length} question(s) loaded for this subject`, 'success');
           } catch (err) {
             console.error(err);
@@ -8528,12 +9002,18 @@ function showCreateQuizModal(editQuizId = '') {
       row.querySelector('.subject-add-image-btn').onclick = () => {
         row._questionImages.push(createEditableSubjectQuestionImage({}, row._questionImages.length));
         renderSubjectQuestionImages(row);
+        setSubjectRowExpanded(row, true);
       };
-      row.querySelector('.subject-remove-btn').onclick = () => {
+      row.querySelector('.subject-remove-inline').onclick = () => {
         row.remove();
         if (!subjectsList.children.length) createSubjectRow();
+        refreshSubjectRowSummaries();
       };
       subjectsList.appendChild(row);
+      const shouldExpand = !subject.name || !row._importedQuestions.length || subjectsList.children.length === 1;
+      setSubjectRowExpanded(row, shouldExpand);
+      updateSubjectRowSummary(row);
+      refreshSubjectRowSummaries();
     };
     const createSignatoryRow = (signatory = {}) => {
       const row = document.createElement('div');
@@ -9369,12 +9849,10 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
   const downloadBtn = document.getElementById('downloadStudentResultPdf');
   if (downloadBtn) downloadBtn.onclick = () => {
-    downloadPdfFromHtml(
-      buildStudentSummaryPdfHtml(quiz, s),
-      getStudentResultPdfFilename(s, id),
-      'Student result summary PDF downloaded',
-      { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
-    );
+    downloadStudentResultPdfDocument(quiz, s).catch((error) => {
+      console.error(error);
+      showNotification('Unable to download the result PDF', 'error');
+    });
   };
   const requestBtn = document.getElementById('requestCorrectionBtn');
   if (requestBtn) requestBtn.onclick = () => {
@@ -9436,12 +9914,10 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
   const downloadBtn = document.getElementById('downloadStudentResultPdf');
   if (downloadBtn) downloadBtn.onclick = () => {
-    downloadPdfFromHtml(
-      buildStudentSummaryPdfHtml(quiz, submission),
-      getStudentResultPdfFilename(submission, id),
-      'Student result summary PDF downloaded',
-      { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
-    );
+    downloadStudentResultPdfDocument(quiz, submission).catch((error) => {
+      console.error(error);
+      showNotification('Unable to download the result PDF', 'error');
+    });
   };
   const requestBtn = document.getElementById('requestCorrectionBtn');
   if (requestBtn) requestBtn.onclick = () => {

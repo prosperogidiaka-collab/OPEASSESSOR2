@@ -5,7 +5,9 @@
   "description": "OPE Assessor assessment app with optional shared sync server",
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "puppeteer-core": "^24.43.0",
+    "qrcode-generator": "^2.0.4"
   },
   "scripts": {
     "migrate:supabase": "node scripts/migrate-file-state-to-supabase.js",
