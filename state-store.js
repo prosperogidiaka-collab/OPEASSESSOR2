@@ -12,6 +12,7 @@ const DEFAULT_STATE = {
 const VALID_STATE_KEYS = Object.keys(DEFAULT_STATE);
 const SUPABASE_SELECT_PAGE_SIZE = 1000;
 const SUPABASE_UPSERT_BATCH_SIZE = 250;
+const OPTIONAL_SUPABASE_STATE_KEYS = new Set(['tokenTransactions']);
 
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -194,6 +195,19 @@ function chunkArray(items, size) {
   const chunks = [];
   for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
   return chunks;
+}
+
+function isSupabaseMissingTableError(error) {
+  const message = (error && (error.message || error.cause?.message) || '').toString();
+  const code = (error && (error.supabaseCode || error.code || error.cause?.code) || '').toString().trim().toUpperCase();
+  if (code === 'PGRST205' || code === '42P01') return true;
+  return /schema cache/i.test(message) || /could not find the table/i.test(message) || /relation .* does not exist/i.test(message);
+}
+
+function getOptionalStateFallbackValue(stateKey) {
+  if (stateKey === 'tokenTransactions') return [];
+  if (stateKey === 'submissions') return [];
+  return {};
 }
 
 function createFileStateStore(options) {
@@ -403,6 +417,22 @@ function createSupabaseStateStore(options) {
   });
 
   const tables = buildSupabaseTableNames(options.supabaseTablePrefix || 'ope_');
+  const missingOptionalStateKeys = new Set();
+  const warnedOptionalStateKeys = new Set();
+
+  function markOptionalStateKeyAvailable(stateKey) {
+    missingOptionalStateKeys.delete(stateKey);
+  }
+
+  function handleOptionalStateKeyError(stateKey, error, phase = 'read') {
+    if (!OPTIONAL_SUPABASE_STATE_KEYS.has(stateKey) || !isSupabaseMissingTableError(error)) throw error;
+    missingOptionalStateKeys.add(stateKey);
+    if (!warnedOptionalStateKeys.has(stateKey)) {
+      warnedOptionalStateKeys.add(stateKey);
+      console.warn(`[Supabase] Optional table for ${stateKey} is missing (${tables[stateKey]}). Continuing without ${stateKey} sync during ${phase}.`);
+    }
+    return getOptionalStateFallbackValue(stateKey);
+  }
 
   async function selectAllRows(table, columns = '*', orderings = []) {
     const rows = [];
@@ -413,7 +443,12 @@ function createSupabaseStateStore(options) {
         query = query.order(ordering.column, { ascending: ordering.ascending !== false });
       });
       const { data, error } = await query;
-      if (error) throw new Error(`Supabase select failed for ${table}: ${error.message}`);
+      if (error) {
+        const wrapped = new Error(`Supabase select failed for ${table}: ${error.message}`);
+        wrapped.supabaseCode = error.code || '';
+        wrapped.cause = error;
+        throw wrapped;
+      }
       rows.push(...(data || []));
       if (!data || data.length < SUPABASE_SELECT_PAGE_SIZE) break;
       from += SUPABASE_SELECT_PAGE_SIZE;
@@ -426,28 +461,43 @@ function createSupabaseStateStore(options) {
     const batches = chunkArray(rows, SUPABASE_UPSERT_BATCH_SIZE);
     for (const batch of batches) {
       const { error } = await supabase.from(table).upsert(batch, { onConflict });
-      if (error) throw new Error(`Supabase upsert failed for ${table}: ${error.message}`);
+      if (error) {
+        const wrapped = new Error(`Supabase upsert failed for ${table}: ${error.message}`);
+        wrapped.supabaseCode = error.code || '';
+        wrapped.cause = error;
+        throw wrapped;
+      }
     }
   }
 
   async function loadQuizzesMap() {
-    return rowsToQuizMap(await selectAllRows(tables.quizzes, '*', [{ column: 'quiz_id' }]));
+    const rows = await selectAllRows(tables.quizzes, '*', [{ column: 'quiz_id' }]);
+    return rowsToQuizMap(rows);
   }
 
   async function loadTeachersMap() {
-    return rowsToTeacherMap(await selectAllRows(tables.teachers, '*', [{ column: 'teacher_id' }]));
+    const rows = await selectAllRows(tables.teachers, '*', [{ column: 'teacher_id' }]);
+    return rowsToTeacherMap(rows);
   }
 
   async function loadStudentsMap() {
-    return rowsToStudentMap(await selectAllRows(tables.students, '*', [{ column: 'teacher_id' }, { column: 'student_key' }]));
+    const rows = await selectAllRows(tables.students, '*', [{ column: 'teacher_id' }, { column: 'student_key' }]);
+    return rowsToStudentMap(rows);
   }
 
   async function loadSubmissionList() {
-    return rowsToSubmissionList(await selectAllRows(tables.submissions, '*', [{ column: 'submitted_at' }, { column: 'submission_id' }]));
+    const rows = await selectAllRows(tables.submissions, '*', [{ column: 'submitted_at' }, { column: 'submission_id' }]);
+    return rowsToSubmissionList(rows);
   }
 
   async function loadTokenTransactionList() {
-    return rowsToTokenTransactionList(await selectAllRows(tables.tokenTransactions, '*', [{ column: 'created_at' }, { column: 'transaction_id' }]));
+    try {
+      const rows = await selectAllRows(tables.tokenTransactions, '*', [{ column: 'created_at' }, { column: 'transaction_id' }]);
+      markOptionalStateKeyAvailable('tokenTransactions');
+      return rowsToTokenTransactionList(rows);
+    } catch (error) {
+      return handleOptionalStateKeyError('tokenTransactions', error, 'read');
+    }
   }
 
   async function persistStateValue(stateKey, nextValue) {
@@ -472,8 +522,13 @@ function createSupabaseStateStore(options) {
       return;
     }
     if (stateKey === 'tokenTransactions') {
-      const rows = buildTokenTransactionRows(nextValue);
-      await upsertRows(tables.tokenTransactions, rows, 'transaction_id');
+      try {
+        const rows = buildTokenTransactionRows(nextValue);
+        await upsertRows(tables.tokenTransactions, rows, 'transaction_id');
+        markOptionalStateKeyAvailable('tokenTransactions');
+      } catch (error) {
+        handleOptionalStateKeyError('tokenTransactions', error, 'write');
+      }
       return;
     }
     throw new Error(`Unsupported state key: ${stateKey}`);
@@ -483,7 +538,10 @@ function createSupabaseStateStore(options) {
     backend: 'supabase',
     details: {
       supabaseUrl,
-      tables
+      tables,
+      get missingOptionalStateKeys() {
+        return Array.from(missingOptionalStateKeys);
+      }
     },
     async getState() {
       const [quizzes, submissions, teachers, students, tokenTransactions] = await Promise.all([
