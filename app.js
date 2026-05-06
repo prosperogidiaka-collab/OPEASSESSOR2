@@ -41,6 +41,12 @@ const DEFAULT_LICENSE_PRICING = {
   monthly: '',
   yearly: ''
 };
+const LICENSE_PLAN_DAYS = {
+  daily: 1,
+  weekly: 7,
+  monthly: 30,
+  yearly: 365
+};
 
 function normalizeApiBaseUrl(value) {
   return (value || '').toString().trim().replace(/\/+$/, '');
@@ -296,8 +302,10 @@ function enhancePasswordFields(root = document) {
 
 function isMeaningfulQuestion(question) {
   if (!question || typeof question !== 'object') return false;
-  const text = (question.question || '').toString().trim();
-  const options = Array.isArray(question.options) ? question.options.filter(opt => (opt || '').toString().trim()) : [];
+  const text = getRichTextPlainText(question.question || '').trim();
+  const options = Array.isArray(question.options)
+    ? question.options.filter((opt) => getRichTextPlainText(opt || '').trim())
+    : [];
   const answer = (question.answer || '').toString().trim();
   return !!text && options.length >= 2 && !!answer;
 }
@@ -516,13 +524,18 @@ function getQuizEffectiveEndTime(quiz) {
 }
 
 function formatLicensePlanLabel(planKey = '') {
+  const raw = (planKey || '').toString().trim().toLowerCase();
+  if (raw.startsWith('custom-')) {
+    const days = parseInt(raw.replace('custom-', ''), 10);
+    return Number.isFinite(days) && days > 0 ? `Custom (${days} day${days === 1 ? '' : 's'})` : 'Custom';
+  }
   const labels = {
     daily: 'Daily',
     weekly: 'Weekly',
     monthly: 'Monthly',
     yearly: 'Yearly'
   };
-  return labels[planKey] || 'Plan';
+  return labels[raw] || 'Plan';
 }
 
 function buildLicensePricingListMarkup() {
@@ -1095,7 +1108,7 @@ async function initializeApp() {
       downloadCorrection: ['1', 'true', 'yes'].includes(((params.get('c') || params.get('downloadCorrection') || '')).toLowerCase()),
       correctionSubject: params.get('s') || params.get('correctionSubject') || ''
     };
-    state.view = 'student';
+    state.view = 'student.result';
   }
   render();
   startNetworkSyncLoop();
@@ -1283,6 +1296,9 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
   if (teacher.role === 'super_admin' || normalizeEmail(teacher.teacherId || teacher.email) === SUPER_ADMIN_EMAIL) {
     return { active: true, unlimited: true, label: 'Unlimited licence', detail: 'Admin licence never expires', endsAt: '' };
   }
+  const requestedPlanLabel = teacher.licenseRequestedPlan ? formatLicensePlanLabel(teacher.licenseRequestedPlan) : '';
+  const activePlanLabel = teacher.licensePlan ? formatLicensePlanLabel(teacher.licensePlan) : '';
+  const resolvedActivePlanLabel = activePlanLabel === 'Plan' ? '' : activePlanLabel;
   const trial = getTeacherTrialStatus(teacher);
   if (trial.available) {
     return {
@@ -1293,12 +1309,28 @@ function getTeacherLicenseStatus(teacher = getCurrentTeacher()) {
       endsAt: ''
     };
   }
+  if (teacher.licenseRequestStatus === 'pending') {
+    return {
+      active: false,
+      pending: true,
+      label: requestedPlanLabel ? `${requestedPlanLabel} request pending` : 'Licence request pending',
+      detail: teacher.licenseRequestedAmount
+        ? `Awaiting admin approval for ${requestedPlanLabel || 'the selected'} plan (${teacher.licenseRequestedAmount}).`
+        : 'Awaiting admin approval for the selected paid licence plan.',
+      endsAt: teacher.licenseEndsAt || ''
+    };
+  }
   if (teacher.licenseStopped) return { active: false, stopped: true, label: 'Licence stopped', detail: 'Previous quizzes remain open for only 3 days from the stop date. Contact admin for a higher duration.', endsAt: teacher.licenseEndsAt || '' };
   if (!teacher.licenseEndsAt) return { active: false, label: 'No active licence', detail: 'Request a paid licence to keep creating or importing assessment content.', endsAt: '' };
   const ends = new Date(teacher.licenseEndsAt);
   if (Number.isNaN(ends.getTime())) return { active: false, label: 'Invalid licence', detail: 'Contact admin', endsAt: '' };
   if (ends.getTime() < Date.now()) return { active: false, expired: true, label: 'Licence expired', detail: 'Previous quizzes remain open for only 3 days from the licence end date. Request a higher duration to keep creating or importing content.', endsAt: teacher.licenseEndsAt };
-  return { active: true, label: 'Licensed', detail: 'Licence ends ' + ends.toLocaleString(), endsAt: teacher.licenseEndsAt };
+  return {
+    active: true,
+    label: resolvedActivePlanLabel ? `${resolvedActivePlanLabel} licence active` : 'Licensed',
+    detail: `${resolvedActivePlanLabel ? `${resolvedActivePlanLabel} plan • ` : ''}Licence ends ${ends.toLocaleString()}`,
+    endsAt: teacher.licenseEndsAt
+  };
 }
 
 function canSetQuestions() {
@@ -1341,7 +1373,9 @@ function requestTeacherLicense(selectedPlanKey = 'weekly', contactChannel = '') 
 
 function showLicenseRequired() {
   const status = getTeacherLicenseStatus();
+  const teacher = getCurrentTeacher() || {};
   const pricingList = buildLicensePricingListMarkup();
+  const selectedPlan = teacher.licenseRequestedPlan || 'weekly';
   let modal = document.getElementById('licenseRequiredModal'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='licenseRequiredModal'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(15,23,42,.45)'; modal.style.zIndex=30000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='min(520px,94%)';
@@ -1353,10 +1387,10 @@ function showLicenseRequired() {
     <ul class="small" style="margin:8px 0 0 18px;line-height:1.8">${pricingList}</ul>
     <label class="small" style="display:block;margin-top:14px">Select licence plan</label>
     <select id="licensePlanSelect" class="input-beautiful" style="margin-top:6px">
-      <option value="daily">Daily</option>
-      <option value="weekly" selected>Weekly</option>
-      <option value="monthly">Monthly</option>
-      <option value="yearly">Yearly</option>
+      <option value="daily" ${selectedPlan === 'daily' ? 'selected' : ''}>Daily</option>
+      <option value="weekly" ${selectedPlan === 'weekly' ? 'selected' : ''}>Weekly</option>
+      <option value="monthly" ${selectedPlan === 'monthly' ? 'selected' : ''}>Monthly</option>
+      <option value="yearly" ${selectedPlan === 'yearly' ? 'selected' : ''}>Yearly</option>
     </select>
     <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:18px">
       <button id="closeLicenseRequired" class="btn btn-ghost">Close</button>
@@ -1580,6 +1614,152 @@ function makeQuestionId(question, index = 0) {
 
 function normalizeRichText(value) {
   return (value == null ? '' : String(value)).replace(/\r\n?/g, '\n');
+}
+
+function hasRichTextMarkup(value = '') {
+  return /<(\/?)(b|strong|i|em|u|sub|sup|ul|ol|li|p|div|span|br)\b/i.test((value || '').toString());
+}
+
+function cloneSafeRichTextNode(node, doc) {
+  if (!node) return null;
+  if (node.nodeType === Node.TEXT_NODE) {
+    return doc.createTextNode(sanitizeScientificText(node.textContent || ''));
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return doc.createTextNode('');
+  }
+  const tagName = (node.tagName || '').toUpperCase();
+  const allowedTags = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'SUB', 'SUP', 'UL', 'OL', 'LI', 'P', 'DIV', 'SPAN', 'BR']);
+  if (!allowedTags.has(tagName)) {
+    return doc.createTextNode(sanitizeScientificText(node.textContent || ''));
+  }
+  if (tagName === 'BR') return doc.createElement('br');
+  const safe = doc.createElement(tagName.toLowerCase());
+  Array.from(node.childNodes || []).forEach((child) => {
+    const safeChild = cloneSafeRichTextNode(child, doc);
+    if (safeChild) safe.appendChild(safeChild);
+  });
+  return safe;
+}
+
+function renderRichTextHtml(value = '') {
+  const raw = normalizeRichText(value);
+  if (!raw) return '';
+  if (!hasRichTextMarkup(raw)) {
+    return escapeHtml(sanitizeScientificText(raw)).replace(/\n/g, '<br>');
+  }
+  const input = document.createElement('div');
+  input.innerHTML = raw;
+  const output = document.createElement('div');
+  Array.from(input.childNodes || []).forEach((node) => {
+    const safeNode = cloneSafeRichTextNode(node, output.ownerDocument);
+    if (safeNode) output.appendChild(safeNode);
+  });
+  return output.innerHTML
+    .replace(/(?:<br>\s*){3,}/g, '<br><br>')
+    .replace(/(<(?:p|div)><br><\/(?:p|div)>)+/gi, '<br>');
+}
+
+function getRichTextPlainText(value = '') {
+  const raw = normalizeRichText(value);
+  if (!raw) return '';
+  if (!hasRichTextMarkup(raw)) return sanitizeScientificText(raw);
+  const host = document.createElement('div');
+  host.innerHTML = renderRichTextHtml(raw);
+  return normalizeRichText(host.innerText || host.textContent || '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function getEditorFieldStorageValue(field) {
+  if (!field) return '';
+  if (field.dataset && field.dataset.richInput === 'true') {
+    return renderRichTextHtml(field.innerHTML || '');
+  }
+  return normalizeRichText(field.value || field.textContent || '');
+}
+
+function buildRichEditorToolbarMarkup() {
+  const actions = [
+    { label: 'B', command: 'bold', title: 'Bold' },
+    { label: 'I', command: 'italic', title: 'Italic' },
+    { label: 'U', command: 'underline', title: 'Underline' },
+    { label: 'Sup', command: 'superscript', title: 'Superscript' },
+    { label: 'Sub', command: 'subscript', title: 'Subscript' },
+    { label: '• List', command: 'insertUnorderedList', title: 'Bullet List' },
+    { label: '1. List', command: 'insertOrderedList', title: 'Numbered List' },
+    { label: 'Clear', command: 'removeFormat', title: 'Clear Formatting' }
+  ];
+  return `
+    <div class="rich-editor-toolbar" data-rich-editor-toolbar="true">
+      ${actions.map((action) => `
+        <button type="button" class="rich-editor-btn" data-rich-command="${action.command}" title="${action.title}" aria-label="${action.title}">
+          ${action.label}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function buildRichEditorFieldMarkup(label, className, value = '', options = {}) {
+  const minHeight = options.minHeight || '88px';
+  return `
+    <div class="subject-field">
+      <label class="small">${escapeHtml(label)}</label>
+      <div class="rich-editor-shell" data-rich-editor-shell="true">
+        ${buildRichEditorToolbarMarkup()}
+        <div
+          class="input-beautiful preserve-format rich-editor-input ${className}"
+          data-rich-input="true"
+          contenteditable="true"
+          spellcheck="true"
+          style="min-height:${minHeight}"
+        >${renderRichTextHtml(value)}</div>
+      </div>
+    </div>
+  `;
+}
+
+function wireRichTextEditors(root = document) {
+  root.querySelectorAll('[data-rich-editor-shell="true"]').forEach((shell) => {
+    if (shell.dataset.richEditorReady === 'true') return;
+    shell.dataset.richEditorReady = 'true';
+    const editor = shell.querySelector('[data-rich-input="true"]');
+    if (!editor) return;
+
+    const normalizeEditor = () => {
+      const normalized = renderRichTextHtml(editor.innerHTML || '');
+      editor.innerHTML = normalized;
+      if (!getRichTextPlainText(normalized)) editor.innerHTML = '';
+    };
+
+    shell.querySelectorAll('[data-rich-command]').forEach((button) => {
+      button.onclick = (event) => {
+        event.preventDefault();
+        editor.focus();
+        const command = button.dataset.richCommand || '';
+        if (!command || typeof document.execCommand !== 'function') return;
+        document.execCommand(command, false, null);
+        normalizeEditor();
+      };
+    });
+
+    editor.addEventListener('paste', (event) => {
+      event.preventDefault();
+      const text = (event.clipboardData || window.clipboardData)?.getData('text/plain') || '';
+      if (typeof document.execCommand === 'function') {
+        document.execCommand('insertText', false, text);
+      }
+      normalizeEditor();
+    });
+
+    editor.addEventListener('blur', normalizeEditor);
+    normalizeEditor();
+  });
+}
+
+function getLicensePlanDurationDays(planKey = '') {
+  return LICENSE_PLAN_DAYS[(planKey || '').toString().trim().toLowerCase()] || 0;
 }
 
 function normalizeQuestionForStorage(question, index = 0, subjectName = 'General') {
@@ -1995,7 +2175,7 @@ function render() {
       </div>
     </div>
   `;
-  if (state.view !== 'take') app.appendChild(top);
+  if (state.view !== 'take' && state.view !== 'student.result') app.appendChild(top);
 
   // Layout: sidebar + main
   const layout = document.createElement('div');
@@ -2051,6 +2231,8 @@ function render() {
     main.appendChild(renderTeacherSupportView());
   } else if (state.view === 'student') {
     main.appendChild(renderStudentEntry());
+  } else if (state.view === 'student.result') {
+    main.appendChild(renderResultLinkLanding());
   } else if (state.view === 'take') {
     main.appendChild(renderQuizTake());
   } else if (state.view === 'results' || state.view === 'teacher.results') {
@@ -2075,7 +2257,7 @@ function render() {
     main.prepend(buildTeacherMobileNav());
   }
 
-  if (state.view !== 'teacher.login' && state.view !== 'student' && state.view !== 'home' && state.view !== 'take' && state.view !== 'admin') layout.appendChild(sidebar);
+  if (state.view !== 'teacher.login' && state.view !== 'student' && state.view !== 'student.result' && state.view !== 'home' && state.view !== 'take' && state.view !== 'admin') layout.appendChild(sidebar);
   layout.appendChild(main);
   app.appendChild(layout);
 
@@ -2122,7 +2304,7 @@ function render() {
     document.querySelectorAll('.header-nav .nav-btn').forEach(b => b.classList.remove('active'));
     if (state.view === 'home') document.getElementById('topHome')?.classList.add('active');
     if (state.view === 'teacher' || state.view.startsWith('teacher')) document.getElementById('topTeacher')?.classList.add('active');
-    if (state.view === 'student') document.getElementById('topStudent')?.classList.add('active');
+    if (state.view === 'student' || state.view === 'student.result') document.getElementById('topStudent')?.classList.add('active');
     enhancePasswordFields(app);
     if (state.pendingResultLookup && state.view !== 'take') {
       const pending = { ...state.pendingResultLookup };
@@ -2847,18 +3029,21 @@ function showQuizSetDetails(quizId) {
     if (!subject) return;
     const questions = Array.from(inner.querySelectorAll('.quiz-editor-question-card')).map((card, questionIndex) => {
       const optionValues = Array.from(card.querySelectorAll('.quiz-editor-option'))
-        .map((field) => normalizeRichText(field.value || ''))
-        .filter((value) => value.trim());
+        .map((field) => getEditorFieldStorageValue(field))
+        .filter((value) => getRichTextPlainText(value).trim());
       const rawAnswer = (card.querySelector('.quiz-editor-answer').value || 'A').toUpperCase();
       const rawIndex = rawAnswer.charCodeAt(0) - 65;
       const answerIndex = optionValues.length ? Math.max(0, Math.min(optionValues.length - 1, rawIndex)) : 0;
       return normalizeQuestionForStorage({
         _sourceId: card.dataset.sourceId || '',
-        question: normalizeRichText(card.querySelector('.quiz-editor-question').value || ''),
+        question: getEditorFieldStorageValue(card.querySelector('.quiz-editor-question')),
         options: optionValues,
         answer: String.fromCharCode(65 + answerIndex),
         topic: normalizeRichText(card.querySelector('.quiz-editor-topic').value || ''),
-        difficulty: card.querySelector('.quiz-editor-difficulty').value || 'Medium'
+        difficulty: card.querySelector('.quiz-editor-difficulty').value || 'Medium',
+        explanation: getEditorFieldStorageValue(card.querySelector('.quiz-editor-explanation')),
+        learningPoint: getEditorFieldStorageValue(card.querySelector('.quiz-editor-learning-point')),
+        keyConcept: getEditorFieldStorageValue(card.querySelector('.quiz-editor-key-concept'))
       }, questionIndex, subject.name || 'General');
     }).filter(isMeaningfulQuestion);
     subject.questions = questions.slice();
@@ -2879,12 +3064,7 @@ function showQuizSetDetails(quizId) {
       const optionCount = Math.max(4, (question.options || []).length || 0);
       const optionFields = Array.from({ length: optionCount }, (_, optionIndex) => {
         const letter = String.fromCharCode(65 + optionIndex);
-        return `
-          <div class="subject-field">
-            <label class="small">Option ${letter}</label>
-            <textarea class="input-beautiful quiz-editor-option preserve-format" rows="2">${escapeHtml((question.options || [])[optionIndex] || '')}</textarea>
-          </div>
-        `;
+        return buildRichEditorFieldMarkup(`Option ${letter}`, 'quiz-editor-option', (question.options || [])[optionIndex] || '', { minHeight: '74px' });
       }).join('');
       return `
         <div class="card quiz-editor-question-card" data-source-id="${escapeHtml(question._sourceId || '')}">
@@ -2892,10 +3072,7 @@ function showQuizSetDetails(quizId) {
             <div class="h3 quiz-editor-question-title">Question ${questionIndex + 1}</div>
             ${canEditThisQuiz ? '<button type="button" class="btn btn-ghost btn-sm btnRemoveEditorQuestion">Remove</button>' : ''}
           </div>
-          <div class="subject-field">
-            <label class="small">Question text</label>
-            <textarea class="input-beautiful quiz-editor-question preserve-format" rows="4">${escapeHtml(question.question || '')}</textarea>
-          </div>
+          ${buildRichEditorFieldMarkup('Question text', 'quiz-editor-question', question.question || '', { minHeight: '132px' })}
           <div class="quiz-editor-options-grid">${optionFields}</div>
           <div class="field-grid-2" style="margin-top:12px">
             <div class="subject-field">
@@ -2916,7 +3093,14 @@ function showQuizSetDetails(quizId) {
           </div>
           <div class="subject-field" style="margin-top:12px">
             <label class="small">Topic</label>
-            <input class="input-beautiful quiz-editor-topic" value="${escapeHtml(question.topic || '')}" />
+            <input class="input-beautiful quiz-editor-topic preserve-format" value="${escapeHtml(getRichTextPlainText(question.topic || ''))}" />
+          </div>
+          <div class="field-grid-2" style="margin-top:12px">
+            ${buildRichEditorFieldMarkup('Explanation', 'quiz-editor-explanation', question.explanation || '', { minHeight: '120px' })}
+            ${buildRichEditorFieldMarkup('Learning point', 'quiz-editor-learning-point', question.learningPoint || '', { minHeight: '120px' })}
+          </div>
+          <div style="margin-top:12px">
+            ${buildRichEditorFieldMarkup('Key concept', 'quiz-editor-key-concept', question.keyConcept || '', { minHeight: '88px' })}
           </div>
         </div>
       `;
@@ -2935,7 +3119,7 @@ function showQuizSetDetails(quizId) {
           ${canEditThisQuiz ? '<button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>' : ''}
         </div>
       </div>
-      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or licence state.'}</div>
+      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, bold text, lists, superscript, subscript, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or licence state.'}</div>
       <div class="card" style="padding:14px;margin-bottom:14px">
         <div class="h3">${getSubjectLabel(subject, selectedSubjectIndex)}</div>
         <div id="quizSubjectQuestionCount" class="small" style="margin-top:6px">${questions.length} question(s) in this subject</div>
@@ -2944,6 +3128,7 @@ function showQuizSetDetails(quizId) {
         ${questionCards || '<div class="card-beautiful"><div class="small">No questions found in this subject yet.</div></div>'}
       </div>
     `;
+    wireRichTextEditors(inner);
     inner.querySelectorAll('.btnRemoveEditorQuestion').forEach((button) => {
       button.onclick = () => {
         if (!confirmTeacherAction('Remove this question from the subject?')) return;
@@ -2955,6 +3140,12 @@ function showQuizSetDetails(quizId) {
       inner.querySelectorAll('.quiz-editor-list input, .quiz-editor-list textarea, .quiz-editor-list select').forEach((field) => {
         field.setAttribute('readonly', 'readonly');
         field.setAttribute('disabled', 'disabled');
+      });
+      inner.querySelectorAll('.quiz-editor-list [data-rich-input="true"]').forEach((field) => {
+        field.setAttribute('contenteditable', 'false');
+      });
+      inner.querySelectorAll('.quiz-editor-list [data-rich-command]').forEach((button) => {
+        button.setAttribute('disabled', 'disabled');
       });
     }
     const subjectSelect = inner.querySelector('#quizContentSubjectSelect');
@@ -3210,14 +3401,23 @@ function renderSettingsView() {
         showAdminTeacherStudents(id);
       } else if (action === 'grant-license') {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin licence is unlimited', 'info');
-        const days = parseInt(prompt('Licence duration in days for ' + id, '30') || '', 10);
-        if (!days || days <= 0) return;
-        if (!confirmTeacherAction(`Grant ${days} day(s) of licence to ${id}?`)) return;
         const all = getAllTeachers();
         if (!all[id]) return showNotification('Teacher not found', 'error');
+        const requestedPlan = (all[id].licenseRequestedPlan || '').toString().trim().toLowerCase();
+        const suggestedPlan = requestedPlan && getLicensePlanDurationDays(requestedPlan) ? requestedPlan : 'monthly';
+        const enteredPlan = (prompt(`Licence plan for ${id}. Enter daily, weekly, monthly, yearly, or custom for manual days.`, suggestedPlan) || suggestedPlan).trim().toLowerCase();
+        let days = getLicensePlanDurationDays(enteredPlan);
+        let appliedPlan = enteredPlan;
+        if (enteredPlan === 'custom' || !days) {
+          days = parseInt(prompt('Custom licence duration in days for ' + id, '30') || '', 10);
+          appliedPlan = days ? `custom-${days}` : '';
+        }
+        if (!days || days <= 0) return;
+        if (!confirmTeacherAction(`Grant ${days} day(s) of licence to ${id}?`)) return;
         all[id].licenseEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
         all[id].licenseStopped = false;
         all[id].licenseRequestStatus = 'approved';
+        all[id].licensePlan = ['daily', 'weekly', 'monthly', 'yearly'].includes(enteredPlan) ? enteredPlan : appliedPlan;
         all[id].licenseUpdatedAt = new Date().toISOString();
         all[id].updatedAt = all[id].licenseUpdatedAt;
         saveAllTeachers(all);
@@ -3358,6 +3558,7 @@ function renderTeacherGuideView() {
         'Open Create Quiz and click Export Quiz Template before preparing question files for upload.',
         'Open Results for a quiz and use Export Excel when you need the raw result sheet.',
         'Use PDF Summary in Results when you need the broadsheet in printable form.',
+        'For multi-subject quizzes, choose Grouped Subjects or Separate Subject Columns before the broadsheet PDF downloads.',
         'Confirm the institution name is filled in the quiz settings first if you want it to appear on the broadsheet PDF.'
       ]
     },
@@ -3384,8 +3585,8 @@ function renderTeacherGuideView() {
       steps: [
         'Open Question Bank and click View Content for the quiz.',
         'If the quiz has more than one subject, choose the subject from the subject selector or move with Previous Subject and Next Subject.',
-        'Edit the question text directly in the question box. Line breaks and spacing stay visible while you edit.',
-        'Update options, answer, topic, or difficulty for any question that needs correction.',
+        'Edit the question text directly in the rich-text editor. Bold text, italics, lists, superscript, subscript, line breaks, and special characters stay visible while you edit.',
+        'Update options, answer, topic, difficulty, explanation, learning point, or key concept for any question that needs correction.',
         'Use Remove on a question only when you truly want that question deleted from the subject.',
         'Click Save Content Changes when you finish editing the current subject.',
         'If shared sync is active, the cloud copy is refreshed after save so other devices use the updated content too.'
@@ -3398,9 +3599,23 @@ function renderTeacherGuideView() {
       steps: [
         'Open View Results for the quiz.',
         'Use the action dropdown on any student row to edit score, download correction, email, or delete.',
-        'When you edit a score, save it so the new score appears in teacher exports and student result views.',
+        'When you edit a score, save it so the new score appears in teacher exports, broadsheet PDFs, and student result views.',
+        'Use PDF Summary when you need the broadsheet PDF. The broadsheet now keeps only the student name, score, percent, and status columns for cleaner printing.',
+        'Student correction links now open into a direct verified-result loading page and start the correction PDF automatically after the result is found.',
         'When you delete a result, confirm the warning so the result is removed and stays removed.',
         'Use End Test when you want to stop the quiz before the scheduled end time.'
+      ]
+    },
+    {
+      id: 'licensing',
+      title: 'Licensing and Access',
+      description: 'Request and grant paid access using the current licence plans.',
+      steps: [
+        'If your free trial has already been used, open the licence banner or the Request Licence button.',
+        'Choose Daily, Weekly, Monthly, or Yearly before you contact the admin.',
+        'Request the plan by Email or WhatsApp so the selected amount and plan are saved with your teacher record.',
+        'Super admins can open Settings, review the requested plan, and grant the matching licence plan directly from the teacher table.',
+        'If a special duration is needed, the admin can still enter a custom number of days during licence approval.'
       ]
     },
     {
@@ -3425,6 +3640,7 @@ function renderTeacherGuideView() {
         'If the quiz says Pending cloud sync, click Sync To Cloud first.',
         'Open on a quiz card means the test is still active and students can still enter it. Ended means the test window is closed for students.',
         'Use Copy Student Code or Copy Link after sync.',
+        'Shared result links and correction links depend on shared sync, so confirm the backend is active before sending any link outside the teacher device.',
         'If shared sync looks inactive, fix the backend first before sending the quiz code or student link.',
         'When a quiz was created on one phone before cloud sync was fixed, reopen it on that original device and save or sync it once so the shared copy is uploaded.'
       ]
@@ -4387,13 +4603,13 @@ function renderQuizTake() {
             const opts = (qq.options || []).map((opt, optionIndex) => {
               const letter = String.fromCharCode(65 + optionIndex);
               const checked = sub.answers[globalIndex] === letter ? 'checked' : '';
-              return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
+              return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${globalIndex}" data-idx="${globalIndex}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
             }).join('');
             return `
               <div class="question-card" id="questionCard-${globalIndex}" data-question-card="${globalIndex}" style="margin-bottom:12px">
                 <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
                 <div class="h3">Question ${localIndex + 1} of ${currentSection.total}</div>
-                <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
+                <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
                 <div class="options" id="optionsList-${globalIndex}">${opts}</div>
               </div>
             `;
@@ -4447,14 +4663,14 @@ function renderQuizTake() {
         const opts = (qq.options || []).map((opt, i) => {
           const letter = String.fromCharCode(65 + i);
           const checked = sub.answers[idx] === letter ? 'checked' : '';
-          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /> <span class="preserve-format" style="margin-left:8px;display:inline-block">${letter}. ${escapeHtml(opt)}</span></label>`;
+          return `<label style="display:block;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:8px"><input type="radio" name="opt-${idx}" data-idx="${idx}" value="${letter}" ${checked} /><div class="preserve-format rich-text-output" style="margin-left:28px">${letter}. ${renderRichTextHtml(opt)}</div></label>`;
         }).join('');
 
         qa.innerHTML = `
           <div class="question-card" style="margin-bottom:12px">
             <div class="small" style="color:#0F766E;font-weight:700">${escapeHtml(currentSection.name)}</div>
             <div class="h3">Question ${position.localNumber} of ${position.totalInSubject}</div>
-            <div style="margin-top:8px" class="body preserve-format">${escapeHtml(qq.question)}</div>
+            <div style="margin-top:8px" class="body preserve-format rich-text-output">${renderRichTextHtml(qq.question)}</div>
             <div class="options" id="optionsList-${idx}">${opts}</div>
             <div class="question-inline-actions" style="display:flex;justify-content:space-between;margin-top:12px">
               <div>
@@ -4581,12 +4797,13 @@ function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', 
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'absolute',
-    left: '-100000px',
+    position: 'fixed',
+    left: '-9999px',
     top: '0',
     width: `${sourceContentWidthPx}px`,
     background: '#ffffff',
-    overflow: 'visible'
+    overflow: 'visible',
+    display: 'block'
   });
   document.body.appendChild(source);
   return exportElementToPDF({ sourceSelector: `#${sourceId}`, filename, ...exportOptions })
@@ -4612,14 +4829,15 @@ function downloadPagedPdfFromHtml(html, filename, successMessage = 'PDF download
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'absolute',
-    left: '-100000px',
+    position: 'fixed',
+    left: '-9999px',
     top: '0',
     width: `${contentWidthMm}mm`,
     minWidth: `${contentWidthMm}mm`,
     maxWidth: `${contentWidthMm}mm`,
     background: '#ffffff',
-    overflow: 'visible'
+    overflow: 'visible',
+    display: 'block'
   });
   document.body.appendChild(source);
   if (typeof html2pdf === 'undefined') {
@@ -4643,6 +4861,7 @@ function downloadPagedPdfFromHtml(html, filename, successMessage = 'PDF download
           backgroundColor: '#ffffff',
           logging: false,
           windowWidth: Math.max(Math.ceil(source.scrollWidth), 1200),
+          windowHeight: Math.max(Math.ceil(source.scrollHeight), 1200),
           scrollX: 0,
           scrollY: 0
         },
@@ -4705,8 +4924,8 @@ async function renderElementToCanvas({
     tempRoot = document.createElement('div');
     tempRoot.className = 'pdf-export-root';
     Object.assign(tempRoot.style, {
-      position: 'absolute',
-      left: '-100000px',
+      position: 'fixed',
+      left: '-9999px',
       top: '0',
       width: `${exportSourceWidth}px`,
       minWidth: `${exportSourceWidth}px`,
@@ -4715,8 +4934,7 @@ async function renderElementToCanvas({
       padding: `${paddingPx}px`,
       boxSizing: 'border-box',
       background: '#ffffff',
-      overflow: 'visible',
-      zIndex: '-1'
+      overflow: 'visible'
     });
 
     const clone = source.cloneNode(true);
@@ -4740,8 +4958,8 @@ async function renderElementToCanvas({
         text-shadow: none !important;
       }
       .pdf-export-root {
-        position: absolute !important;
-        left: -100000px !important;
+        position: fixed !important;
+        left: -9999px !important;
         top: 0 !important;
         width: ${exportSourceWidth}px !important;
         min-width: ${exportSourceWidth}px !important;
@@ -4790,6 +5008,7 @@ async function renderElementToCanvas({
 
     sanitizeExportClone(clone);
     copyFormValues(source, clone);
+    await waitForNextPaint();
     await waitForNextPaint();
     await waitForNextPaint();
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
@@ -4958,12 +5177,13 @@ async function printHtmlAsSinglePage(html, options = {}) {
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'absolute',
-    left: '-100000px',
+    position: 'fixed',
+    left: '-9999px',
     top: '0',
     width: '794px',
     background: '#ffffff',
-    overflow: 'visible'
+    overflow: 'visible',
+    display: 'block'
   });
   document.body.appendChild(source);
 
@@ -5085,9 +5305,9 @@ function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
     return `
       <tr>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">Q${idx + 1}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(question.question || '')}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(optionText(question, chosen))}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere">${escapeHtml(optionText(question, correct))}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(question.question || '')}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(optionText(question, chosen))}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(optionText(question, correct))}</td>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;color:${isCorrect ? '#047857' : '#B91C1C'};font-weight:700">${isCorrect ? 'Correct' : 'Incorrect'}</td>
       </tr>
     `;
@@ -5144,7 +5364,7 @@ function buildPdfOptionListHtml(question = {}, options = {}) {
     return `
       <div class="pdf-option-row ${stateClasses}">
         <span class="pdf-option-letter">${letter}.</span>
-        <span class="pdf-option-text">${escapeHtml(option)}</span>
+        <div class="pdf-option-text rich-text-output">${renderRichTextHtml(option)}</div>
       </div>
     `;
   }).join('');
@@ -5185,10 +5405,10 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
     const chosen = submission.answers && submission.answers[entry.originalIndex] ? submission.answers[entry.originalIndex] : '';
     const correct = (question.answer || '').toString().toUpperCase();
     const statusText = chosen && chosen === correct ? 'Correct' : 'Incorrect';
-    const topic = sanitizeScientificText(question.topic || entry.subject || 'General');
-    const keyConcept = sanitizeScientificText(question.keyConcept || question.topic || entry.subject || 'General');
-    const explanation = sanitizeScientificText(question.explanation || 'No explanation provided yet.');
-    const learningPoint = sanitizeScientificText(question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.');
+    const topic = question.topic || entry.subject || 'General';
+    const keyConcept = question.keyConcept || question.topic || entry.subject || 'General';
+    const explanation = question.explanation || 'No explanation provided yet.';
+    const learningPoint = question.learningPoint || question.explanation || question.topic || 'Review the correct answer again.';
     const studentAnswerText = chosen ? `${chosen}. ${getDisplayOptionText(question, chosen)}` : 'No answer';
     const correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
     return `
@@ -5197,17 +5417,17 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
           <div class="pdf-question-number">Question ${entry.originalIndex + 1}</div>
           <div class="pdf-question-status">${statusText}</div>
         </div>
-        <div class="pdf-question-text">${escapeHtml(sanitizeScientificText(question.question || ''))}</div>
+        <div class="pdf-question-text rich-text-output">${renderRichTextHtml(question.question || '')}</div>
         <div class="pdf-meta-line"><strong>Status:</strong> ${escapeHtml(statusText)}</div>
-        <div class="pdf-meta-line"><strong>Key concept:</strong> ${escapeHtml(keyConcept)}</div>
+        <div class="pdf-meta-line"><strong>Key concept:</strong> <div class="rich-text-output">${renderRichTextHtml(keyConcept)}</div></div>
         ${breakdown.length > 1 ? `<div class="pdf-meta-line"><strong>Subject:</strong> ${escapeHtml(sanitizeScientificText(entry.subject || 'General'))}</div>` : ''}
         <div class="pdf-meta-line"><strong>Options:</strong></div>
         ${buildPdfOptionListHtml(question, { selectedAnswer: chosen, correctAnswer: correct })}
         <div class="pdf-meta-line"><strong>Student answer:</strong> ${escapeHtml(studentAnswerText)}</div>
         <div class="pdf-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
-        <div class="pdf-meta-line"><strong>Topic:</strong> ${escapeHtml(topic)}</div>
-        <div class="pdf-meta-line pdf-writeup"><strong>Explanation:</strong> ${escapeHtml(explanation)}</div>
-        <div class="pdf-meta-line pdf-writeup"><strong>Learning point:</strong> ${escapeHtml(learningPoint)}</div>
+        <div class="pdf-meta-line"><strong>Topic:</strong> <div class="rich-text-output">${renderRichTextHtml(topic)}</div></div>
+        <div class="pdf-meta-line pdf-writeup"><strong>Explanation:</strong> <div class="rich-text-output">${renderRichTextHtml(explanation)}</div></div>
+        <div class="pdf-meta-line pdf-writeup"><strong>Learning point:</strong> <div class="rich-text-output">${renderRichTextHtml(learningPoint)}</div></div>
       </section>
     `;
   }).join('');
@@ -5244,6 +5464,11 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
         .pdf-option-row.is-selected{box-shadow:inset 0 0 0 1px rgba(47,128,237,.22)}
         .pdf-option-letter{font-weight:900;color:#000;min-width:18px}
         .pdf-option-text{color:#000;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+        .rich-text-output > :first-child{margin-top:0}
+        .rich-text-output > :last-child{margin-bottom:0}
+        .rich-text-output p,.rich-text-output div,.rich-text-output ul,.rich-text-output ol{margin:0 0 .45em}
+        .rich-text-output li{margin:0 0 .2em}
         @media(max-width:640px){.pdf-meta-grid{grid-template-columns:1fr}}
       </style>
       <div class="pdf-doc-shell">
@@ -5485,6 +5710,11 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
         .facility-meta-line{margin-top:8px;color:#000;font-size:10.8pt;line-height:1.42;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
         .facility-meta-line strong{color:#000}
         .facility-writeup{color:#000}
+        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+        .rich-text-output > :first-child{margin-top:0}
+        .rich-text-output > :last-child{margin-bottom:0}
+        .rich-text-output p,.rich-text-output div,.rich-text-output ul,.rich-text-output ol{margin:0 0 .45em}
+        .rich-text-output li{margin:0 0 .2em}
         @media(max-width:640px){.facility-summary-grid{grid-template-columns:1fr}}
       </style>
       <div class="facility-shell">
@@ -5518,14 +5748,14 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
                       <div class="facility-question-title">Question ${item.index} • ${percentText} • ${escapeHtml(section.label)}</div>
                       <div class="facility-question-chip">${escapeHtml(section.label)}</div>
                     </div>
-                    <div class="facility-question-text">${escapeHtml(sanitizeScientificText(item.question || ''))}</div>
+                    <div class="facility-question-text rich-text-output">${renderRichTextHtml(item.question || '')}</div>
                     <div class="facility-meta-line"><strong>Options:</strong></div>
                     ${buildPdfOptionListHtml(item, { correctAnswer: item.answer || '' })}
                     <div class="facility-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
                     <div class="facility-meta-line"><strong>Seen:</strong> ${item.seen} • <strong>Attempted:</strong> ${item.attempted} • <strong>Correct:</strong> ${item.correct} • <strong>Wrong:</strong> ${Math.max(0, item.attempted - item.correct)}</div>
-                    <div class="facility-meta-line"><strong>Topic:</strong> ${escapeHtml(sanitizeScientificText(item.topic || 'Not set'))}</div>
+                    <div class="facility-meta-line"><strong>Topic:</strong> <div class="rich-text-output">${renderRichTextHtml(item.topic || 'Not set')}</div></div>
                     <div class="facility-meta-line"><strong>Option counts:</strong> ${escapeHtml(optionCounts || 'No option counts yet.')}</div>
-                    <div class="facility-meta-line facility-writeup"><strong>Explanation:</strong> ${escapeHtml(sanitizeScientificText(item.explanation || 'No explanation provided yet.'))}</div>
+                    <div class="facility-meta-line facility-writeup"><strong>Explanation:</strong> <div class="rich-text-output">${renderRichTextHtml(item.explanation || 'No explanation provided yet.')}</div></div>
                   </article>
                 `;
               }).join('')}
@@ -5752,9 +5982,6 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
         <td class="summary-cell summary-cell-name" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
           <div class="summary-name">${escapeHtml(s.name || '') || 'Unnamed Student'}</div>
         </td>
-        <td class="summary-cell summary-cell-email" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
-          <div class="summary-email">${escapeHtml(emailOrId)}</div>
-        </td>
         <td class="summary-cell summary-cell-score" style="--row-bg:${tone.bg};--row-edge:${tone.edge}">
           <span class="summary-score">${formatScoreValue(s.score || 0)}/${formatScoreValue(scoreBase || 0)}</span>
         </td>
@@ -5771,7 +5998,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
     ? '<colgroup><col><col><col><col><col></colgroup>'
     : displayFormat === 'separate'
       ? `<colgroup><col><col>${subjectColumns.map(() => '<col>').join('')}<col><col></colgroup>`
-      : '<colgroup><col><col><col><col><col><col></colgroup>';
+      : '<colgroup><col><col><col><col><col></colgroup>';
   const tableHead = displayFormat === 'grouped'
     ? `
       <tr>
@@ -5796,7 +6023,6 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
         <tr>
           <th class="th-center">Rank</th>
           <th>Name</th>
-          <th>Email / ID</th>
           <th class="th-right">Score</th>
           <th class="th-right">Percent</th>
           <th class="th-center">Status</th>
@@ -5963,12 +6189,11 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
           border-spacing:0 10px;
           table-layout:fixed;
         }
-        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(1){width:11%}
-        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(2){width:24%}
-        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(3){width:27%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(1){width:12%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(2){width:38%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(3){width:18%}
         .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(4){width:14%}
-        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(5){width:10%}
-        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(6){width:14%}
+        .summary-pdf-root:not(.summary-pdf-grouped):not(.summary-pdf-separate) .summary-table col:nth-child(5){width:18%}
         .summary-pdf-grouped .summary-table col:nth-child(1){width:12%}
         .summary-pdf-grouped .summary-table col:nth-child(2){width:24%}
         .summary-pdf-grouped .summary-table col:nth-child(3){width:34%}
@@ -6117,7 +6342,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
               ${tableHead}
             </thead>
             <tbody>
-              ${rows || `<tr><td colspan="${displayFormat === 'grouped' ? 5 : displayFormat === 'separate' ? 4 + subjectColumns.length : 6}"><div class="summary-empty">No submissions yet.</div></td></tr>`}
+              ${rows || `<tr><td colspan="${displayFormat === 'grouped' ? 5 : displayFormat === 'separate' ? 4 + subjectColumns.length : 5}"><div class="summary-empty">No submissions yet.</div></td></tr>`}
             </tbody>
           </table>
         </div>
@@ -6365,10 +6590,14 @@ function buildCertificateVerificationQrSvg(url) {
 function renderCertificateVerificationMarkup(quiz, submission) {
   const url = buildCertificateVerificationUrl(quiz, submission);
   const qrSvg = buildCertificateVerificationQrSvg(url);
+  const shareKey = getSubmissionShareKey(submission, { persist: false }).toUpperCase();
+  const submittedAt = submission?.submittedAt ? new Date(submission.submittedAt).toLocaleString() : 'N/A';
   return `
     <div class="cert-verification">
       <div class="cert-verification-copy">
-        <div class="cert-verification-label">CERTIFICATE AUTHENTICATION</div>
+        <div class="cert-verification-label">RESULT AUTHENTICATION</div>
+        <div class="cert-verification-text">Scan the QR code to reopen this verified result directly in OPE Assessor.</div>
+        <div class="cert-verification-text"><strong>Reference:</strong> ${escapeHtml(shareKey)}<br><strong>Submitted:</strong> ${escapeHtml(submittedAt)}</div>
       </div>
       <div class="cert-verification-qr" aria-label="Certificate verification QR code">
         ${qrSvg || '<div class="cert-verification-fallback">QR unavailable</div>'}
@@ -6487,7 +6716,8 @@ function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
   const cardHtml = buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts);
   const supplementHtml = buildStudentResultSupplementHtml(quiz, submission);
   const actionsHtml = opts.includeActions ? buildStudentResultActionsHtml(submission) : '';
-  return `<div class="student-result-full">${cardHtml}${supplementHtml}${actionsHtml}</div>`;
+  const styles = opts.embedStyles === false ? '' : `<style>${getCertificateResultCss()}</style>`;
+  return `${styles}<div class="student-result-full">${cardHtml}${supplementHtml}${actionsHtml}</div>`;
 }
 
 function buildCorrectionRequestStatusHtml(submission = {}) {
@@ -6616,14 +6846,14 @@ function buildStudentResultSummaryCardHtml(quiz, submission, rankValue, opts = {
 function getCertificateResultCss() {
   return `
     .student-result-full{display:flex;flex-direction:column;gap:14px}
-    .cert-result{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;background:#ffffff;color:#1F2937;border-radius:18px;box-shadow:0 18px 46px rgba(47,128,237,.14)}
+    .cert-result{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif!important;background:#ffffff!important;color:#1F2937!important;border-radius:18px!important;box-shadow:0 18px 46px rgba(47,128,237,.14)!important;border:4px solid #2F80ED!important;padding:0!important}
     .cert-inner{position:relative;border:4px solid #2F80ED;border-radius:18px;padding:24px 22px 20px;background:
       radial-gradient(circle at top left, rgba(86,204,242,.18), transparent 24%),
       radial-gradient(circle at top right, rgba(47,128,237,.16), transparent 28%),
       linear-gradient(180deg,#ffffff 0%,#F8FAFC 100%);
       overflow:hidden}
     .cert-inner:before{content:"";position:absolute;inset:10px;border:2px solid rgba(47,128,237,.22);border-radius:12px;pointer-events:none}
-    .cert-header{text-align:center;padding:8px 0 0;position:relative;z-index:1}
+    .cert-header{text-align:center;padding:18px 16px 16px;position:relative;z-index:1;border-radius:22px;background:linear-gradient(135deg,rgba(238,248,255,.96) 0%,rgba(230,243,255,.92) 52%,rgba(244,250,255,.98) 100%);border:1px solid rgba(47,128,237,.16);box-shadow:0 12px 28px rgba(47,128,237,.10)}
     .cert-brand-lockup{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
     .cert-logo-badge{width:72px;height:72px;border-radius:22px;border:4px solid #2F80ED;background:#ffffff;padding:5px}
     .cert-logo-badge span{display:flex;align-items:center;justify-content:center;width:100%;height:100%;border-radius:16px;background:#ffffff;color:#2F80ED;font-size:28px;font-weight:900;letter-spacing:.05em}
@@ -6631,7 +6861,7 @@ function getCertificateResultCss() {
     .cert-logo-text strong{display:block;font-size:28px;line-height:1.05;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-logo-text span{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#1F2937;margin-top:5px;font-weight:800}
     .cert-header-meta{margin-top:8px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#2F80ED}
-    .cert-quiz-title{margin-top:14px;font-size:44px;line-height:1.08;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
+    .cert-quiz-title{margin-top:14px;font-size:40px;line-height:1.08;font-weight:900;letter-spacing:.03em;text-transform:uppercase;color:#2F80ED}
     .cert-section-ribbon{display:flex;align-items:center;justify-content:center;gap:12px;margin:20px auto 6px;width:fit-content;padding:8px 20px;border-radius:999px;background:linear-gradient(180deg,#2F80ED 0%,#1F67D8 100%);color:#ffffff;font-size:15px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;position:relative;z-index:1}
     .cert-section-ribbon:before,.cert-section-ribbon:after{content:"";display:block;width:88px;height:2px;background:linear-gradient(90deg,transparent,#56CCF2,#2F80ED);border-radius:999px}
     .cert-section-ribbon-secondary{margin-top:0}
@@ -6666,10 +6896,11 @@ function getCertificateResultCss() {
     .cert-signature-line{width:min(240px,100%);border-top:2px solid #2F80ED;margin:0 auto 8px}
     .cert-signature-name{font-size:16px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
     .cert-signature-role{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#1F2937;margin-top:4px}
-    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:14px 0 10px;padding:12px 16px;border:2px solid rgba(47,128,237,.34);border-radius:16px;background:#F8FAFC}
+    .cert-verification{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:14px 0 10px;padding:12px 14px;border:2px solid rgba(47,128,237,.34);border-radius:16px;background:#F8FAFC}
     .cert-verification-copy{flex:1;min-width:0}
     .cert-verification-label{font-size:14px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:#2F80ED}
-    .cert-verification-qr{width:104px;min-width:104px;height:104px;border-radius:14px;background:#ffffff;padding:8px;border:1px solid rgba(47,128,237,.25);display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .cert-verification-text{margin-top:8px;font-size:13px;line-height:1.55;color:#475569}
+    .cert-verification-qr{width:92px;min-width:92px;height:92px;border-radius:14px;background:#ffffff;padding:6px;border:1px solid rgba(47,128,237,.25);display:flex;align-items:center;justify-content:center;overflow:hidden}
     .cert-verification-qr svg{display:block;width:100%;height:100%}
     .cert-verification-fallback{font-size:11px;font-weight:700;color:#64748B;text-align:center}
     .cert-footer{text-align:center;font-weight:900;font-size:16px;margin-top:12px;color:#2F80ED}
@@ -6684,6 +6915,11 @@ function getCertificateResultCss() {
     .cert-performance-subject{font-size:18px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
     .cert-performance-score{font-size:18px;font-weight:900;color:#111827;margin-top:4px}
     .cert-performance-meta{font-size:13px;color:#1F2937;line-height:1.45;margin-top:4px}
+    .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+    .rich-text-output > :first-child{margin-top:0}
+    .rich-text-output > :last-child{margin-bottom:0}
+    .rich-text-output p,.rich-text-output div,.rich-text-output ul,.rich-text-output ol{margin:0 0 .5em}
+    .rich-text-output li{margin:0 0 .25em}
     .result-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
     .result-action-note{width:100%;padding:12px 14px;border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;text-align:left}
     @media(max-width:720px){
@@ -6692,7 +6928,7 @@ function getCertificateResultCss() {
       .cert-logo-badge span{font-size:24px}
       .cert-logo-text{text-align:center}
       .cert-logo-text strong{font-size:22px}
-      .cert-quiz-title{font-size:30px}
+      .cert-quiz-title{font-size:28px}
       .cert-section-ribbon{font-size:13px;padding:8px 14px}
       .cert-section-ribbon:before,.cert-section-ribbon:after{width:36px}
       .cert-student-name{font-size:38px}
@@ -6710,14 +6946,14 @@ function getCertificateResultCss() {
 function buildStudentSummaryPdfHtml(quiz, submission) {
   const ranks = computeRankingForQuiz(submission.quizId);
   const rankValue = ranks[normalizeEmail(submission.email)] || '-';
-  const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false });
+  const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   return `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
         .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
         .student-result-export-page .student-result-full{gap:10px}
-        .student-result-export-page .cert-result{box-shadow:none;border-radius:0}
+        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
         .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
         .student-result-export-page .cert-quiz-title{font-size:32px}
         .student-result-export-page .cert-student-name{font-size:40px}
@@ -6731,14 +6967,14 @@ function buildStudentSummaryPdfHtml(quiz, submission) {
 function printStudentSummary(quiz, submission) {
   const ranks = computeRankingForQuiz(submission.quizId);
   const rankValue = ranks[normalizeEmail(submission.email)] || '-';
-  const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false });
+  const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   const printHtml = `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
         .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
         .student-result-export-page .student-result-full{gap:10px}
-        .student-result-export-page .cert-result{box-shadow:none;border-radius:0}
+        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
         .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
         .student-result-export-page .cert-quiz-title{font-size:32px}
         .student-result-export-page .cert-student-name{font-size:40px}
@@ -7177,7 +7413,7 @@ function showExamAnalysisModal(q) {
                 const facilityPercent = item.facilityIndex == null ? 'No attempts' : `${Math.round(item.facilityIndex * 100)}%`;
                 const optionsMarkup = (item.optionCounts || []).map((option) => {
                   const isCorrect = (item.answer || '').toString().toUpperCase() === option.letter;
-                  return `<div style="padding:8px 10px;border-radius:10px;border:1px solid ${isCorrect ? '#6EE7B7' : '#E2E8F0'};background:${isCorrect ? '#ECFDF5' : '#FFFFFF'};display:flex;justify-content:space-between;gap:12px"><span>${option.letter}. ${escapeHtml(option.option)}</span><strong>${option.count}</strong></div>`;
+                  return `<div style="padding:8px 10px;border-radius:10px;border:1px solid ${isCorrect ? '#6EE7B7' : '#E2E8F0'};background:${isCorrect ? '#ECFDF5' : '#FFFFFF'};display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div class="rich-text-output" style="flex:1 1 auto">${option.letter}. ${renderRichTextHtml(option.option)}</div><strong>${option.count}</strong></div>`;
                 }).join('');
                 return `
                   <div class="card-beautiful" style="padding:16px;margin-bottom:12px;border:1px solid #E2E8F0;box-shadow:none">
@@ -7185,11 +7421,11 @@ function showExamAnalysisModal(q) {
                       <div style="font-weight:800">Question ${item.index}</div>
                       <div style="font-weight:700;color:#334155">${facilityPercent} • ${section.label}</div>
                     </div>
-                    <div style="margin-top:10px;font-size:16px;line-height:1.6;white-space:pre-wrap;word-break:break-word">${escapeHtml(item.question || '')}</div>
+                    <div style="margin-top:10px;font-size:16px;line-height:1.6;white-space:normal;word-break:break-word" class="rich-text-output">${renderRichTextHtml(item.question || '')}</div>
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:12px">${optionsMarkup}</div>
                     <div class="small" style="margin-top:12px;line-height:1.7">Correct answer: <strong>${escapeHtml(item.answer || '')}</strong> • Seen: <strong>${item.seen}</strong> • Attempted: <strong>${item.attempted}</strong> • Correct: <strong>${item.correct}</strong> • Wrong: <strong>${Math.max(0, item.attempted - item.correct)}</strong></div>
-                    <div class="small" style="margin-top:6px;line-height:1.7">Topic: <strong>${escapeHtml(item.topic || 'Not set')}</strong></div>
-                    <div class="small" style="margin-top:6px;line-height:1.7">Explanation: ${escapeHtml(item.explanation || 'No explanation provided yet.')}</div>
+                    <div class="small" style="margin-top:6px;line-height:1.7">Topic:<div class="rich-text-output" style="font-weight:700">${renderRichTextHtml(item.topic || 'Not set')}</div></div>
+                    <div class="small rich-text-output" style="margin-top:6px;line-height:1.7">Explanation: ${renderRichTextHtml(item.explanation || 'No explanation provided yet.')}</div>
                   </div>
                 `;
               }).join('')}
@@ -7716,18 +7952,23 @@ function showCreateQuizModal(editQuizId = '') {
           <div class="card quiz-editor-question-card">
             <div class="h3">Question ${previewQuestionIndex + 1} of ${currentSubject.questions.length}</div>
             <div class="small" style="margin:6px 0 14px">${escapeHtml(currentSubject.name)}</div>
-            <div class="preserve-format" style="font-weight:700;line-height:1.7">${escapeHtml(currentQuestion?.question || '')}</div>
+            <div class="preserve-format rich-text-output" style="font-weight:700;line-height:1.7">${renderRichTextHtml(currentQuestion?.question || '')}</div>
             <div class="quiz-editor-options-grid" style="margin-top:16px">
               ${(currentQuestion?.options || []).map((option, optionIndex) => {
                 const letter = String.fromCharCode(65 + optionIndex);
                 const correct = (currentQuestion.answer || '') === letter;
-                return `<div class="card" style="padding:12px;border:${correct ? '2px solid #10B981' : '1px solid #E5E7EB'}"><strong>${letter}.</strong> <span class="preserve-format">${escapeHtml(option)}</span>${correct ? '<div class="small" style="margin-top:6px;color:#047857;font-weight:700">Correct answer</div>' : ''}</div>`;
+                return `<div class="card" style="padding:12px;border:${correct ? '2px solid #10B981' : '1px solid #E5E7EB'}"><strong>${letter}.</strong><div class="preserve-format rich-text-output" style="margin-top:6px">${renderRichTextHtml(option)}</div>${correct ? '<div class="small" style="margin-top:6px;color:#047857;font-weight:700">Correct answer</div>' : ''}</div>`;
               }).join('')}
             </div>
             <div class="field-grid-2" style="margin-top:16px">
-              <div class="card" style="padding:12px"><div class="small">Topic</div><div>${escapeHtml(currentQuestion?.topic || 'Not set')}</div></div>
+              <div class="card" style="padding:12px"><div class="small">Topic</div><div class="rich-text-output">${renderRichTextHtml(currentQuestion?.topic || 'Not set')}</div></div>
               <div class="card" style="padding:12px"><div class="small">Difficulty</div><div>${escapeHtml(currentQuestion?.difficulty || 'Medium')}</div></div>
             </div>
+            <div class="field-grid-2" style="margin-top:16px">
+              <div class="card" style="padding:12px"><div class="small">Explanation</div><div class="rich-text-output" style="margin-top:8px;line-height:1.7">${renderRichTextHtml(currentQuestion?.explanation || 'No explanation provided yet.')}</div></div>
+              <div class="card" style="padding:12px"><div class="small">Learning Point</div><div class="rich-text-output" style="margin-top:8px;line-height:1.7">${renderRichTextHtml(currentQuestion?.learningPoint || 'No learning point provided yet.')}</div></div>
+            </div>
+            <div class="card" style="padding:12px;margin-top:16px"><div class="small">Key Concept</div><div class="rich-text-output" style="margin-top:8px;line-height:1.7">${renderRichTextHtml(currentQuestion?.keyConcept || currentQuestion?.topic || 'Not set')}</div></div>
           </div>
         `;
         previewModal.appendChild(previewCard);
@@ -8337,8 +8578,15 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   const quiz = getAllQuizzes()[id] || { id };
   inner.innerHTML = buildStudentResultFullHtml(quiz, s, ranks[normalizeEmail(s.email)] || '-', { includeActions });
   modal.appendChild(inner); document.body.appendChild(modal);
-  modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
-  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = ()=>modal.remove();
+  const closeModal = () => {
+    modal.remove();
+    if (state.view === 'student.result') {
+      state.view = 'home';
+      render();
+    }
+  };
+  modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
+  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
   const downloadBtn = document.getElementById('downloadStudentResultPdf');
   if (downloadBtn) downloadBtn.onclick = () => {
     downloadPdfFromHtml(
@@ -8397,8 +8645,15 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   const quiz = getAllQuizzes()[id] || { id };
   inner.innerHTML = buildStudentResultFullHtml(quiz, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
   modal.appendChild(inner); document.body.appendChild(modal);
-  modal.onclick = (ev) => { if (ev.target === modal) modal.remove(); };
-  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = ()=>modal.remove();
+  const closeModal = () => {
+    modal.remove();
+    if (state.view === 'student.result') {
+      state.view = 'home';
+      render();
+    }
+  };
+  modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
+  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
   const downloadBtn = document.getElementById('downloadStudentResultPdf');
   if (downloadBtn) downloadBtn.onclick = () => {
     downloadPdfFromHtml(
@@ -8617,6 +8872,27 @@ function openStudentGuideModal() {
   document.body.appendChild(modal);
   modal.onclick = (event) => { if (event.target === modal) modal.remove(); };
   document.getElementById('closeStudentGuide').onclick = () => modal.remove();
+}
+
+function renderResultLinkLanding() {
+  const wrapper = document.createElement('div');
+  const pending = state.pendingResultLookup || {};
+  const preparingCorrection = !!pending.downloadCorrection;
+  wrapper.className = 'result-link-landing';
+  wrapper.innerHTML = `
+    <div class="result-link-card card-beautiful">
+      <div class="result-link-badge">${preparingCorrection ? 'Preparing Correction PDF' : 'Opening Verified Result'}</div>
+      <div class="result-link-spinner" aria-hidden="true"></div>
+      <div class="h1" style="margin-bottom:10px">${preparingCorrection ? 'Your correction PDF is being prepared.' : 'Your verified result is loading.'}</div>
+      <div class="small result-link-copy">
+        ${preparingCorrection
+          ? 'Please wait. OPE Assessor is locating your submission and will start the correction PDF download automatically.'
+          : 'Please wait. OPE Assessor is locating your verified result summary now.'}
+      </div>
+      ${pending.correctionSubject ? `<div class="small" style="margin-top:14px">Subject: <strong>${escapeHtml(pending.correctionSubject)}</strong></div>` : ''}
+    </div>
+  `;
+  return wrapper;
 }
 
 function renderStudentEntry() {
