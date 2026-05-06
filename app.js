@@ -268,13 +268,18 @@ function persistAppUiState() {
     : (_viewScrollState[state.view] || null);
   writeLocalStorageValue(STORAGE_KEYS.appState, {
     view: state.view,
-    quizId: state.currentQuiz?.id || '',
+    quizId: ['results', 'teacher.results'].includes(state.view) ? (state.currentQuiz?.id || '') : '',
     teacherGuideTopic: state.teacherGuideTopic || '',
-    prefillQuizCode: state.prefillQuizCode || '',
     teacherId: state.teacherId || '',
     scroll,
     savedAt: new Date().toISOString()
   });
+}
+
+function hasStudentDeepLinkParams() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search || '');
+  return params.has('q') || params.has('import') || params.has('r') || (params.has('resultQuiz') && params.has('resultKey'));
 }
 
 function applyPersistedAppUiState() {
@@ -283,9 +288,11 @@ function applyPersistedAppUiState() {
   const requestedView = stored.view && stored.view !== 'take' ? stored.view : state.view;
   if (requestedView) state.view = requestedView;
   state.teacherGuideTopic = stored.teacherGuideTopic || '';
-  state.prefillQuizCode = stored.prefillQuizCode || '';
   if (stored.quizId) {
     state.currentQuiz = getAllQuizzes()[stored.quizId] || null;
+  }
+  if (state.view === 'student' && !hasStudentDeepLinkParams() && !state.currentQuiz) {
+    state.view = 'home';
   }
   if ((state.view || '').startsWith('teacher') && !isTeacherLoggedIn()) {
     state.currentQuiz = null;
@@ -321,6 +328,14 @@ function refreshCurrentQuizReference() {
   if (!state.currentQuiz?.id) return;
   const refreshedQuiz = getAllStoredQuizzes()[state.currentQuiz.id] || null;
   state.currentQuiz = refreshedQuiz && !isDeletedQuiz(refreshedQuiz) ? refreshedQuiz : null;
+}
+
+function shouldDeferStudentSyncRerender() {
+  if (state.view !== 'student' || typeof document === 'undefined') return false;
+  const active = document.activeElement;
+  if (!active) return false;
+  if (['stuName', 'stuIdentity', 'stuAccess'].includes(active.id || '')) return true;
+  return !!active.closest('.student-page');
 }
 
 function hydratePrefilledQuizFromAccess() {
@@ -362,8 +377,23 @@ function applySharedStateUiRefresh(changed = false, options = {}) {
   if (changed || hydratedPrefill) refreshCurrentQuizReference();
   const examHandled = handleActiveExamSyncState();
   if (examHandled) return changed || hydratedPrefill;
+  if (shouldDeferStudentSyncRerender()) return changed || hydratedPrefill;
   if (state.view !== 'take' && (changed || hydratedPrefill || options.forceRender)) render();
   return changed || hydratedPrefill;
+}
+
+function buildHistoryUrlForState() {
+  if (typeof window === 'undefined') return '';
+  const url = new URL(window.location.href);
+  if (!['student', 'take', 'student.result'].includes(state.view)) {
+    return `${url.pathname}${url.hash || ''}`;
+  }
+  return `${url.pathname}${url.search}${url.hash || ''}`;
+}
+
+function clearStudentEntryContext() {
+  state.currentQuiz = null;
+  state.prefillQuizCode = '';
 }
 
 async function runSharedSyncCycle(options = {}) {
@@ -2812,8 +2842,9 @@ function render() {
   }
   if (window.history && !_historyApplying && state.view !== _lastHistoryView) {
     const historyState = { view: state.view, quizId: state.currentQuiz && state.currentQuiz.id ? state.currentQuiz.id : '' };
-    if (!_lastHistoryView) window.history.replaceState(historyState, '', window.location.href);
-    else window.history.pushState(historyState, '', window.location.href);
+    const historyUrl = buildHistoryUrlForState();
+    if (!_lastHistoryView) window.history.replaceState(historyState, '', historyUrl);
+    else window.history.pushState(historyState, '', historyUrl);
     _lastHistoryView = state.view;
   }
   app.innerHTML = '';
@@ -2937,9 +2968,17 @@ function render() {
   setTimeout(() => {
     // header nav
     const topHomeBtn = document.getElementById('topHome');
-    if (topHomeBtn) topHomeBtn.onclick = () => { state.view = 'home'; render(); };
+    if (topHomeBtn) topHomeBtn.onclick = () => {
+      if (state.view === 'student' || state.view === 'student.result') clearStudentEntryContext();
+      state.view = 'home';
+      render();
+    };
     const topTeacherBtn = document.getElementById('topTeacher');
-    if (topTeacherBtn) topTeacherBtn.onclick = () => { state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login'; render(); };
+    if (topTeacherBtn) topTeacherBtn.onclick = () => {
+      if (state.view === 'student' || state.view === 'student.result') clearStudentEntryContext();
+      state.view = isTeacherLoggedIn() ? 'teacher' : 'teacher.login';
+      render();
+    };
     const topStudentBtn = document.getElementById('topStudent');
     if (topStudentBtn) topStudentBtn.onclick = () => { state.view = 'student'; render(); };
     const openBtn = document.getElementById('openTeacherQuiz'); if (openBtn) openBtn.onclick = ()=> showTeacherAccessModal();
@@ -3021,7 +3060,7 @@ function render() {
 
 window.addEventListener('popstate', (event) => {
   if (state.view === 'take') {
-    window.history.pushState({ view: 'take', quizId: state.currentQuiz && state.currentQuiz.id ? state.currentQuiz.id : '' }, '', window.location.href);
+    window.history.pushState({ view: 'take', quizId: state.currentQuiz && state.currentQuiz.id ? state.currentQuiz.id : '' }, '', buildHistoryUrlForState());
     showNotification('Use the exam buttons to move during the quiz.', 'warning');
     return;
   }
@@ -5774,7 +5813,10 @@ function buildServerPdfDownloadUrl(routePath = '', filename = '', options = {}) 
 async function requestServerPdfRouteExport(routePath, filename, exportOptions = {}, requestOptions = {}) {
   const syncKeys = Array.isArray(requestOptions.syncKeys) ? requestOptions.syncKeys.filter(Boolean) : [];
   if (syncKeys.length && canUseNetworkSync()) {
-    await syncSharedKeys(syncKeys);
+    const keysNeedingFlush = syncKeys.filter((key) => dirtyNetworkKeys.has(key) || pendingNetworkWrites.has(key));
+    if (keysNeedingFlush.length) {
+      await flushPendingNetworkWrites(keysNeedingFlush, { pullAfter: false });
+    }
   }
   const bootstrapPayload = requestOptions.bootstrap || buildClientPdfBootstrapPayload(routePath);
   const response = await fetch(buildApiUrl('/api/export/pdf'), {
@@ -7871,7 +7913,42 @@ function getSubmissionAveragePercent(submission, quiz) {
 }
 
 function buildStudentTopicBreakdownHtml(quiz, submission) {
-  return '';
+  if (!quiz?.showTopicsAfterSubmission) return '';
+  const subjectBreakdown = computeSubmissionTopicBreakdown(quiz, submission);
+  const visibleSubjects = subjectBreakdown.filter((item) => Array.isArray(item.topics) && item.topics.length);
+  if (!visibleSubjects.length) return '';
+  return `
+    <div id="topicBreakdown" class="cert-topic-section avoid-break">
+      <div class="cert-section-ribbon cert-section-ribbon-secondary">TOPIC BREAKDOWN</div>
+      <div class="cert-topic-groups">
+        ${visibleSubjects.map((subjectEntry) => `
+          <div class="cert-topic-group avoid-break">
+            <div class="cert-topic-group-title">${escapeHtml(sanitizeScientificText(subjectEntry.subjectName || 'General'))}</div>
+            <div class="cert-topic-list">
+              ${subjectEntry.topics.map((topic) => {
+                const total = Number(topic.total || 0) || 0;
+                const correct = Number(topic.correct || topic.passed || 0) || 0;
+                const attempted = Number(topic.attempted || 0) || 0;
+                const wrong = Number(topic.wrong || Math.max(0, attempted - correct)) || 0;
+                const unanswered = Number(topic.unanswered || Math.max(0, total - attempted)) || 0;
+                const percent = Number(topic.percent || (total ? Math.round((correct / total) * 100) : 0)) || 0;
+                return `
+                  <div class="cert-topic-card avoid-break">
+                    <div class="cert-topic-head">
+                      <div class="cert-topic-name">${escapeHtml(sanitizeScientificText(topic.name || 'General'))}</div>
+                      <div class="cert-topic-percent">${percent}%</div>
+                    </div>
+                    <div class="cert-topic-bar"><i style="width:${Math.max(0, Math.min(100, percent))}%"></i></div>
+                    <div class="cert-topic-meta">${correct} correct • ${wrong} wrong • ${unanswered} unanswered • ${total} total</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
 }
 
 function getResultInfoIconSvg(kind = 'file') {
@@ -7916,8 +7993,7 @@ function buildStudentResultSupplementHtml(quiz, submission) {
     total: (submission.allQuestions || []).length,
     wrong: submission.wrongCount || 0
   }];
-  if (!items.length) return '';
-  return `
+  const performanceHtml = items.length ? `
     <div class="cert-performance-section avoid-break">
       <div class="cert-section-ribbon cert-section-ribbon-secondary">PERFORMANCE SUMMARY</div>
       <div class="cert-performance-list ${items.length === 1 ? 'single' : ''}">
@@ -7933,7 +8009,9 @@ function buildStudentResultSupplementHtml(quiz, submission) {
         `).join('')}
       </div>
     </div>
-  `;
+  ` : '';
+  const topicBreakdownHtml = buildStudentTopicBreakdownHtml(quiz, submission);
+  return `${performanceHtml}${topicBreakdownHtml}`;
 }
 
 function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
@@ -8151,6 +8229,18 @@ function getCertificateResultCss() {
     .cert-performance-subject{font-size:18px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
     .cert-performance-score{font-size:18px;font-weight:900;color:#111827;margin-top:4px}
     .cert-performance-meta{font-size:13px;color:#1F2937;line-height:1.45;margin-top:4px}
+    .cert-topic-section{border:2px solid rgba(47,128,237,.34);border-radius:18px;background:#ffffff;padding:16px}
+    .cert-topic-groups{display:grid;gap:14px;margin-top:12px}
+    .cert-topic-group{border:2px solid rgba(47,128,237,.16);border-radius:16px;background:#F8FAFC;padding:14px}
+    .cert-topic-group-title{font-size:17px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;color:#2F80ED}
+    .cert-topic-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
+    .cert-topic-card{border:1px solid rgba(47,128,237,.18);border-radius:14px;background:#ffffff;padding:12px}
+    .cert-topic-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+    .cert-topic-name{font-size:14px;font-weight:800;line-height:1.4;color:#111827}
+    .cert-topic-percent{font-size:14px;font-weight:900;color:#2F80ED;white-space:nowrap}
+    .cert-topic-bar{height:8px;border-radius:999px;background:#DBEAFE;overflow:hidden;margin-top:10px}
+    .cert-topic-bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#56CCF2 0%,#2F80ED 100%)}
+    .cert-topic-meta{font-size:12px;color:#475569;line-height:1.5;margin-top:10px}
     .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
     .rich-text-output > :first-child{margin-top:0}
     .rich-text-output > :last-child{margin-bottom:0}
@@ -10012,16 +10102,40 @@ function computeSubmissionTopicBreakdown(quiz, submission) {
     const subjectKey = normalizeSubjectName(subjectName);
     if (!grouped.has(subjectKey)) grouped.set(subjectKey, { subjectName, topics: new Map() });
     const subjectEntry = grouped.get(subjectKey);
-    if (!subjectEntry.topics.has(topicName)) subjectEntry.topics.set(topicName, { name: topicName, total: 0, passed: 0 });
+    if (!subjectEntry.topics.has(topicName)) subjectEntry.topics.set(topicName, {
+      name: topicName,
+      total: 0,
+      attempted: 0,
+      correct: 0,
+      wrong: 0,
+      unanswered: 0,
+      passed: 0,
+      percent: 0
+    });
     const topicEntry = subjectEntry.topics.get(topicName);
     topicEntry.total++;
     const chosen = (answers[index] || '').toString().toUpperCase();
     const expected = (question?.answer || '').toString().toUpperCase();
-    if (chosen && chosen === expected) topicEntry.passed++;
+    if (!chosen) {
+      topicEntry.unanswered++;
+      return;
+    }
+    topicEntry.attempted++;
+    if (chosen === expected) {
+      topicEntry.correct++;
+      topicEntry.passed++;
+    } else {
+      topicEntry.wrong++;
+    }
   });
   return Array.from(grouped.values()).map((subjectEntry) => ({
     subjectName: subjectEntry.subjectName,
-    topics: Array.from(subjectEntry.topics.values()).sort((left, right) => left.name.localeCompare(right.name))
+    topics: Array.from(subjectEntry.topics.values())
+      .map((topic) => ({
+        ...topic,
+        percent: topic.total ? Math.round((topic.correct / topic.total) * 100) : 0
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name))
   }));
 }
 
