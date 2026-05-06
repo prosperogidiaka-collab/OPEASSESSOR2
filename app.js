@@ -6179,8 +6179,8 @@ function downloadPdfFromHtmlClientFallback(html, filename, successMessage = 'PDF
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'fixed',
-    left: '-9999px',
+    position: 'absolute',
+    left: '-99999px',
     top: '0',
     width: `${sourceContentWidthPx}px`,
     background: '#ffffff',
@@ -6223,8 +6223,8 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'fixed',
-    left: '-9999px',
+    position: 'absolute',
+    left: '-99999px',
     top: '0',
     width: `${contentWidthMm}mm`,
     minWidth: `${contentWidthMm}mm`,
@@ -6240,36 +6240,44 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
   }
   return Promise.resolve()
     .then(async () => {
-      await waitForNextPaint();
-      await waitForNextPaint();
-      if (document.fonts && document.fonts.ready) await document.fonts.ready;
-      await waitForImages(source);
-      return html2pdf().set({
-        margin: [marginsMm.top, marginsMm.left, marginsMm.bottom, marginsMm.right],
-        filename,
-        image: { type: 'jpeg', quality: 1 },
-        html2canvas: {
-          scale,
-          useCORS: true,
-          allowTaint: false,
-          backgroundColor: '#ffffff',
-          logging: false,
-          windowWidth: Math.max(Math.ceil(source.scrollWidth), 1200),
-          windowHeight: Math.max(Math.ceil(source.scrollHeight), 1200),
-          scrollX: 0,
-          scrollY: 0
-        },
-        jsPDF: {
-          unit: 'mm',
-          format: 'a4',
-          orientation: 'portrait',
-          compress: true
-        },
-        pagebreak: {
-          mode: ['css', 'legacy'],
-          avoid
-        }
-      }).from(source).save();
+      const sandboxState = await preparePdfExportSandbox({
+        sourceNode: source,
+        widthCss: `${contentWidthMm}mm`,
+        paddingCss: '0',
+        renderDelayMs: Number(exportOptions.renderDelayMs) || 300
+      });
+      const exportWidth = Math.max(Math.ceil(sandboxState.exportRoot.scrollWidth), 1200);
+      const exportHeight = Math.max(Math.ceil(sandboxState.exportRoot.scrollHeight), 1200);
+      try {
+        return await html2pdf().set({
+          margin: [marginsMm.top, marginsMm.left, marginsMm.bottom, marginsMm.right],
+          filename,
+          image: { type: 'jpeg', quality: 1 },
+          html2canvas: {
+            scale,
+            useCORS: true,
+            allowTaint: false,
+            backgroundColor: '#ffffff',
+            logging: false,
+            windowWidth: exportWidth,
+            windowHeight: exportHeight,
+            scrollX: 0,
+            scrollY: 0
+          },
+          jsPDF: {
+            unit: 'mm',
+            format: 'a4',
+            orientation: 'portrait',
+            compress: true
+          },
+          pagebreak: {
+            mode: ['css', 'legacy'],
+            avoid
+          }
+        }).from(sandboxState.exportRoot).save();
+      } finally {
+        sandboxState.cleanup();
+      }
     })
     .then(() => {
       if (source && source.parentNode) source.remove();
@@ -6311,117 +6319,22 @@ async function renderElementToCanvas({
   if (!source) throw new Error(`Export source not found: ${sourceSelector}`);
   if (typeof html2canvas === 'undefined') throw new Error('html2canvas is not loaded.');
   const exportSourceWidth = Math.max(320, Math.round(Number(sourceWidthPx) || 794));
-
-  let tempRoot = null;
-  let styleTag = null;
+  let sandboxState = null;
   try {
-    tempRoot = document.createElement('div');
-    tempRoot.className = 'pdf-export-root';
-    Object.assign(tempRoot.style, {
-      position: 'fixed',
-      left: '-9999px',
-      top: '0',
-      width: `${exportSourceWidth}px`,
-      minWidth: `${exportSourceWidth}px`,
-      maxWidth: `${exportSourceWidth}px`,
-      margin: '0',
-      padding: `${paddingPx}px`,
-      boxSizing: 'border-box',
-      background: '#ffffff',
-      overflow: 'visible'
+    sandboxState = await preparePdfExportSandbox({
+      sourceNode: source,
+      widthCss: `${exportSourceWidth}px`,
+      paddingCss: `${paddingPx}px`,
+      title
     });
 
-    const clone = source.cloneNode(true);
-    tempRoot.appendChild(clone);
-    document.body.appendChild(tempRoot);
-
-    styleTag = document.createElement('style');
-    styleTag.setAttribute('data-pdf-export-style', 'true');
-    styleTag.textContent = `
-      .pdf-export-root,
-      .pdf-export-root * {
-        box-sizing: border-box !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        transform: none !important;
-        filter: none !important;
-        clip: auto !important;
-        clip-path: none !important;
-        animation: none !important;
-        transition: none !important;
-        text-shadow: none !important;
-      }
-      .pdf-export-root {
-        position: fixed !important;
-        left: -9999px !important;
-        top: 0 !important;
-        width: ${exportSourceWidth}px !important;
-        min-width: ${exportSourceWidth}px !important;
-        max-width: ${exportSourceWidth}px !important;
-        margin: 0 !important;
-        padding: ${paddingPx}px !important;
-        background: #ffffff !important;
-        overflow: visible !important;
-      }
-      .pdf-export-root .no-print,
-      .pdf-export-root [data-no-print="true"] { display: none !important; }
-      .pdf-export-root .print-container,
-      .pdf-export-root .sticky,
-      .pdf-export-root .fixed,
-      .pdf-export-root [style*="position: fixed"],
-      .pdf-export-root [style*="position:sticky"] { position: static !important; }
-      .pdf-export-root [class*="container"],
-      .pdf-export-root [class*="wrapper"],
-      .pdf-export-root [class*="layout"],
-      .pdf-export-root [class*="content"] { max-width: 100% !important; }
-      .pdf-export-root img,
-      .pdf-export-root svg,
-      .pdf-export-root canvas { max-width: 100% !important; height: auto !important; }
-      .pdf-export-root table { width: 100% !important; table-layout: fixed !important; }
-      .pdf-export-root td,
-      .pdf-export-root th { word-wrap: break-word !important; overflow-wrap: break-word !important; }
-      .pdf-export-root input,
-      .pdf-export-root textarea,
-      .pdf-export-root select,
-      .pdf-export-root button { max-width: 100% !important; }
-      .pdf-export-root .pdf-stack-on-export,
-      .pdf-export-root .hero,
-      .pdf-export-root .student-layout,
-      .pdf-export-root .two-col-export-safe,
-      .pdf-export-root .student-shell { display: block !important; }
-      .pdf-export-root .pdf-stack-on-export > *,
-      .pdf-export-root .hero > *,
-      .pdf-export-root .student-layout > *,
-      .pdf-export-root .two-col-export-safe > *,
-      .pdf-export-root .student-shell > * { width: 100% !important; max-width: 100% !important; display: block !important; }
-      .pdf-export-root .page-break-before { break-before: page; page-break-before: always; }
-      .pdf-export-root .page-break-after { break-after: page; page-break-after: always; }
-      .pdf-export-root .avoid-break { break-inside: avoid; page-break-inside: avoid; }
-    `;
-    document.head.appendChild(styleTag);
-
-    sanitizeExportClone(clone);
-    copyFormValues(source, clone);
-    await waitForNextPaint();
-    await waitForNextPaint();
-    await waitForNextPaint();
-    if (document.fonts && document.fonts.ready) await document.fonts.ready;
-    await waitForImages(tempRoot);
-
-    if (title) {
-      const titleNode = document.createElement('div');
-      titleNode.textContent = title;
-      Object.assign(titleNode.style, { fontSize: '20px', fontWeight: '700', marginBottom: '16px', color: '#111827' });
-      tempRoot.insertBefore(titleNode, tempRoot.firstChild);
-    }
-
-    const exportWidth = Math.ceil(tempRoot.scrollWidth);
-    const exportHeight = Math.ceil(tempRoot.scrollHeight);
+    const exportWidth = Math.ceil(sandboxState.exportRoot.scrollWidth);
+    const exportHeight = Math.ceil(sandboxState.exportRoot.scrollHeight);
     if (debug) {
       console.log('Export root width:', exportWidth);
       console.log('Export root height:', exportHeight);
     }
-    const canvas = await html2canvas(tempRoot, {
+    const canvas = await html2canvas(sandboxState.exportRoot, {
       scale: Math.max(1, Number(scale) || 2),
       useCORS: true,
       allowTaint: false,
@@ -6434,15 +6347,10 @@ async function renderElementToCanvas({
       scrollX: 0,
       scrollY: 0
     });
-
-    if (styleTag && styleTag.parentNode) styleTag.remove();
-    if (tempRoot && tempRoot.parentNode) tempRoot.remove();
+    sandboxState.cleanup();
     return canvas;
   } catch (error) {
-    if (tempRoot && tempRoot.parentNode) tempRoot.parentNode.removeChild(tempRoot);
-    if (styleTag && styleTag.parentNode) styleTag.remove();
-    const exportStyle = document.querySelector('[data-pdf-export-style="true"]');
-    if (exportStyle) exportStyle.remove();
+    if (sandboxState) sandboxState.cleanup();
     throw error;
   }
 }
@@ -6504,13 +6412,29 @@ async function exportElementToPDF({
 function sanitizeExportClone(root) {
   const all = [root, ...root.querySelectorAll('*')];
   all.forEach((el) => {
-    el.classList.remove('print-container', 'sticky', 'fixed', 'hidden', 'collapse', 'collapsed');
+    el.classList.remove(
+      'print-container',
+      'sticky',
+      'fixed',
+      'hidden',
+      'collapse',
+      'collapsed',
+      'is-hidden',
+      'is-collapsed',
+      'animate-in',
+      'animate-out',
+      'animated'
+    );
     const style = el.style;
     if (!style) return;
+    if (style.display === 'none') style.display = 'block';
     if (style.position === 'fixed' || style.position === 'sticky') style.position = 'static';
     if (style.overflow === 'hidden') style.overflow = 'visible';
+    if (style.contentVisibility) style.contentVisibility = 'visible';
+    if (style.contain) style.contain = 'none';
     if (style.transform) style.transform = 'none';
     if (style.clipPath) style.clipPath = 'none';
+    if (style.clip) style.clip = 'auto';
     if (style.filter) style.filter = 'none';
     if (style.maxHeight === '0px' || style.height === '0px') {
       style.maxHeight = '';
@@ -6580,8 +6504,8 @@ async function printHtmlAsSinglePage(html, options = {}) {
   source.id = sourceId;
   source.innerHTML = html;
   Object.assign(source.style, {
-    position: 'fixed',
-    left: '-9999px',
+    position: 'absolute',
+    left: '-99999px',
     top: '0',
     width: '794px',
     background: '#ffffff',
@@ -10372,6 +10296,242 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
       negativePenalty
     };
   });
+}
+
+function buildPdfExportSandboxCss(widthCss = '210mm', paddingCss = '24px') {
+  return `
+    .pdf-export-sandbox {
+      position: absolute !important;
+      left: -99999px !important;
+      top: 0 !important;
+      width: ${widthCss} !important;
+      min-width: ${widthCss} !important;
+      max-width: ${widthCss} !important;
+      overflow: visible !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      pointer-events: none !important;
+      z-index: -1 !important;
+    }
+    .pdf-export-root,
+    .pdf-export-root * {
+      box-sizing: border-box !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      animation: none !important;
+      transition: none !important;
+      text-shadow: none !important;
+      content-visibility: visible !important;
+    }
+    .pdf-export-root {
+      position: static !important;
+      display: block !important;
+      width: ${widthCss} !important;
+      min-width: ${widthCss} !important;
+      max-width: ${widthCss} !important;
+      min-height: auto !important;
+      margin: 0 !important;
+      padding: ${paddingCss} !important;
+      overflow: visible !important;
+      transform: none !important;
+      filter: none !important;
+      clip: auto !important;
+      clip-path: none !important;
+      contain: none !important;
+      background: #ffffff !important;
+      box-shadow: none !important;
+      isolation: auto !important;
+    }
+    .pdf-export-root .no-print,
+    .pdf-export-root [data-no-print="true"] {
+      display: none !important;
+    }
+    .pdf-export-root [hidden],
+    .pdf-export-root .hidden,
+    .pdf-export-root .collapse,
+    .pdf-export-root .collapsed,
+    .pdf-export-root .is-hidden,
+    .pdf-export-root .is-collapsed {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      max-height: none !important;
+      height: auto !important;
+    }
+    .pdf-export-root .print-container,
+    .pdf-export-root .sticky,
+    .pdf-export-root .fixed,
+    .pdf-export-root [style*="position: fixed"],
+    .pdf-export-root [style*="position:fixed"],
+    .pdf-export-root [style*="position: sticky"],
+    .pdf-export-root [style*="position:sticky"] {
+      position: static !important;
+      top: auto !important;
+      right: auto !important;
+      bottom: auto !important;
+      left: auto !important;
+    }
+    .pdf-export-root [style*="display:none"],
+    .pdf-export-root [style*="visibility:hidden"],
+    .pdf-export-root [style*="opacity:0"],
+    .pdf-export-root [style*="overflow:hidden"],
+    .pdf-export-root [style*="max-height:0"],
+    .pdf-export-root [style*="height:0"],
+    .pdf-export-root [style*="content-visibility"],
+    .pdf-export-root [style*="clip-path"],
+    .pdf-export-root [style*="filter:"],
+    .pdf-export-root [style*="transform:"] {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      overflow: visible !important;
+      max-height: none !important;
+      height: auto !important;
+      content-visibility: visible !important;
+      transform: none !important;
+      filter: none !important;
+      clip: auto !important;
+      clip-path: none !important;
+    }
+    .pdf-export-root [class*="container"],
+    .pdf-export-root [class*="wrapper"],
+    .pdf-export-root [class*="layout"],
+    .pdf-export-root [class*="content"] {
+      max-width: 100% !important;
+    }
+    .pdf-export-root img,
+    .pdf-export-root svg,
+    .pdf-export-root canvas {
+      max-width: 100% !important;
+      height: auto !important;
+    }
+    .pdf-export-root table {
+      width: 100% !important;
+      table-layout: fixed !important;
+    }
+    .pdf-export-root td,
+    .pdf-export-root th {
+      word-wrap: break-word !important;
+      overflow-wrap: break-word !important;
+    }
+    .pdf-export-root input,
+    .pdf-export-root textarea,
+    .pdf-export-root select,
+    .pdf-export-root button {
+      max-width: 100% !important;
+    }
+    .pdf-export-root .pdf-stack-on-export,
+    .pdf-export-root .hero,
+    .pdf-export-root .student-layout,
+    .pdf-export-root .two-col-export-safe,
+    .pdf-export-root .student-shell {
+      display: block !important;
+    }
+    .pdf-export-root .pdf-stack-on-export > *,
+    .pdf-export-root .hero > *,
+    .pdf-export-root .student-layout > *,
+    .pdf-export-root .two-col-export-safe > *,
+    .pdf-export-root .student-shell > * {
+      width: 100% !important;
+      max-width: 100% !important;
+      display: block !important;
+    }
+    .pdf-export-root .page-break-before { break-before: page; page-break-before: always; }
+    .pdf-export-root .page-break-after { break-after: page; page-break-after: always; }
+    .pdf-export-root .avoid-break { break-inside: avoid; page-break-inside: avoid; }
+  `;
+}
+
+function createPdfExportSandbox({
+  sourceNode = null,
+  html = '',
+  widthCss = '210mm',
+  paddingCss = '24px',
+  title = ''
+} = {}) {
+  const sandbox = document.createElement('div');
+  sandbox.className = 'pdf-export-sandbox';
+  Object.assign(sandbox.style, {
+    position: 'absolute',
+    left: '-99999px',
+    top: '0',
+    width: widthCss,
+    minWidth: widthCss,
+    maxWidth: widthCss,
+    overflow: 'visible',
+    visibility: 'visible',
+    opacity: '1',
+    pointerEvents: 'none',
+    zIndex: '-1'
+  });
+
+  const exportRoot = document.createElement('div');
+  exportRoot.className = 'pdf-export-root';
+  sandbox.appendChild(exportRoot);
+
+  if (title) {
+    const titleNode = document.createElement('div');
+    titleNode.className = 'pdf-export-title';
+    titleNode.textContent = title;
+    Object.assign(titleNode.style, {
+      fontSize: '20px',
+      fontWeight: '700',
+      marginBottom: '16px',
+      color: '#111827'
+    });
+    exportRoot.appendChild(titleNode);
+  }
+
+  let clonedContent = null;
+  if (sourceNode) {
+    clonedContent = sourceNode.cloneNode(true);
+    exportRoot.appendChild(clonedContent);
+    sanitizeExportClone(clonedContent);
+    copyFormValues(sourceNode, clonedContent);
+  } else {
+    const content = document.createElement('div');
+    content.className = 'pdf-export-content';
+    content.innerHTML = html;
+    sanitizeExportClone(content);
+    exportRoot.appendChild(content);
+    clonedContent = content;
+  }
+
+  const styleTag = document.createElement('style');
+  styleTag.setAttribute('data-pdf-export-style', 'true');
+  styleTag.textContent = buildPdfExportSandboxCss(widthCss, paddingCss);
+
+  document.head.appendChild(styleTag);
+  document.body.appendChild(sandbox);
+
+  return {
+    sandbox,
+    exportRoot,
+    clonedContent,
+    cleanup() {
+      if (sandbox.parentNode) sandbox.parentNode.removeChild(sandbox);
+      if (styleTag.parentNode) styleTag.parentNode.removeChild(styleTag);
+    }
+  };
+}
+
+async function preparePdfExportSandbox(options = {}) {
+  const sandboxState = createPdfExportSandbox(options);
+  try {
+    await waitForNextPaint();
+    await waitForNextPaint();
+    await waitForNextPaint();
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await waitForImages(sandboxState.sandbox);
+    const renderDelayMs = Math.max(0, Number(options.renderDelayMs) || 300);
+    if (renderDelayMs) {
+      await new Promise((resolve) => setTimeout(resolve, renderDelayMs));
+    }
+    return sandboxState;
+  } catch (error) {
+    sandboxState.cleanup();
+    throw error;
+  }
 }
 
 function computeSubmissionTopicBreakdown(quiz, submission) {
