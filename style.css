@@ -175,7 +175,13 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 .result-link-card{width:min(640px,100%);text-align:center;padding:36px 30px!important;border-radius:24px!important;box-shadow:0 20px 44px rgba(47,128,237,.12)!important}
 .result-link-badge{display:inline-flex;align-items:center;justify-content:center;padding:8px 16px;border-radius:999px;background:#E0F2FE;color:#0369A1;font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;margin-bottom:18px}
 .result-link-spinner{width:66px;height:66px;border-radius:999px;border:5px solid rgba(47,128,237,.16);border-top-color:#2F80ED;margin:0 auto 18px;animation:resultLinkSpin .9s linear infinite}
+.result-link-status-icon{width:66px;height:66px;border-radius:999px;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:28px;font-weight:900}
+.result-link-status-success{background:#ECFDF5;color:#15803D}
+.result-link-status-error{background:#FEF2F2;color:#DC2626}
+.result-link-status-info{background:#EFF6FF;color:#1D4ED8}
+.result-link-title{margin-bottom:10px}
 .result-link-copy{max-width:520px;margin:0 auto;line-height:1.8}
+.result-link-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:18px}
 .quiz-editor-readonly .rich-editor-shell{opacity:.92}
 
 @keyframes resultLinkSpin{
@@ -242,6 +248,7 @@ textarea.input-beautiful{min-height:120px;resize:vertical}
 	.guide-layout{grid-template-columns:1fr!important}
 	.quiz-editor-options-grid{grid-template-columns:1fr}
 	.result-link-card{padding:28px 18px!important}
+	.result-link-actions{display:grid;grid-template-columns:1fr;gap:8px}
 }
 
 .home-page{display:flex;flex-direction:column;gap:24px;width:100%}

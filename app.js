@@ -161,6 +161,7 @@ const state = {
   teacherId: getTeacherId(),
   prefillQuizCode: '',
   pendingResultLookup: null,
+  resultLinkUi: null,
   teacherGuideTopic: '',
   classFilters: {},
   pdfBootstrap: null
@@ -357,6 +358,11 @@ function applyPersistedAppUiState() {
   if (state.view === 'student' && !hasStudentDeepLinkParams() && !state.currentQuiz) {
     state.view = 'home';
   }
+  if (state.view === 'student.result' && !hasStudentDeepLinkParams()) {
+    state.view = 'home';
+    state.pendingResultLookup = null;
+    state.resultLinkUi = null;
+  }
   if ((state.view || '').startsWith('teacher') && !isTeacherLoggedIn()) {
     state.currentQuiz = null;
     state.view = 'teacher.login';
@@ -457,6 +463,122 @@ function buildHistoryUrlForState() {
 function clearStudentEntryContext() {
   state.currentQuiz = null;
   state.prefillQuizCode = '';
+  state.pendingResultLookup = null;
+  state.resultLinkUi = null;
+}
+
+function normalizeResultLinkRequest(request = {}) {
+  if (!request || typeof request !== 'object') return null;
+  return {
+    shareKey: (request.shareKey || '').toString().trim(),
+    quizId: (request.quizId || '').toString().trim(),
+    submissionId: (request.submissionId || '').toString().trim(),
+    downloadCorrection: !!request.downloadCorrection,
+    correctionSubject: (request.correctionSubject || '').toString().trim()
+  };
+}
+
+function buildResultLinkUiState(request = {}, overrides = {}) {
+  const normalizedRequest = normalizeResultLinkRequest(request) || {
+    shareKey: '',
+    quizId: '',
+    submissionId: '',
+    downloadCorrection: false,
+    correctionSubject: ''
+  };
+  const preparingCorrection = !!normalizedRequest.downloadCorrection;
+  return {
+    request: normalizedRequest,
+    phase: 'loading',
+    showSpinner: true,
+    badge: preparingCorrection ? 'Preparing Correction PDF' : 'Opening Verified Result',
+    title: preparingCorrection ? 'Your correction PDF is being prepared.' : 'Your verified result is loading.',
+    copy: preparingCorrection
+      ? 'Please wait. OPE Assessor is locating your submission and will start the correction PDF download automatically.'
+      : 'Please wait. OPE Assessor is locating your verified result summary now.',
+    subjectName: normalizedRequest.correctionSubject || '',
+    ...overrides
+  };
+}
+
+function setResultLinkUiState(request = {}, overrides = {}) {
+  state.resultLinkUi = buildResultLinkUiState(request, overrides);
+  return state.resultLinkUi;
+}
+
+function getActiveResultLinkRequest() {
+  return normalizeResultLinkRequest(
+    (state.resultLinkUi && state.resultLinkUi.request)
+      || state.pendingResultLookup
+      || null
+  );
+}
+
+function closeStudentResultLanding(targetView = 'home') {
+  clearStudentEntryContext();
+  state.view = targetView;
+  render();
+}
+
+function dismissStudentResultLanding() {
+  try { window.close(); } catch (error) {}
+  setTimeout(() => {
+    if (state.view === 'student.result') closeStudentResultLanding('home');
+  }, 160);
+}
+
+async function processPendingResultLinkRequest(request = {}) {
+  const activeRequest = normalizeResultLinkRequest(request);
+  if (!activeRequest) return null;
+  setResultLinkUiState(activeRequest);
+  if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+  const openOptions = {
+    autoDownloadCorrection: activeRequest.downloadCorrection,
+    correctionSubject: activeRequest.correctionSubject || ''
+  };
+  if (activeRequest.downloadCorrection) {
+    const submission = activeRequest.shareKey
+      ? await openStudentCorrectionByShareKey(activeRequest.shareKey, openOptions)
+      : await openStudentCorrectionBySubmissionKey(activeRequest.quizId, activeRequest.submissionId, openOptions);
+    setResultLinkUiState(activeRequest, submission ? {
+      phase: 'success',
+      showSpinner: false,
+      badge: 'Correction PDF Ready',
+      title: 'Your correction PDF is ready.',
+      copy: 'The correction PDF has been opened or downloaded. You can close this page now or open the verified result summary below.'
+    } : {
+      phase: 'error',
+      showSpinner: false,
+      badge: 'Correction Link Issue',
+      title: 'We could not open this correction PDF yet.',
+      copy: 'Please retry in a moment or close this page.'
+    });
+    if (state.view === 'student.result') render();
+    return submission;
+  }
+  const submission = activeRequest.shareKey
+    ? await showStudentResultModalByShareKey(activeRequest.shareKey, true, openOptions)
+    : await showStudentResultModalBySubmissionKey(activeRequest.quizId, activeRequest.submissionId, true, openOptions);
+  if (submission) {
+    setResultLinkUiState(activeRequest, {
+      phase: 'success',
+      showSpinner: false,
+      badge: 'Verified Result Ready',
+      title: 'Your verified result is ready.',
+      copy: 'You can review the verified result summary on this page and return home when you are done.'
+    });
+    if (state.view === 'student.result') render();
+  } else {
+    setResultLinkUiState(activeRequest, {
+      phase: 'error',
+      showSpinner: false,
+      badge: 'Result Link Issue',
+      title: 'We could not open this verified result yet.',
+      copy: 'Please retry in a moment or close this page.'
+    });
+    if (state.view === 'student.result') render();
+  }
+  return submission;
 }
 
 async function runSharedSyncCycle(options = {}) {
@@ -3204,7 +3326,11 @@ function render() {
       await openTeacherWorkspace('teacher');
     };
     const topStudentBtn = document.getElementById('topStudent');
-    if (topStudentBtn) topStudentBtn.onclick = () => { state.view = 'student'; render(); };
+    if (topStudentBtn) topStudentBtn.onclick = () => {
+      if (state.view === 'student.result') clearStudentEntryContext();
+      state.view = 'student';
+      render();
+    };
     const openBtn = document.getElementById('openTeacherQuiz'); if (openBtn) openBtn.onclick = ()=> showTeacherAccessModal();
     const supportBtn = document.getElementById('topSupport'); if (supportBtn) supportBtn.onclick = () => openSupportChooser();
     const alertsBtn = document.getElementById('topAlerts'); if (alertsBtn) alertsBtn.onclick = () => showAlertsPanel();
@@ -3243,26 +3369,10 @@ function render() {
     enhancePasswordFields(app);
     if (state.pendingResultLookup && state.view !== 'take') {
       const pending = { ...state.pendingResultLookup };
+      setResultLinkUiState(pending);
       state.pendingResultLookup = null;
       setTimeout(async () => {
-        if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
-        const openOptions = {
-          autoDownloadCorrection: pending.downloadCorrection,
-          correctionSubject: pending.correctionSubject || ''
-        };
-        if (pending.downloadCorrection) {
-          if (pending.shareKey) {
-            await openStudentCorrectionByShareKey(pending.shareKey, openOptions);
-          } else {
-            await openStudentCorrectionBySubmissionKey(pending.quizId, pending.submissionId, openOptions);
-          }
-          return;
-        }
-        if (pending.shareKey) {
-          await showStudentResultModalByShareKey(pending.shareKey, true, openOptions);
-        } else {
-          await showStudentResultModalBySubmissionKey(pending.quizId, pending.submissionId, true, openOptions);
-        }
+        await processPendingResultLinkRequest(pending);
       }, 50);
     }
     const sameViewRerender = previousRenderedView && previousRenderedView === state.view;
@@ -10998,8 +11108,7 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   const closeModal = () => {
     modal.remove();
     if (state.view === 'student.result') {
-      state.view = 'home';
-      render();
+      closeStudentResultLanding('home');
     }
   };
   modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
@@ -11063,8 +11172,7 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   const closeModal = () => {
     modal.remove();
     if (state.view === 'student.result') {
-      state.view = 'home';
-      render();
+      closeStudentResultLanding('home');
     }
   };
   modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
@@ -11283,22 +11391,52 @@ function openStudentGuideModal() {
 
 function renderResultLinkLanding() {
   const wrapper = document.createElement('div');
-  const pending = state.pendingResultLookup || {};
-  const preparingCorrection = !!pending.downloadCorrection;
+  const ui = state.resultLinkUi || buildResultLinkUiState(getActiveResultLinkRequest() || {});
+  const request = ui.request || {};
+  const preparingCorrection = !!request.downloadCorrection;
   wrapper.className = 'result-link-landing';
   wrapper.innerHTML = `
     <div class="result-link-card card-beautiful">
-      <div class="result-link-badge">${preparingCorrection ? 'Preparing Correction PDF' : 'Opening Verified Result'}</div>
-      <div class="result-link-spinner" aria-hidden="true"></div>
-      <div class="h1" style="margin-bottom:10px">${preparingCorrection ? 'Your correction PDF is being prepared.' : 'Your verified result is loading.'}</div>
-      <div class="small result-link-copy">
-        ${preparingCorrection
-          ? 'Please wait. OPE Assessor is locating your submission and will start the correction PDF download automatically.'
-          : 'Please wait. OPE Assessor is locating your verified result summary now.'}
+      <div class="result-link-badge">${escapeHtml(ui.badge || (preparingCorrection ? 'Preparing Correction PDF' : 'Opening Verified Result'))}</div>
+      ${ui.showSpinner === false
+        ? `<div class="result-link-status-icon result-link-status-${escapeHtml(ui.phase || 'info')}" aria-hidden="true">${ui.phase === 'success' ? '&#10003;' : ui.phase === 'error' ? '!' : 'i'}</div>`
+        : '<div class="result-link-spinner" aria-hidden="true"></div>'}
+      <div class="h1 result-link-title">${escapeHtml(ui.title || (preparingCorrection ? 'Your correction PDF is being prepared.' : 'Your verified result is loading.'))}</div>
+      <div class="small result-link-copy">${escapeHtml(ui.copy || '')}</div>
+      ${ui.subjectName ? `<div class="small" style="margin-top:14px">Subject: <strong>${escapeHtml(ui.subjectName)}</strong></div>` : ''}
+      <div class="result-link-actions">
+        ${ui.phase === 'error' ? '<button id="retryResultLinkAction" class="btn btn-primary">Try Again</button>' : ''}
+        ${ui.phase === 'success' && preparingCorrection ? '<button id="openResultSummaryFromLanding" class="btn btn-secondary">View Result Summary</button>' : ''}
+        <button id="closeResultLinkLanding" class="btn btn-ghost">${ui.phase === 'loading' ? 'Close Page' : 'Return Home'}</button>
       </div>
-      ${pending.correctionSubject ? `<div class="small" style="margin-top:14px">Subject: <strong>${escapeHtml(pending.correctionSubject)}</strong></div>` : ''}
     </div>
   `;
+  setTimeout(() => {
+    const closeBtn = document.getElementById('closeResultLinkLanding');
+    if (closeBtn) closeBtn.onclick = () => {
+      if (ui.phase === 'loading') dismissStudentResultLanding();
+      else closeStudentResultLanding('home');
+    };
+    const retryBtn = document.getElementById('retryResultLinkAction');
+    if (retryBtn) retryBtn.onclick = () => {
+      const activeRequest = getActiveResultLinkRequest();
+      if (!activeRequest) return closeStudentResultLanding('home');
+      setResultLinkUiState(activeRequest);
+      render();
+      setTimeout(() => { processPendingResultLinkRequest(activeRequest); }, 40);
+    };
+    const openResultBtn = document.getElementById('openResultSummaryFromLanding');
+    if (openResultBtn) openResultBtn.onclick = async () => {
+      const activeRequest = getActiveResultLinkRequest();
+      if (!activeRequest) return closeStudentResultLanding('home');
+      const openOptions = { correctionSubject: activeRequest.correctionSubject || '' };
+      if (activeRequest.shareKey) {
+        await showStudentResultModalByShareKey(activeRequest.shareKey, true, openOptions);
+      } else {
+        await showStudentResultModalBySubmissionKey(activeRequest.quizId, activeRequest.submissionId, true, openOptions);
+      }
+    };
+  }, 0);
   return wrapper;
 }
 
