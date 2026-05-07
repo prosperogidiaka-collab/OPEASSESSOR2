@@ -177,6 +177,7 @@ const dirtyNetworkKeys = new Set();
 let networkSyncRetryTimer = null;
 let networkSyncEventsBound = false;
 let lastNetworkPullAt = 0;
+let serverPdfExportUnavailable = false;
 let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
@@ -520,6 +521,9 @@ async function checkNetworkSyncHealth(options = {}) {
     if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Shared sync server is unavailable'));
     const payload = await response.json();
     if (!payload || payload.ok !== true) throw new Error('Shared sync server returned an invalid health response');
+    if (Object.prototype.hasOwnProperty.call(payload, 'pdfExportSupported')) {
+      markServerPdfExportAvailability(payload.pdfExportSupported !== false);
+    }
     if (options.captureFailure !== false) {
       networkSyncFailed = false;
       networkSyncFailureMessage = '';
@@ -2313,7 +2317,39 @@ function normalizeRichText(value) {
 }
 
 function hasRichTextMarkup(value = '') {
-  return /<(\/?)(b|strong|i|em|u|sub|sup|ul|ol|li|p|div|span|br)\b/i.test((value || '').toString());
+  return /<(\/?)(b|strong|i|em|u|sub|sup|ul|ol|li|p|div|span|font|br)\b/i.test((value || '').toString());
+}
+
+function getRichTextStyleFlags(node) {
+  const tagName = (node && node.tagName ? node.tagName : '').toUpperCase();
+  const styleText = (node && typeof node.getAttribute === 'function' ? (node.getAttribute('style') || '') : '').toString().toLowerCase();
+  const textDecoration = (styleText.match(/text-decoration(?:-line)?\s*:\s*([^;]+)/i) || [])[1] || '';
+  const fontWeight = (styleText.match(/font-weight\s*:\s*([^;]+)/i) || [])[1] || '';
+  const fontStyle = (styleText.match(/font-style\s*:\s*([^;]+)/i) || [])[1] || '';
+  const verticalAlign = (styleText.match(/vertical-align\s*:\s*([^;]+)/i) || [])[1] || '';
+  return {
+    bold: tagName === 'B' || tagName === 'STRONG' || /bold|bolder/.test(fontWeight) || /^[5-9]00$/.test(fontWeight.trim()),
+    italic: tagName === 'I' || tagName === 'EM' || /italic|oblique/.test(fontStyle),
+    underline: tagName === 'U' || /underline/.test(textDecoration),
+    superscript: tagName === 'SUP' || /\bsuper\b/.test(verticalAlign),
+    subscript: tagName === 'SUB' || /\bsub\b/.test(verticalAlign)
+  };
+}
+
+function wrapRichTextNodeWithTag(node, tagName, doc) {
+  const wrapper = doc.createElement(tagName);
+  wrapper.appendChild(node);
+  return wrapper;
+}
+
+function applyRichTextFormatting(node, flags, doc) {
+  let formattedNode = node;
+  if (flags.superscript && !flags.subscript) formattedNode = wrapRichTextNodeWithTag(formattedNode, 'sup', doc);
+  if (flags.subscript && !flags.superscript) formattedNode = wrapRichTextNodeWithTag(formattedNode, 'sub', doc);
+  if (flags.underline) formattedNode = wrapRichTextNodeWithTag(formattedNode, 'u', doc);
+  if (flags.italic) formattedNode = wrapRichTextNodeWithTag(formattedNode, 'em', doc);
+  if (flags.bold) formattedNode = wrapRichTextNodeWithTag(formattedNode, 'strong', doc);
+  return formattedNode;
 }
 
 function cloneSafeRichTextNode(node, doc) {
@@ -2325,17 +2361,20 @@ function cloneSafeRichTextNode(node, doc) {
     return doc.createTextNode('');
   }
   const tagName = (node.tagName || '').toUpperCase();
-  const allowedTags = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'SUB', 'SUP', 'UL', 'OL', 'LI', 'P', 'DIV', 'SPAN', 'BR']);
-  if (!allowedTags.has(tagName)) {
-    return doc.createTextNode(sanitizeScientificText(node.textContent || ''));
-  }
+  const blockTags = new Set(['UL', 'OL', 'LI', 'P', 'DIV']);
   if (tagName === 'BR') return doc.createElement('br');
-  const safe = doc.createElement(tagName.toLowerCase());
+  const safeChildren = doc.createDocumentFragment();
   Array.from(node.childNodes || []).forEach((child) => {
     const safeChild = cloneSafeRichTextNode(child, doc);
-    if (safeChild) safe.appendChild(safeChild);
+    if (safeChild) safeChildren.appendChild(safeChild);
   });
-  return safe;
+  const formattedChildren = applyRichTextFormatting(safeChildren, getRichTextStyleFlags(node), doc);
+  if (blockTags.has(tagName)) {
+    const safeBlock = doc.createElement(tagName.toLowerCase());
+    safeBlock.appendChild(formattedChildren);
+    return safeBlock;
+  }
+  return formattedChildren;
 }
 
 function renderRichTextHtml(value = '') {
@@ -5700,12 +5739,14 @@ function renderQuizTake() {
           document.querySelectorAll(`input[name="opt-${globalIndex}"]`).forEach((input) => {
             input.onclick = (event) => {
               if (sub.answers[globalIndex] === input.value) {
+                event.preventDefault();
+                event.stopPropagation();
                 input.checked = false;
                 delete sub.answers[globalIndex];
                 saveExamDraft(sub);
                 renderQuestionPalette();
                 updateExamChrome();
-                event.preventDefault();
+                renderVerticalSubjectView();
               }
             };
             input.onchange = (event) => {
@@ -5773,12 +5814,14 @@ function renderQuizTake() {
           document.querySelectorAll(`#optionsList-${idx} input[type=\"radio\"]`).forEach(i => {
             i.onclick = (event) => {
               if (sub.answers[idx] === i.value) {
+                event.preventDefault();
+                event.stopPropagation();
                 i.checked = false;
                 delete sub.answers[idx];
                 saveExamDraft(sub);
                 renderQuestionPalette();
                 updateExamChrome();
-                event.preventDefault();
+                renderQuestion(idx);
               }
             };
             i.onchange = (e) => { sub.answers[idx] = e.target.value; saveExamDraft(sub); renderQuestionPalette(); updateExamChrome(); };
@@ -5871,8 +5914,23 @@ function createPdfDocument(title, bodyHtml) {
 
 const DEFAULT_SERVER_HTML_PDF_TIMEOUT_MS = 8000;
 
+function isServerPdfExportDisabledError(statusCode, message = '') {
+  const status = Number(statusCode) || 0;
+  const text = (message || '').toString().trim().toLowerCase();
+  return status === 404 || status === 405 || status === 501 || /not[_\s-]?found|server pdf export is not available/.test(text);
+}
+
+function markServerPdfExportAvailability(isAvailable) {
+  serverPdfExportUnavailable = isAvailable === false;
+}
+
+function canUseServerRoutePdfExport() {
+  if (serverPdfExportUnavailable) return false;
+  return canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+}
+
 function canUseServerHtmlPdfExport(exportOptions = {}) {
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  const serverReady = canUseServerRoutePdfExport();
   return serverReady && exportOptions && exportOptions.disableServerHtmlExport !== true;
 }
 
@@ -5951,8 +6009,12 @@ async function requestServerPdfExport(html, filename, exportOptions = {}, reques
       const payload = await response.json();
       if (payload && payload.error) message = payload.error;
     } catch (error) {}
+    if (isServerPdfExportDisabledError(response.status, message)) {
+      markServerPdfExportAvailability(false);
+    }
     throw new Error(message);
   }
+  markServerPdfExportAvailability(true);
   return response.blob();
 }
 
@@ -6149,8 +6211,12 @@ async function requestServerPdfRouteExport(routePath, filename, exportOptions = 
       const payload = await response.json();
       if (payload && payload.error) message = payload.error;
     } catch (error) {}
+    if (isServerPdfExportDisabledError(response.status, message)) {
+      markServerPdfExportAvailability(false);
+    }
     throw new Error(message);
   }
+  markServerPdfExportAvailability(true);
   return response.blob();
 }
 
@@ -6277,8 +6343,9 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
         paddingCss: '0',
         renderDelayMs: Number(exportOptions.renderDelayMs) || 300
       });
-      const exportWidth = Math.max(Math.ceil(sandboxState.exportRoot.scrollWidth), 1200);
-      const exportHeight = Math.max(Math.ceil(sandboxState.exportRoot.scrollHeight), 1200);
+      const exportSize = measurePdfExportSize(sandboxState.exportRoot, sandboxState.clonedContent, sandboxState.clonedContent?.firstElementChild || null);
+      const exportWidth = Math.max(exportSize.width, 1200);
+      const exportHeight = Math.max(exportSize.height, 1200);
       try {
         return await html2pdf().set({
           margin: [marginsMm.top, marginsMm.left, marginsMm.bottom, marginsMm.right],
@@ -6338,6 +6405,28 @@ function getStudentResultPdfFilename(submission, quizId, prefix = '') {
   return `${safePrefix}${studentName}-result-${safeQuizId}.pdf`;
 }
 
+function measurePdfExportSize(...nodes) {
+  return (nodes || []).filter(Boolean).reduce((largest, node) => {
+    const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : { width: 0, height: 0 };
+    const nextWidth = Math.max(
+      Math.ceil(node.scrollWidth || 0),
+      Math.ceil(node.offsetWidth || 0),
+      Math.ceil(node.clientWidth || 0),
+      Math.ceil(rect.width || 0)
+    );
+    const nextHeight = Math.max(
+      Math.ceil(node.scrollHeight || 0),
+      Math.ceil(node.offsetHeight || 0),
+      Math.ceil(node.clientHeight || 0),
+      Math.ceil(rect.height || 0)
+    );
+    return {
+      width: Math.max(largest.width, nextWidth),
+      height: Math.max(largest.height, nextHeight)
+    };
+  }, { width: 0, height: 0 });
+}
+
 async function renderElementToCanvas({
   sourceSelector,
   title = '',
@@ -6359,8 +6448,9 @@ async function renderElementToCanvas({
       title
     });
 
-    const exportWidth = Math.ceil(sandboxState.exportRoot.scrollWidth);
-    const exportHeight = Math.ceil(sandboxState.exportRoot.scrollHeight);
+    const exportSize = measurePdfExportSize(sandboxState.exportRoot, sandboxState.clonedContent, sandboxState.clonedContent?.firstElementChild || null);
+    const exportWidth = exportSize.width;
+    const exportHeight = exportSize.height;
     if (debug) {
       console.log('Export root width:', exportWidth);
       console.log('Export root height:', exportHeight);
@@ -6401,7 +6491,14 @@ async function exportElementToPDF({
   if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF is not loaded.');
   try {
     const canvas = await renderElementToCanvas({ sourceSelector, title, paddingPx, debug, sourceWidthPx, scale: renderScale });
-    const imgData = canvas.toDataURL('image/png');
+    const getCanvasImagePayload = () => {
+      try {
+        return { format: 'JPEG', data: canvas.toDataURL('image/jpeg', 0.98) };
+      } catch (error) {
+        return { format: 'PNG', data: canvas.toDataURL('image/png') };
+      }
+    };
+    const imagePayload = getCanvasImagePayload();
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation, unit: 'mm', format: 'a4', compress: true });
     const pageWidth = pdf.internal.pageSize.getWidth();
@@ -6417,18 +6514,18 @@ async function exportElementToPDF({
     if (singlePage) {
       const offsetX = margin + ((usableWidth - imgWidth) / 2);
       const offsetY = margin + ((usableHeight - imgHeight) / 2);
-      pdf.addImage(imgData, 'PNG', offsetX, offsetY, imgWidth, imgHeight, undefined, 'FAST');
+      pdf.addImage(imagePayload.data, imagePayload.format, offsetX, offsetY, imgWidth, imgHeight, undefined, 'FAST');
     } else {
       const pageImgWidth = usableWidth;
       const pageImgHeight = (canvas.height * pageImgWidth) / canvas.width;
       let heightLeft = pageImgHeight;
       let currentY = margin;
-      pdf.addImage(imgData, 'PNG', margin, currentY, pageImgWidth, pageImgHeight, undefined, 'FAST');
+      pdf.addImage(imagePayload.data, imagePayload.format, margin, currentY, pageImgWidth, pageImgHeight, undefined, 'FAST');
       heightLeft -= usableHeight;
       while (heightLeft > 0) {
         pdf.addPage();
         currentY = margin - (pageImgHeight - heightLeft);
-        pdf.addImage(imgData, 'PNG', margin, currentY, pageImgWidth, pageImgHeight, undefined, 'FAST');
+        pdf.addImage(imagePayload.data, imagePayload.format, margin, currentY, pageImgWidth, pageImgHeight, undefined, 'FAST');
         heightLeft -= usableHeight;
       }
     }
@@ -6873,7 +6970,7 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   );
   const successMessage = resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded';
   const routePath = buildStudentCorrectionPdfRoute(submission, { subjectName: resolvedSubjectName || opts.subjectName || '' });
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  const serverReady = canUseServerRoutePdfExport();
   if (serverReady) {
     return downloadPdfRouteThroughServer(
       routePath,
@@ -7188,7 +7285,7 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   const filename = `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`;
   const successMessage = Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded';
   const routePath = buildFacilityIndexPdfRoute(quiz, { subjectName });
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  const serverReady = canUseServerRoutePdfExport();
   if (serverReady) {
     return downloadPdfRouteThroughServer(
       routePath,
@@ -7824,7 +7921,7 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
     modal.remove();
     const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) GROUPED.pdf`;
     const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'grouped' });
-    const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+    const serverReady = canUseServerRoutePdfExport();
     if (serverReady) {
       downloadPdfRouteThroughServer(
         routePath,
@@ -7855,7 +7952,7 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
     const useLandscape = subjectColumns.length > 4;
     const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) SEPARATE.pdf`;
     const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'separate' });
-    const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+    const serverReady = canUseServerRoutePdfExport();
     if (serverReady) {
       downloadPdfRouteThroughServer(
         routePath,
@@ -8653,7 +8750,7 @@ function renderPdfExportView() {
 async function downloadStudentResultPdfDocument(quiz, submission) {
   const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId);
   const routePath = buildStudentResultPdfRoute(submission);
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  const serverReady = canUseServerRoutePdfExport();
   if (serverReady) {
     try {
       return await downloadPdfRouteThroughServer(
@@ -8678,7 +8775,7 @@ async function downloadStudentResultPdfDocument(quiz, submission) {
 async function openStudentResultPdfPreview(quiz, submission) {
   const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'print-preview');
   const routePath = buildStudentResultPdfRoute(submission);
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+  const serverReady = canUseServerRoutePdfExport();
   if (serverReady) {
     try {
       return await openServerPdfRoutePreview(
@@ -8837,7 +8934,7 @@ function renderResultsView() {
       if ((q.subjects || []).length > 1) return showTeacherSummaryPdfFormatModal(q, submissions);
       const filename = `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).pdf`;
       const routePath = buildTeacherSummaryPdfRoute(q);
-      const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
+      const serverReady = canUseServerRoutePdfExport();
       if (serverReady) {
         downloadPdfRouteThroughServer(
           routePath,
@@ -10092,6 +10189,37 @@ function parseQuestionsFromCSVString(s) {
   return out;
 }
 
+function getWorksheetCellTextValue(cell, options = {}) {
+  if (!cell) return '';
+  const preferRichText = options.preserveRichText !== false;
+  if (preferRichText && typeof cell.h === 'string' && cell.h.trim()) {
+    return renderRichTextHtml(cell.h);
+  }
+  if (typeof cell.w === 'string' && cell.w.trim()) {
+    return normalizeRichText(cell.w);
+  }
+  if (cell.v == null) return '';
+  return normalizeRichText(String(cell.v));
+}
+
+function readWorksheetRows(worksheet, columnCount = 11, options = {}) {
+  if (!worksheet || typeof XLSX === 'undefined' || !worksheet['!ref']) return [];
+  const range = XLSX.utils.decode_range(worksheet['!ref']);
+  const rows = [];
+  for (let rowIndex = 1; rowIndex <= range.e.r; rowIndex++) {
+    const row = Array.from({ length: columnCount }, (_, columnIndex) => {
+      const cellAddress = XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex });
+      return getWorksheetCellTextValue(worksheet[cellAddress], options);
+    });
+    const hasContent = row.some((cell) => {
+      const plain = getRichTextPlainText(cell || '');
+      return plain.trim().length > 0;
+    });
+    if (hasContent) rows.push(row);
+  }
+  return rows;
+}
+
 function parseQuestionsFile(file, whitelistOnly) {
   return new Promise((resolve,reject)=>{
     const reader = new FileReader();
@@ -10100,10 +10228,10 @@ function parseQuestionsFile(file, whitelistOnly) {
         const data = e.target.result;
         let workbook;
         if (typeof XLSX !== 'undefined') {
-          workbook = XLSX.read(data, { type: 'binary' });
+          workbook = XLSX.read(data, { type: 'binary', cellHTML: true, cellStyles: true, cellText: true });
           const sheetName = workbook.SheetNames[0];
-          const aoa = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header:1, defval: '' });
-          const rows = aoa.slice(1).map(r=>r.map(c=>c.toString()));
+          const worksheet = workbook.Sheets[sheetName];
+          const rows = readWorksheetRows(worksheet, whitelistOnly ? 4 : 11, { preserveRichText: !whitelistOnly });
           if (whitelistOnly) {
             const list = rows.map(r=>({ name: r[0]||'', email: (r[1]||'').toString(), id: (r[2]||'').toString(), registrationNo: (r[2]||'').toString(), className: normalizeClassName(r[3] || '') } )).filter(x=>x.name && (x.email || x.id));
             resolve(list);
@@ -10111,10 +10239,10 @@ function parseQuestionsFile(file, whitelistOnly) {
             // assume columns: question,optA,optB,optC,optD,answer,topic,difficulty,explanation,learningPoint,keyConcept
             const list = rows.map(r=>({
               question: r[0]||'',
-              options: [r[1]||'',r[2]||'',r[3]||'',r[4]||''].filter(Boolean),
-              answer: (r[5]||'').toString().toUpperCase(),
+              options: [r[1]||'',r[2]||'',r[3]||'',r[4]||''].filter((option) => getRichTextPlainText(option || '').trim()),
+              answer: getRichTextPlainText((r[5]||'').toString()).toUpperCase(),
               topic: r[6]||'',
-              difficulty: r[7]||'Medium',
+              difficulty: getRichTextPlainText(r[7] || '') || 'Medium',
               explanation: r[8] || '',
               learningPoint: r[9] || '',
               keyConcept: r[10] || ''

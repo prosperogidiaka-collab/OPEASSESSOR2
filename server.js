@@ -705,6 +705,7 @@ async function handleApi(req, res) {
   if (route === '/api/health' && req.method === 'GET') {
     return sendJson(req, res, 200, {
       ok: true,
+      pdfExportSupported: true,
       host: HOST,
       port: PORT,
       addresses: getLocalAddresses(),

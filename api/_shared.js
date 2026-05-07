@@ -36,28 +36,31 @@ function getCorsOrigin(req) {
   return ALLOWED_ORIGINS.includes(origin) ? origin : '';
 }
 
-function applyResponseHeaders(req, res, extraHeaders = {}) {
+function applyResponseHeaders(req, res, extraHeaders = {}, options = {}) {
+  const allowMethods = Array.isArray(options.allowMethods)
+    ? options.allowMethods.join(', ')
+    : (options.allowMethods || 'GET, PUT, OPTIONS');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   const corsOrigin = getCorsOrigin(req);
   if (corsOrigin) {
     res.setHeader('Access-Control-Allow-Origin', corsOrigin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', allowMethods);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Vary', 'Origin');
   }
   Object.entries(extraHeaders).forEach(([key, value]) => res.setHeader(key, value));
 }
 
-function sendJson(req, res, status, payload, extraHeaders = {}) {
-  applyResponseHeaders(req, res, { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders });
+function sendJson(req, res, status, payload, extraHeaders = {}, options = {}) {
+  applyResponseHeaders(req, res, { 'Content-Type': 'application/json; charset=utf-8', ...extraHeaders }, options);
   res.statusCode = status;
   res.end(JSON.stringify(payload));
 }
 
-function handlePreflight(req, res) {
+function handlePreflight(req, res, options = {}) {
   if (req.method !== 'OPTIONS') return false;
-  applyResponseHeaders(req, res, { 'Content-Type': 'text/plain; charset=utf-8' });
+  applyResponseHeaders(req, res, { 'Content-Type': 'text/plain; charset=utf-8' }, options);
   res.statusCode = 204;
   res.end('');
   return true;

@@ -20,6 +20,7 @@ module.exports = async function healthHandler(req, res) {
     return sendJson(req, res, 200, {
       ok: true,
       runtime: isServerlessRuntime() ? 'serverless' : 'node',
+      pdfExportSupported: false,
       publicBaseUrl: PUBLIC_BASE_URL || null,
       storageBackend: stateStore.backend,
       storageDetails: stateStore.details,
