@@ -179,6 +179,8 @@ let networkSyncRetryTimer = null;
 let networkSyncEventsBound = false;
 let lastNetworkPullAt = 0;
 let serverPdfExportUnavailable = false;
+let _clientTrackingContextCache = null;
+let _clientTrackingContextPromise = null;
 let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
@@ -2629,7 +2631,7 @@ function sanitizeQuestionMediaAssets(assets = []) {
     src: (asset?.src || '').toString().trim(),
     placement: normalizeQuestionImagePlacement(asset?.placement),
     fileName: (asset?.fileName || '').toString().trim(),
-    altText: (asset?.altText || asset?.fileName || 'Question image').toString().trim()
+    altText: (asset?.altText || 'Question image').toString().trim()
   })).filter((asset) => !!asset.src);
 }
 
@@ -2639,7 +2641,7 @@ function normalizeSubjectQuestionImages(groups = []) {
     src: (group?.src || '').toString().trim(),
     placement: normalizeQuestionImagePlacement(group?.placement),
     fileName: (group?.fileName || '').toString().trim(),
-    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    altText: (group?.altText || 'Question image').toString().trim(),
     questionNumbers: parseQuestionNumberList(group?.questionNumbers || '')
   })).filter((group) => !!group.src && group.questionNumbers.length);
 }
@@ -2653,7 +2655,7 @@ function createEditableSubjectQuestionImage(group = {}, index = 0) {
     src: (group?.src || '').toString().trim(),
     placement: normalizeQuestionImagePlacement(group?.placement),
     fileName: (group?.fileName || '').toString().trim(),
-    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    altText: (group?.altText || 'Question image').toString().trim(),
     questionNumbersText: numbers.join(', ')
   };
 }
@@ -2664,7 +2666,7 @@ function serializeEditableSubjectQuestionImages(groups = [], maxCount = 0) {
     src: (group?.src || '').toString().trim(),
     placement: normalizeQuestionImagePlacement(group?.placement),
     fileName: (group?.fileName || '').toString().trim(),
-    altText: (group?.altText || group?.fileName || 'Question image').toString().trim(),
+    altText: (group?.altText || 'Question image').toString().trim(),
     questionNumbers: parseQuestionNumberList(group?.questionNumbersText || group?.questionNumbers || '', maxCount)
   })).filter((group) => !!group.src && group.questionNumbers.length);
 }
@@ -2727,7 +2729,7 @@ function applySubjectQuestionImagesToQuestions(questions = [], questionImages = 
         src: group.src,
         placement: group.placement,
         fileName: group.fileName,
-        altText: group.altText || group.fileName || `Question ${questionNumber} image`
+        altText: group.altText || 'Question image'
       };
       const alreadyExists = mediaAssets.some((asset) => (
         asset.src === nextAsset.src
@@ -2754,8 +2756,7 @@ function renderQuestionMediaAssets(question = {}, placement = 'before') {
     <div class="question-media-stack" style="display:grid;gap:12px;margin:12px 0">
       ${assets.map((asset) => `
         <figure class="question-media-card" style="margin:0;border:1px solid #BFDBFE;border-radius:16px;background:#EFF6FF;padding:12px">
-          <img src="${asset.src.replace(/"/g, '&quot;')}" alt="${escapeHtml((asset.altText || asset.fileName || 'Question image'))}" style="display:block;max-width:100%;height:auto;border-radius:12px;margin:0 auto" />
-          ${asset.fileName ? `<figcaption style="margin-top:8px;font-size:12px;color:#475569">${escapeHtml(asset.fileName)}</figcaption>` : ''}
+          <img src="${asset.src.replace(/"/g, '&quot;')}" alt="${escapeHtml((asset.altText || 'Question image'))}" style="display:block;max-width:100%;height:auto;border-radius:12px;margin:0 auto" />
         </figure>
       `).join('')}
     </div>
@@ -6437,6 +6438,35 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
     display: 'block'
   });
   document.body.appendChild(source);
+  if (exportOptions.preferCanvasSnapshot) {
+    const marginCandidates = [marginsMm.top, marginsMm.right, marginsMm.bottom, marginsMm.left]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 0);
+    const snapshotMarginMm = Number.isFinite(Number(exportOptions.marginMm))
+      ? Number(exportOptions.marginMm)
+      : (marginCandidates.length ? Math.min(...marginCandidates) : 10);
+    return exportElementToPDF({
+      sourceSelector: `#${sourceId}`,
+      filename,
+      title: exportOptions.title || filename.replace(/\.pdf$/i, ''),
+      orientation: exportOptions.orientation === 'l' || exportOptions.orientation === 'landscape' ? 'l' : 'p',
+      paddingPx: exportOptions.paddingPx == null ? 0 : Number(exportOptions.paddingPx),
+      marginMm: snapshotMarginMm,
+      singlePage: false,
+      sourceWidthPx: Math.max(700, Number(exportOptions.sourceWidthPx) || Math.round(contentWidthMm * 4.8)),
+      renderScale: Math.max(1.5, Number(exportOptions.renderScale) || Math.max(2, scale))
+    })
+      .then(() => {
+        if (source && source.parentNode) source.remove();
+        if (successMessage) showNotification(successMessage, 'success');
+        return true;
+      })
+      .catch((error) => {
+        if (source && source.parentNode) source.remove();
+        showNotification('Error generating PDF', 'error');
+        throw error;
+      });
+  }
   if (typeof html2pdf === 'undefined') {
     return downloadPdfFromHtml(html, filename, successMessage, exportOptions)
       .finally(() => { if (source && source.parentNode) source.remove(); });
@@ -7092,8 +7122,12 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
         successMessage,
         {
           disableServerHtmlExport: true,
+          preferCanvasSnapshot: true,
           scale: 2.35,
+          renderScale: 2.2,
           contentWidthMm: 180,
+          sourceWidthPx: 920,
+          marginMm: 12,
           marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
           pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
         }
@@ -7105,8 +7139,12 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     filename,
     successMessage,
     {
+      preferCanvasSnapshot: true,
       scale: 2.35,
+      renderScale: 2.2,
       contentWidthMm: 180,
+      sourceWidthPx: 920,
+      marginMm: 12,
       marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
       pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
     }
@@ -7407,8 +7445,12 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
         successMessage,
         {
           disableServerHtmlExport: true,
+          preferCanvasSnapshot: true,
           scale: 2.3,
+          renderScale: 2.15,
           contentWidthMm: 180,
+          sourceWidthPx: 920,
+          marginMm: 12,
           marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
           pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
         }
@@ -7420,8 +7462,12 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
     filename,
     successMessage,
     {
+      preferCanvasSnapshot: true,
       scale: 2.3,
+      renderScale: 2.15,
       contentWidthMm: 180,
+      sourceWidthPx: 920,
+      marginMm: 12,
       marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
       pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
     }
@@ -8424,7 +8470,9 @@ function buildPrimaryCertificateSignatureMarkup(quiz = {}) {
 }
 
 function buildStudentResultSupplementHtml(quiz, submission) {
-  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const breakdown = Array.isArray(submission?.subjectBreakdown) && submission.subjectBreakdown.length
+    ? submission.subjectBreakdown
+    : computeSubmissionSubjectBreakdown(quiz, submission);
   const items = breakdown.length ? breakdown : [{
     name: getQuestionSubjectLabel((submission.allQuestions || [])[0] || {}),
     score: submission.score || 0,
@@ -9778,7 +9826,7 @@ function showCreateQuizModal(editQuizId = '') {
                 ...row._questionImages[imageIndex],
                 src: await readImageFileAsDataUrl(file),
                 fileName: file.name || row._questionImages[imageIndex].fileName,
-                altText: file.name || row._questionImages[imageIndex].altText || 'Question image'
+                altText: row._questionImages[imageIndex].altText || 'Question image'
               };
               renderSubjectQuestionImages(row);
               updateSubjectRowSummary(row);
@@ -10858,39 +10906,51 @@ function computeSubmissionTopicBreakdown(quiz, submission) {
 }
 
 async function getClientTrackingContext() {
-  try {
-    const response = await fetch(buildApiUrl('/api/client-context'), { cache: 'no-store' });
-    if (response.ok) {
-      const data = await response.json();
-      const ipAddress = (data.ipAddress || '').toString().trim();
-      if (ipAddress) {
-        return {
-          ipAddress,
-          userAgent: (data.userAgent || navigator.userAgent || '').toString(),
-          requestedAt: data.requestedAt || new Date().toISOString(),
-          deviceId: getAppDeviceId()
-        };
+  if (_clientTrackingContextCache) return _clientTrackingContextCache;
+  if (_clientTrackingContextPromise) return _clientTrackingContextPromise;
+  _clientTrackingContextPromise = (async () => {
+    try {
+      const response = await fetch(buildApiUrl('/api/client-context'), { cache: 'no-store' });
+      if (response.ok) {
+        const data = await response.json();
+        const ipAddress = (data.ipAddress || '').toString().trim();
+        if (ipAddress) {
+          return {
+            ipAddress,
+            userAgent: (data.userAgent || navigator.userAgent || '').toString(),
+            requestedAt: data.requestedAt || new Date().toISOString(),
+            deviceId: getAppDeviceId()
+          };
+        }
       }
+    } catch (error) {}
+    try {
+      const res = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
+      if (!res.ok) return { ipAddress: '', userAgent: navigator.userAgent || '', requestedAt: new Date().toISOString(), deviceId: getAppDeviceId() };
+      const data = await res.json();
+      return {
+        ipAddress: data.ip || '',
+        userAgent: navigator.userAgent || '',
+        requestedAt: new Date().toISOString(),
+        deviceId: getAppDeviceId()
+      };
+    } catch(e) {
+      return {
+        ipAddress: '',
+        userAgent: navigator.userAgent || '',
+        requestedAt: new Date().toISOString(),
+        deviceId: getAppDeviceId()
+      };
     }
-  } catch (error) {}
-  try {
-    const res = await fetch('https://api.ipify.org?format=json', { cache: 'no-store' });
-    if (!res.ok) return { ipAddress: '', userAgent: navigator.userAgent || '', requestedAt: new Date().toISOString(), deviceId: getAppDeviceId() };
-    const data = await res.json();
-    return {
-      ipAddress: data.ip || '',
-      userAgent: navigator.userAgent || '',
-      requestedAt: new Date().toISOString(),
-      deviceId: getAppDeviceId()
-    };
-  } catch(e) {
-    return {
-      ipAddress: '',
-      userAgent: navigator.userAgent || '',
-      requestedAt: new Date().toISOString(),
-      deviceId: getAppDeviceId()
-    };
-  }
+  })()
+    .then((context) => {
+      _clientTrackingContextCache = context;
+      return context;
+    })
+    .finally(() => {
+      _clientTrackingContextPromise = null;
+    });
+  return _clientTrackingContextPromise;
 }
 
 function computeRankingForQuiz(quizId) {
@@ -10899,6 +10959,49 @@ function computeRankingForQuiz(quizId) {
   const ranks = {};
   for (let i=0;i<subs.length;i++) ranks[normalizeEmail(subs[i].email)] = i+1;
   return ranks;
+}
+
+function showStudentResultModalFromSubmission(quiz, submission, includeActions = true) {
+  if (!submission) return showNotification('Submission not found', 'error');
+  const quizData = quiz || getAllQuizzes()[submission.quizId] || { id: submission.quizId };
+  const ranks = computeRankingForQuiz(submission.quizId);
+  let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'studentResultModal';
+  modal.className = 'student-result-modal';
+  const inner = document.createElement('div');
+  inner.className = 'student-result-modal-card';
+  inner.innerHTML = buildStudentResultFullHtml(quizData, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
+  modal.appendChild(inner); document.body.appendChild(modal);
+  const closeModal = () => {
+    modal.remove();
+    if (state.view === 'student.result') {
+      closeStudentResultLanding('home');
+    }
+  };
+  modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
+  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
+  const downloadBtn = document.getElementById('downloadStudentResultPdf');
+  if (downloadBtn) downloadBtn.onclick = () => {
+    downloadStudentResultPdfDocument(quizData, submission).catch((error) => {
+      console.error(error);
+      showNotification('Unable to download the result PDF', 'error');
+    });
+  };
+  const requestBtn = document.getElementById('requestCorrectionBtn');
+  if (requestBtn) requestBtn.onclick = () => {
+    showCorrectionRequestModal(quizData, submission, (updated) => {
+      showNotification('Correction request sent to teacher', 'success', 5000);
+      const statusEl = document.getElementById('correctionRequestStatus');
+      if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
+      requestBtn.textContent = 'Update Request';
+    });
+  };
+  const printBtn = document.getElementById('printStudentResult');
+  if (printBtn) printBtn.onclick = () => {
+    printStudentSummary(quizData, submission);
+  };
+  return submission;
 }
 
 function getQuizScheduleStatus(quiz) {
@@ -11095,45 +11198,8 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
   });
   if (!subs || subs.length===0) return showNotification('No submission found for that quiz/email or registration number','error');
   const s = subs.slice().sort(sortSubmissionRecords)[subs.length - 1];
-  const ranks = computeRankingForQuiz(id);
-  let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
-  modal = document.createElement('div');
-  modal.id = 'studentResultModal';
-  modal.className = 'student-result-modal';
-  const inner = document.createElement('div');
-  inner.className = 'student-result-modal-card';
   const quiz = getAllQuizzes()[id] || { id };
-  inner.innerHTML = buildStudentResultFullHtml(quiz, s, ranks[normalizeEmail(s.email)] || '-', { includeActions });
-  modal.appendChild(inner); document.body.appendChild(modal);
-  const closeModal = () => {
-    modal.remove();
-    if (state.view === 'student.result') {
-      closeStudentResultLanding('home');
-    }
-  };
-  modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
-  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
-  const downloadBtn = document.getElementById('downloadStudentResultPdf');
-  if (downloadBtn) downloadBtn.onclick = () => {
-    downloadStudentResultPdfDocument(quiz, s).catch((error) => {
-      console.error(error);
-      showNotification('Unable to download the result PDF', 'error');
-    });
-  };
-  const requestBtn = document.getElementById('requestCorrectionBtn');
-  if (requestBtn) requestBtn.onclick = () => {
-    showCorrectionRequestModal(quiz, s, (updated) => {
-      showNotification('Correction request sent to teacher', 'success', 5000);
-      const statusEl = document.getElementById('correctionRequestStatus');
-      if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
-      requestBtn.textContent = 'Update Request';
-    });
-  };
-  const printBtn = document.getElementById('printStudentResult');
-  if (printBtn) printBtn.onclick = () => {
-    printStudentSummary(quiz, s);
-  };
-  return s;
+  return showStudentResultModalFromSubmission(quiz, s, includeActions);
 }
 
 async function showStudentResultModalByShareKey(shareKey, includeActions = true, options = {}) {
@@ -11159,44 +11225,8 @@ async function showStudentResultModalBySubmissionKey(quizId, submissionKey, incl
   if (quizForRegrade) regradeSubmissionsForQuiz(quizForRegrade);
   const submission = findSubmissionBySubmissionKey(id, key);
   if (!submission) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
-  const ranks = computeRankingForQuiz(id);
-  let modal = document.getElementById('studentResultModal'); if (modal) modal.remove();
-  modal = document.createElement('div');
-  modal.id = 'studentResultModal';
-  modal.className = 'student-result-modal';
-  const inner = document.createElement('div');
-  inner.className = 'student-result-modal-card';
   const quiz = getAllQuizzes()[id] || { id };
-  inner.innerHTML = buildStudentResultFullHtml(quiz, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
-  modal.appendChild(inner); document.body.appendChild(modal);
-  const closeModal = () => {
-    modal.remove();
-    if (state.view === 'student.result') {
-      closeStudentResultLanding('home');
-    }
-  };
-  modal.onclick = (ev) => { if (ev.target === modal) closeModal(); };
-  const closeBtn = document.getElementById('closeStudentResult'); if (closeBtn) closeBtn.onclick = closeModal;
-  const downloadBtn = document.getElementById('downloadStudentResultPdf');
-  if (downloadBtn) downloadBtn.onclick = () => {
-    downloadStudentResultPdfDocument(quiz, submission).catch((error) => {
-      console.error(error);
-      showNotification('Unable to download the result PDF', 'error');
-    });
-  };
-  const requestBtn = document.getElementById('requestCorrectionBtn');
-  if (requestBtn) requestBtn.onclick = () => {
-    showCorrectionRequestModal(quiz, submission, (updated) => {
-      showNotification('Correction request sent to teacher', 'success', 5000);
-      const statusEl = document.getElementById('correctionRequestStatus');
-      if (statusEl) statusEl.innerHTML = buildCorrectionRequestStatusHtml(updated);
-      requestBtn.textContent = 'Update Request';
-    });
-  };
-  const printBtn = document.getElementById('printStudentResult');
-  if (printBtn) printBtn.onclick = () => {
-    printStudentSummary(quiz, submission);
-  };
+  showStudentResultModalFromSubmission(quiz, submission, includeActions);
   if (options.autoDownloadCorrection) {
     setTimeout(async () => {
       try {
@@ -11654,7 +11684,20 @@ async function collectAndSubmit() {
     if (!sub) return showNotification('Nothing to submit','error');
     if (hasSubmittedBefore(sub.quizId, sub.email)) return showNotification('This email has already submitted this quiz', 'error');
     const quiz = getAllQuizzes()[sub.quizId] || state.currentQuiz || {};
-    const trackingContext = await getClientTrackingContext();
+    const trackingContext = (
+      (sub.monitoring && (sub.monitoring.ipAddress || sub.monitoring.userAgent || sub.monitoring.ipCapturedAt || sub.monitoring.deviceId))
+      || sub.ipAddress
+      || sub.userAgent
+      || sub.ipCapturedAt
+      || sub.deviceId
+    )
+      ? {
+          ipAddress: (sub.monitoring && sub.monitoring.ipAddress) || sub.ipAddress || '',
+          userAgent: (sub.monitoring && sub.monitoring.userAgent) || sub.userAgent || navigator.userAgent || '',
+          requestedAt: (sub.monitoring && sub.monitoring.ipCapturedAt) || sub.ipCapturedAt || new Date().toISOString(),
+          deviceId: (sub.monitoring && sub.monitoring.deviceId) || sub.deviceId || getAppDeviceId()
+        }
+      : await getClientTrackingContext();
     sub.monitoring = {
       ...(sub.monitoring || {}),
       ipAddress: (sub.monitoring && sub.monitoring.ipAddress) || trackingContext.ipAddress || '',
@@ -11691,7 +11734,7 @@ async function collectAndSubmit() {
     render();
     if (quiz.showInstantResult !== false) {
       showNotification(`Submitted. Score: ${formatScoreValue(score)}/${formatScoreValue(getSubmissionTotalMarks(sub, quiz))} (${percent}%) - ${sub.resultStatus}`, sub.resultStatus === 'Pass' ? 'success' : 'warning', 7000);
-      setTimeout(() => showStudentResultModalByLookup(sub.quizId, sub.email, true), 100);
+      setTimeout(() => showStudentResultModalFromSubmission(quiz, sub, true), 40);
     } else {
       showNotification('Submitted. Result will be released by your teacher.', 'success', 7000);
     }
