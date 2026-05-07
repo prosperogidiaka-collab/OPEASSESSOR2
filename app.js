@@ -1780,6 +1780,8 @@ async function initializeApp() {
     render();
     return;
   }
+  const currentRoutePath = `${window.location.pathname || '/'}${window.location.search || ''}`;
+  const wantsClientPdfRoute = !!parsePdfRoutePathOnClient(currentRoutePath);
   ensureSuperAdminAccount();
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
@@ -1787,6 +1789,19 @@ async function initializeApp() {
   const querySyncApiBaseUrl = normalizeApiBaseUrl(params.get('syncApiBaseUrl') || params.get('apiBaseUrl') || '');
   if (querySyncApiBaseUrl) setNetworkSyncApiBaseUrl(querySyncApiBaseUrl);
   const startupSharedChanged = await hydrateSharedStateBeforeFirstRender(params);
+  if (wantsClientPdfRoute) {
+    state.pdfBootstrap = buildClientPdfBootstrapPayload(currentRoutePath) || {
+      title: 'PDF Export',
+      page: {
+        orientation: 'portrait',
+        rootWidthMm: 190,
+        marginsMm: { top: 12, right: 10, bottom: 12, left: 10 }
+      }
+    };
+    state.view = 'pdf.render';
+    render();
+    return;
+  }
   applyPersistedAppUiState();
   if (params.has('q')) {
     const id = params.get('q');
@@ -6375,6 +6390,50 @@ async function openServerPdfRoutePreview(routePath, filename, exportOptions = {}
   return true;
 }
 
+function buildClientPrintablePdfRouteUrl(routePath = '', options = {}) {
+  const parsed = parsePdfRoutePathOnClient(routePath);
+  const baseUrl = getPublicAppBaseUrl();
+  const url = parsed
+    ? new URL(`${parsed.url.pathname}${parsed.url.search}`, baseUrl)
+    : new URL((routePath || '/').toString(), baseUrl);
+  if (NETWORK_SYNC_CONFIG.apiBaseUrl) url.searchParams.set('syncApiBaseUrl', NETWORK_SYNC_CONFIG.apiBaseUrl);
+  if (options.autoPrint !== false) url.searchParams.set('print', '1');
+  return url.toString();
+}
+
+function openClientPrintablePdfRoute(routePath, successMessage = '', options = {}) {
+  const win = window.open(buildClientPrintablePdfRouteUrl(routePath, options), '_blank', 'noopener');
+  if (!win) throw new Error('Unable to open print window');
+  if (successMessage) showNotification(successMessage, 'success', 6500);
+  return true;
+}
+
+async function downloadPdfRouteWithLiveTextFallback({
+  routePath = '',
+  filename = 'ope-export.pdf',
+  successMessage = 'PDF downloaded',
+  printableMessage = 'Print-ready PDF page opened. Use Save as PDF for live text and better scaling.',
+  serverExportOptions = {},
+  requestOptions = {},
+  snapshotFallback = null,
+  logLabel = 'PDF'
+} = {}) {
+  if (canUseServerRoutePdfExport()) {
+    try {
+      return await downloadPdfRouteThroughServer(routePath, filename, successMessage, serverExportOptions, requestOptions);
+    } catch (error) {
+      console.warn(`Server ${logLabel} export failed. Falling back to a print-friendly page.`, error);
+    }
+  }
+  try {
+    return openClientPrintablePdfRoute(routePath, printableMessage);
+  } catch (routeError) {
+    console.warn(`Print-friendly ${logLabel} route fallback failed. Falling back to browser rendering.`, routeError);
+    if (typeof snapshotFallback === 'function') return snapshotFallback();
+    throw routeError;
+  }
+}
+
 function downloadPdfFromHtmlClientFallback(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
   const sourceId = 'pdf-content-source';
   const paddingPx = exportOptions.paddingPx == null ? 24 : exportOptions.paddingPx;
@@ -7111,41 +7170,30 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   );
   const successMessage = resolvedSubjectName ? `${resolvedSubjectName} correction PDF downloaded` : 'Correction PDF downloaded';
   const routePath = buildStudentCorrectionPdfRoute(submission, { subjectName: resolvedSubjectName || opts.subjectName || '' });
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
-    return downloadPdfRouteThroughServer(
-      routePath,
-      filename,
-      successMessage,
-      { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
-      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-    ).catch((error) => {
-      console.warn('Server correction PDF export failed. Falling back to browser rendering.', error);
-      return downloadPagedPdfFromHtml(
-        buildCorrectionPdfDocumentHtml(submission, quiz, opts),
-        filename,
-        successMessage,
-        {
-          disableServerHtmlExport: true,
-          scale: 2.15,
-          contentWidthMm: 194,
-          marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-          pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
-        }
-      );
-    });
-  }
-  return downloadPagedPdfFromHtml(
-    buildCorrectionPdfDocumentHtml(submission, quiz, opts),
+  const printableMessage = resolvedSubjectName
+    ? `Print-ready ${resolvedSubjectName} correction page opened. Use Save as PDF for live text and better scaling.`
+    : 'Print-ready correction page opened. Use Save as PDF for live text and better scaling.';
+  return downloadPdfRouteWithLiveTextFallback({
+    routePath,
     filename,
     successMessage,
-    {
-      scale: 2.15,
-      contentWidthMm: 194,
-      marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
-    }
-  );
+    printableMessage,
+    serverExportOptions: { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
+    requestOptions: { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] },
+    snapshotFallback: () => downloadPagedPdfFromHtml(
+      buildCorrectionPdfDocumentHtml(submission, quiz, opts),
+      filename,
+      successMessage,
+      {
+        disableServerHtmlExport: true,
+        scale: 2.15,
+        contentWidthMm: 194,
+        marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
+        pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card']
+      }
+    ),
+    logLabel: 'correction PDF'
+  });
 }
 
 async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
@@ -7426,41 +7474,27 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
   const filename = `${makeSafeFilenamePart(subjectName, 'subject')} FACILITY INDEX (${quiz.id}).pdf`;
   const successMessage = Object.prototype.hasOwnProperty.call(options, 'successMessage') ? options.successMessage : 'Facility index PDF downloaded';
   const routePath = buildFacilityIndexPdfRoute(quiz, { subjectName });
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
-    return downloadPdfRouteThroughServer(
-      routePath,
-      filename,
-      successMessage,
-      { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
-      { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-    ).catch((error) => {
-      console.warn('Server facility PDF export failed. Falling back to browser rendering.', error);
-      return downloadPagedPdfFromHtml(
-        buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
-        filename,
-        successMessage,
-        {
-          disableServerHtmlExport: true,
-          scale: 2.1,
-          contentWidthMm: 194,
-          marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-          pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
-        }
-      );
-    });
-  }
-  return downloadPagedPdfFromHtml(
-    buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
+  return downloadPdfRouteWithLiveTextFallback({
+    routePath,
     filename,
     successMessage,
-    {
-      scale: 2.1,
-      contentWidthMm: 194,
-      marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
-    }
-  );
+    printableMessage: `Print-ready ${subjectName} facility index page opened. Use Save as PDF for live text and better scaling.`,
+    serverExportOptions: { orientation: 'p', marginsMm: { top: 10, right: 8, bottom: 10, left: 8 } },
+    requestOptions: { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] },
+    snapshotFallback: () => downloadPagedPdfFromHtml(
+      buildFacilityIndexPdfDocumentHtml(quiz, data, { subjectName }),
+      filename,
+      successMessage,
+      {
+        disableServerHtmlExport: true,
+        scale: 2.1,
+        contentWidthMm: 194,
+        marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
+        pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading']
+      }
+    ),
+    logLabel: 'facility PDF'
+  });
 }
 
 function getTeacherSummaryQuestionCount(quiz, submissions = []) {
@@ -8062,62 +8096,42 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
     modal.remove();
     const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) GROUPED.pdf`;
     const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'grouped' });
-    const serverReady = canUseServerRoutePdfExport();
-    if (serverReady) {
-      downloadPdfRouteThroughServer(
-        routePath,
+    downloadPdfRouteWithLiveTextFallback({
+      routePath,
+      filename,
+      successMessage: 'Teacher result summary PDF downloaded',
+      printableMessage: 'Print-ready grouped result summary opened. Use Save as PDF for live text and better scaling.',
+      serverExportOptions: { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+      requestOptions: { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] },
+      snapshotFallback: () => downloadPdfFromHtml(
+        buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
         filename,
         'Teacher result summary PDF downloaded',
-        { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
-        { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-      ).catch((error) => {
-        console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
-        downloadPdfFromHtml(
-          buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
-          filename,
-          'Teacher result summary PDF downloaded',
-          { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
-        );
-      });
-      return;
-    }
-    downloadPdfFromHtml(
-      buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
-      filename,
-      'Teacher result summary PDF downloaded',
-      { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
-    );
+        { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
+      ),
+      logLabel: 'teacher summary PDF'
+    });
   };
   document.getElementById('summaryPdfSeparate').onclick = () => {
     modal.remove();
     const useLandscape = subjectColumns.length > 4;
     const filename = `${makeSafeFilenamePart(quiz.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${quiz.id}) SEPARATE.pdf`;
     const routePath = buildTeacherSummaryPdfRoute(quiz, { format: 'separate' });
-    const serverReady = canUseServerRoutePdfExport();
-    if (serverReady) {
-      downloadPdfRouteThroughServer(
-        routePath,
+    downloadPdfRouteWithLiveTextFallback({
+      routePath,
+      filename,
+      successMessage: 'Teacher result summary PDF downloaded',
+      printableMessage: 'Print-ready separate-column result summary opened. Use Save as PDF for live text and better scaling.',
+      serverExportOptions: { orientation: useLandscape ? 'l' : 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+      requestOptions: { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] },
+      snapshotFallback: () => downloadPdfFromHtml(
+        buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
         filename,
         'Teacher result summary PDF downloaded',
-        { orientation: useLandscape ? 'l' : 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
-        { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-      ).catch((error) => {
-        console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
-        downloadPdfFromHtml(
-          buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
-          filename,
-          'Teacher result summary PDF downloaded',
-          { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794, disableServerHtmlExport: true }
-        );
-      });
-      return;
-    }
-    downloadPdfFromHtml(
-      buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
-      filename,
-      'Teacher result summary PDF downloaded',
-      { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794 }
-    );
+        { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794, disableServerHtmlExport: true }
+      ),
+      logLabel: 'teacher summary PDF'
+    });
   };
 }
 
@@ -8755,9 +8769,9 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
-        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
+        .student-result-export-page{width:100%;max-width:100%;min-height:auto;margin:0 auto;background:#ffffff}
         .student-result-export-page .student-result-full{gap:10px}
-        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
+        .student-result-export-page .cert-result{width:100%;box-shadow:none!important;border-radius:0!important}
         .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
         .student-result-export-page .cert-quiz-title{font-size:32px}
         .student-result-export-page .cert-student-name{font-size:40px}
@@ -8883,43 +8897,59 @@ function renderPdfExportView() {
     <div id="pdf-root">${contentHtml}</div>
   `;
 
+  const shouldAutoPrint = (() => {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const printFlag = (params.get('print') || '').toString().trim().toLowerCase();
+      return payload.autoPrint === true || ['1', 'true', 'yes'].includes(printFlag);
+    } catch (error) {
+      return payload.autoPrint === true;
+    }
+  })();
+
   window.__OPE_PDF_READY__ = false;
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    window.__OPE_PDF_READY__ = true;
-  }));
+  Promise.all([
+    document.fonts && document.fonts.ready ? document.fonts.ready.catch(() => {}) : Promise.resolve(),
+    waitForImages(wrapper).catch(() => {})
+  ]).finally(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.__OPE_PDF_READY__ = true;
+      if (shouldAutoPrint && !window.__OPE_PDF_AUTO_PRINTED__) {
+        window.__OPE_PDF_AUTO_PRINTED__ = true;
+        setTimeout(() => {
+          try { window.focus(); } catch (error) {}
+          try { window.print(); } catch (error) {}
+        }, 180);
+      }
+    }));
+  });
   return wrapper;
 }
 
 async function downloadStudentResultPdfDocument(quiz, submission) {
   const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId);
   const routePath = buildStudentResultPdfRoute(submission);
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
-    try {
-      return await downloadPdfRouteThroughServer(
-        routePath,
-        filename,
-        'Student result summary PDF downloaded',
-        { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
-        { syncKeys: [STORAGE_KEYS.submissions] }
-      );
-    } catch (error) {
-      console.warn('Server result PDF export failed. Falling back to browser rendering.', error);
-    }
-  }
-  return downloadPdfFromHtml(
-    buildStudentSummaryPdfHtml(quiz, submission),
+  return downloadPdfRouteWithLiveTextFallback({
+    routePath,
     filename,
-    'Student result summary PDF downloaded',
-    { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3, disableServerHtmlExport: true }
-  );
+    successMessage: 'Student result summary PDF downloaded',
+    printableMessage: 'Print-ready result page opened. Use Save as PDF for live text and better scaling.',
+    serverExportOptions: { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+    requestOptions: { syncKeys: [STORAGE_KEYS.submissions] },
+    snapshotFallback: () => downloadPdfFromHtml(
+      buildStudentSummaryPdfHtml(quiz, submission),
+      filename,
+      'Student result summary PDF downloaded',
+      { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3, disableServerHtmlExport: true }
+    ),
+    logLabel: 'result PDF'
+  });
 }
 
 async function openStudentResultPdfPreview(quiz, submission) {
   const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId, 'print-preview');
   const routePath = buildStudentResultPdfRoute(submission);
-  const serverReady = canUseServerRoutePdfExport();
-  if (serverReady) {
+  if (canUseServerRoutePdfExport()) {
     try {
       return await openServerPdfRoutePreview(
         routePath,
@@ -8928,8 +8958,16 @@ async function openStudentResultPdfPreview(quiz, submission) {
         { syncKeys: [STORAGE_KEYS.submissions] }
       );
     } catch (error) {
-      console.warn('Server print preview failed. Falling back to browser canvas print.', error);
+      console.warn('Server print preview failed. Falling back to a print-friendly page.', error);
     }
+  }
+  try {
+    return openClientPrintablePdfRoute(
+      routePath,
+      'Print-ready result page opened. Use Save as PDF for live text and better scaling.'
+    );
+  } catch (routeError) {
+    console.warn('Print-friendly result route fallback failed. Falling back to browser canvas print.', routeError);
   }
   return printHtmlAsSinglePage(buildStudentSummaryPdfHtml(quiz, submission), {
     title: 'Student Result Summary',
@@ -8946,9 +8984,9 @@ function printStudentSummary(quiz, submission) {
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
       <style>
         ${getCertificateResultCss()}
-        .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
+        .student-result-export-page{width:100%;max-width:100%;min-height:auto;margin:0 auto;background:#ffffff}
         .student-result-export-page .student-result-full{gap:10px}
-        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
+        .student-result-export-page .cert-result{width:100%;box-shadow:none!important;border-radius:0!important}
         .student-result-export-page .cert-inner{border-width:4px;padding:18mm 15mm 12mm}
         .student-result-export-page .cert-quiz-title{font-size:32px}
         .student-result-export-page .cert-student-name{font-size:40px}
@@ -9077,31 +9115,21 @@ function renderResultsView() {
       if ((q.subjects || []).length > 1) return showTeacherSummaryPdfFormatModal(q, submissions);
       const filename = `${makeSafeFilenamePart(q.title || 'result-summary', 'result-summary').toUpperCase()} RESULT (${q.id}).pdf`;
       const routePath = buildTeacherSummaryPdfRoute(q);
-      const serverReady = canUseServerRoutePdfExport();
-      if (serverReady) {
-        downloadPdfRouteThroughServer(
-          routePath,
+      downloadPdfRouteWithLiveTextFallback({
+        routePath,
+        filename,
+        successMessage: 'Teacher result summary PDF downloaded',
+        printableMessage: 'Print-ready result summary opened. Use Save as PDF for live text and better scaling.',
+        serverExportOptions: { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
+        requestOptions: { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] },
+        snapshotFallback: () => downloadPdfFromHtml(
+          buildTeacherSummaryPdfHtml(q, submissions),
           filename,
           'Teacher result summary PDF downloaded',
-          { orientation: 'p', marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } },
-          { syncKeys: [STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes] }
-        ).catch((error) => {
-          console.warn('Server teacher summary export failed. Falling back to browser rendering.', error);
-          downloadPdfFromHtml(
-            buildTeacherSummaryPdfHtml(q, submissions),
-            filename,
-            'Teacher result summary PDF downloaded',
-            { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
-          );
-        });
-        return;
-      }
-      downloadPdfFromHtml(
-        buildTeacherSummaryPdfHtml(q, submissions),
-        filename,
-        'Teacher result summary PDF downloaded',
-        { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
-      );
+          { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
+        ),
+        logLabel: 'teacher summary PDF'
+      });
     };
     const btnShareRequested = document.getElementById('btnShareRequestedCorrections');
     if (btnShareRequested) btnShareRequested.onclick = () => openRequestedCorrectionsShareModal(q, submissions);
