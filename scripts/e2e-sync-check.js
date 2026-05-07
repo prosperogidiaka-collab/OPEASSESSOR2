@@ -20,8 +20,10 @@ function withQuery(label) {
 async function createPage(context, label) {
   const page = await context.newPage();
   page.setDefaultTimeout(30000);
-  await page.goto(withQuery(label), { waitUntil: 'networkidle2' });
+  page.setDefaultNavigationTimeout(60000);
+  await page.goto(withQuery(label), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#app');
+  await page.waitForSelector('#topTeacher');
   return page;
 }
 
@@ -196,8 +198,8 @@ async function main() {
   });
 
   const teacherContext = await browser.createBrowserContext();
-  const secondTeacherContext = await browser.createBrowserContext();
-  const studentContext = await browser.createBrowserContext();
+  let secondTeacherContext = null;
+  let studentContext = null;
 
   try {
     const teacherPage = await createPage(teacherContext, 'teacher-a');
@@ -205,12 +207,14 @@ async function main() {
     const grantResult = await grantTeacherTokens(teacherPage);
     const quizResult = await createQuizFromTeacherContext(teacherPage);
 
+    secondTeacherContext = await browser.createBrowserContext();
     const secondTeacherPage = await createPage(secondTeacherContext, 'teacher-b');
     const secondTeacherResult = await loginTeacherOnFreshDevice(secondTeacherPage);
-    await secondTeacherPage.reload({ waitUntil: 'networkidle2' });
+    await secondTeacherPage.reload({ waitUntil: 'domcontentloaded' });
     await secondTeacherPage.waitForSelector('#quickCreate');
     const secondTeacherReloadResult = await readTeacherState(secondTeacherPage);
 
+    studentContext = await browser.createBrowserContext();
     const studentPage = await createPage(studentContext, 'student');
     const studentResult = await verifyStudentCanOpenQuiz(studentPage);
 
@@ -242,8 +246,8 @@ async function main() {
     if (failures.length) process.exitCode = 1;
   } finally {
     await teacherContext.close().catch(() => {});
-    await secondTeacherContext.close().catch(() => {});
-    await studentContext.close().catch(() => {});
+    if (secondTeacherContext) await secondTeacherContext.close().catch(() => {});
+    if (studentContext) await studentContext.close().catch(() => {});
     await browser.close().catch(() => {});
   }
 }

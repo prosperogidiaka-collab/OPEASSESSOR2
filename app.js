@@ -572,7 +572,8 @@ async function hydrateSharedStateBeforeFirstRender(params = new URLSearchParams(
 
 async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
   const sessionTeacherId = normalizeEmail(state.teacherId || getTeacherId());
-  if (sessionTeacherId && canUseNetworkSync()) {
+  const shouldPullSharedState = options.pullSharedState !== false;
+  if (sessionTeacherId && canUseNetworkSync() && shouldPullSharedState) {
     await pullSharedStateSilently({
       forcePull: options.forcePull !== false,
       timeoutMs: options.timeoutMs || DEFAULT_STARTUP_SYNC_TIMEOUT_MS
@@ -3531,8 +3532,12 @@ function renderTeacherAuth() {
       if (id === SUPER_ADMIN_EMAIL) ensureSuperAdminAccount();
       setBusy(true, createMode ? 'create' : 'login');
       try {
-        if (canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
-        const teachers = getAllTeachers();
+        let teachers = getAllTeachers();
+        const shouldRefreshSharedState = canUseNetworkSync() && (createMode || !networkSyncReady || !teachers[id]);
+        if (shouldRefreshSharedState) {
+          await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+          teachers = getAllTeachers();
+        }
         if (createMode) {
           if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
           if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
@@ -3564,7 +3569,9 @@ function renderTeacherAuth() {
         save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
         localStorage.setItem(STORAGE_KEYS.teacherId, id);
         state.teacherId = id;
-        await openTeacherWorkspace(id === SUPER_ADMIN_EMAIL ? 'teacher.settings' : 'teacher');
+        await openTeacherWorkspace(id === SUPER_ADMIN_EMAIL ? 'teacher.settings' : 'teacher', {
+          pullSharedState: false
+        });
       } catch (error) {
         console.error(error);
         showNotification('Unable to verify this teacher account right now. Please try again.', 'error', 8000);
@@ -5862,10 +5869,32 @@ function createPdfDocument(title, bodyHtml) {
   `;
 }
 
-function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+const DEFAULT_SERVER_HTML_PDF_TIMEOUT_MS = 8000;
+
+function canUseServerHtmlPdfExport(exportOptions = {}) {
   const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
-  if (serverReady) {
-    return downloadPdfThroughServer(html, filename, successMessage, exportOptions)
+  return serverReady && exportOptions && exportOptions.disableServerHtmlExport !== true;
+}
+
+async function runServerHtmlPdfExport(task, exportOptions = {}) {
+  const timeoutMarker = Symbol('server-html-pdf-timeout');
+  const result = await withTimeout(
+    Promise.resolve().then(task),
+    Math.max(1500, Number(exportOptions.serverHtmlTimeoutMs) || DEFAULT_SERVER_HTML_PDF_TIMEOUT_MS),
+    timeoutMarker
+  );
+  if (result === timeoutMarker) {
+    throw new Error('Server HTML PDF export timed out');
+  }
+  return result;
+}
+
+function downloadPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
+  if (canUseServerHtmlPdfExport(exportOptions)) {
+    return runServerHtmlPdfExport(
+      () => downloadPdfThroughServer(html, filename, successMessage, exportOptions),
+      exportOptions
+    )
       .catch((error) => {
         console.warn('Server PDF export failed. Falling back to browser rendering.', error);
         return downloadPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
@@ -6198,9 +6227,11 @@ function downloadPdfFromHtmlClientFallback(html, filename, successMessage = 'PDF
 }
 
 function downloadPagedPdfFromHtml(html, filename, successMessage = 'PDF downloaded', exportOptions = {}) {
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
-  if (serverReady) {
-    return downloadPdfThroughServer(html, filename, successMessage, exportOptions)
+  if (canUseServerHtmlPdfExport(exportOptions)) {
+    return runServerHtmlPdfExport(
+      () => downloadPdfThroughServer(html, filename, successMessage, exportOptions),
+      exportOptions
+    )
       .catch((error) => {
         console.warn('Server paged PDF export failed. Falling back to browser rendering.', error);
         return downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage, exportOptions);
@@ -6484,10 +6515,12 @@ function waitForNextPaint() {
 
 async function printHtmlAsSinglePage(html, options = {}) {
   const filename = `${makeSafeFilenamePart(options.title || 'print-preview', 'print-preview')}.pdf`;
-  const serverReady = canUseNetworkSync() || /^https?:$/i.test(window.location.protocol || '');
-  if (serverReady) {
+  if (canUseServerHtmlPdfExport(options)) {
     try {
-      return await openServerPdfPreview(html, filename, options);
+      return await runServerHtmlPdfExport(
+        () => openServerPdfPreview(html, filename, options),
+        options
+      );
     } catch (error) {
       console.warn('Server print preview failed. Falling back to browser canvas print.', error);
     }
@@ -6855,6 +6888,7 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
         filename,
         successMessage,
         {
+          disableServerHtmlExport: true,
           scale: 2.35,
           contentWidthMm: 180,
           marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
@@ -7169,6 +7203,7 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
         filename,
         successMessage,
         {
+          disableServerHtmlExport: true,
           scale: 2.3,
           contentWidthMm: 180,
           marginsMm: { top: 18, right: 15, bottom: 18, left: 15 },
@@ -7803,7 +7838,7 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
           buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'grouped' }),
           filename,
           'Teacher result summary PDF downloaded',
-          { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
+          { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
         );
       });
       return;
@@ -7834,7 +7869,7 @@ function showTeacherSummaryPdfFormatModal(quiz, submissions) {
           buildTeacherSummaryPdfHtml(quiz, submissions, { format: 'separate' }),
           filename,
           'Teacher result summary PDF downloaded',
-          { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794 }
+          { orientation: useLandscape ? 'l' : 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: useLandscape ? 1120 : 794, disableServerHtmlExport: true }
         );
       });
       return;
@@ -8636,7 +8671,7 @@ async function downloadStudentResultPdfDocument(quiz, submission) {
     buildStudentSummaryPdfHtml(quiz, submission),
     filename,
     'Student result summary PDF downloaded',
-    { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3 }
+    { singlePage: true, marginMm: 0, paddingPx: 0, sourceWidthPx: 794, renderScale: 3, disableServerHtmlExport: true }
   );
 }
 
@@ -8656,7 +8691,11 @@ async function openStudentResultPdfPreview(quiz, submission) {
       console.warn('Server print preview failed. Falling back to browser canvas print.', error);
     }
   }
-  return printHtmlAsSinglePage(buildStudentSummaryPdfHtml(quiz, submission), { title: 'Student Result Summary', paddingPx: 0 });
+  return printHtmlAsSinglePage(buildStudentSummaryPdfHtml(quiz, submission), {
+    title: 'Student Result Summary',
+    paddingPx: 0,
+    disableServerHtmlExport: true
+  });
 }
 
 function printStudentSummary(quiz, submission) {
@@ -8678,7 +8717,11 @@ function printStudentSummary(quiz, submission) {
     </div>
   `;
   openStudentResultPdfPreview(quiz, submission)
-    .catch(() => printHtmlAsSinglePage(printHtml, { title: 'Student Result Summary', paddingPx: 0 }))
+    .catch(() => printHtmlAsSinglePage(printHtml, {
+      title: 'Student Result Summary',
+      paddingPx: 0,
+      disableServerHtmlExport: true
+    }))
     .catch(() => showNotification('Unable to open print window', 'error'));
 }
 
@@ -8808,7 +8851,7 @@ function renderResultsView() {
             buildTeacherSummaryPdfHtml(q, submissions),
             filename,
             'Teacher result summary PDF downloaded',
-            { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794 }
+            { orientation: 'p', singlePage: false, marginMm: 8, paddingPx: 10, sourceWidthPx: 794, disableServerHtmlExport: true }
           );
         });
         return;

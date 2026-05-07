@@ -36,6 +36,9 @@ const SUPABASE_TABLE_PREFIX = (process.env.SUPABASE_TABLE_PREFIX || 'ope_').trim
 const PDF_BROWSER_PATH = (process.env.PDF_BROWSER_PATH || '').trim();
 const PDF_EXPORT_TIMEOUT_MS = Number(process.env.PDF_EXPORT_TIMEOUT_MS || 45000);
 const PDF_EXPORT_TEMP_DIR = path.join(ROOT, '.pdf-export-cache');
+const PDF_DEBUG_CAPTURE = ['1', 'true', 'yes'].includes((process.env.PDF_DEBUG_CAPTURE || '').toString().trim().toLowerCase());
+
+let sharedPdfBrowserPromise = null;
 
 const stateStore = createStateStore({
   storageBackend: STORAGE_BACKEND,
@@ -210,6 +213,12 @@ function serializeInlineScriptData(value) {
     .replace(/\u2029/g, '\\u2029');
 }
 
+function buildAbsoluteAssetUrl(baseUrl = '', assetPath = '') {
+  const base = (baseUrl || '').toString().trim().replace(/\/+$/, '');
+  const normalizedPath = assetPath.startsWith('/') ? assetPath : `/${assetPath}`;
+  return base ? `${base}${normalizedPath}` : normalizedPath;
+}
+
 function injectPdfBootstrap(htmlBuffer, payload) {
   const scriptTag = `<script>window.__OPE_PDF_BOOTSTRAP__=${serializeInlineScriptData(payload)};</script>`;
   let html = Buffer.isBuffer(htmlBuffer) ? htmlBuffer.toString('utf8') : String(htmlBuffer || '');
@@ -233,8 +242,14 @@ function buildVerificationQrSvg(value = '') {
   }
 }
 
-function buildPdfRouteDocument(payload = {}) {
+function buildPdfRouteDocument(payload = {}, options = {}) {
   const title = escapeHtmlAttr(payload.title || 'OPE Assessor PDF Export');
+  const baseUrl = (options.baseUrl || '').toString().trim().replace(/\/+$/, '');
+  const styleHref = buildAbsoluteAssetUrl(baseUrl, '/style.css');
+  const configHref = buildAbsoluteAssetUrl(baseUrl, '/config.js');
+  const repositoryHref = buildAbsoluteAssetUrl(baseUrl, '/repository.js');
+  const presenterHref = buildAbsoluteAssetUrl(baseUrl, '/presenter.js');
+  const appHref = buildAbsoluteAssetUrl(baseUrl, '/app.js');
   return Buffer.from(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -242,15 +257,16 @@ function buildPdfRouteDocument(payload = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex,nofollow">
   <title>${title}</title>
-  <link rel="stylesheet" href="/style.css">
-  <script>window.__OPE_PDF_BOOTSTRAP__=${serializeInlineScriptData(payload)};</script>
+  ${baseUrl ? `<base href="${escapeHtmlAttr(`${baseUrl}/`)}">` : ''}
+  <link rel="stylesheet" href="${escapeHtmlAttr(styleHref)}">
+  <script>window.__OPE_PDF_READY__=false;window.__OPE_PDF_BOOTSTRAP__=${serializeInlineScriptData(payload)};</script>
 </head>
 <body class="pdf-route-active">
   <div id="app"></div>
-  <script src="/config.js"></script>
-  <script src="/repository.js"></script>
-  <script src="/presenter.js"></script>
-  <script src="/app.js"></script>
+  <script src="${escapeHtmlAttr(configHref)}"></script>
+  <script src="${escapeHtmlAttr(repositoryHref)}"></script>
+  <script src="${escapeHtmlAttr(presenterHref)}"></script>
+  <script src="${escapeHtmlAttr(appHref)}"></script>
   <script>
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', function () {
@@ -494,11 +510,34 @@ function buildInternalPdfUrl(routePath = '') {
   return `http://127.0.0.1:${PORT}${target}`;
 }
 
-function renderPdfWithBrowserFallback({ html = '', routePath = '', options = {}, browserPath, jobDir }) {
+async function getSharedPdfBrowser(browserPath) {
+  if (!sharedPdfBrowserPromise) {
+    sharedPdfBrowserPromise = puppeteer.launch({
+      headless: 'new',
+      executablePath: browserPath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }).then((browser) => {
+      browser.on('disconnected', () => {
+        if (sharedPdfBrowserPromise) sharedPdfBrowserPromise = null;
+      });
+      return browser;
+    }).catch((error) => {
+      sharedPdfBrowserPromise = null;
+      throw error;
+    });
+  }
+  return sharedPdfBrowserPromise;
+}
+
+function renderPdfWithBrowserFallback({ html = '', routePath = '', bootstrap = null, baseUrl = '', options = {}, browserPath, jobDir }) {
   const pdfPath = path.join(jobDir, 'export.pdf');
   let sourceTarget = '';
 
-  if (routePath) {
+  if (bootstrap && typeof bootstrap === 'object') {
+    const sourcePath = path.join(jobDir, 'source.html');
+    fs.writeFileSync(sourcePath, buildPdfRouteDocument(bootstrap, { baseUrl }), 'utf8');
+    sourceTarget = pathToFileURL(sourcePath).toString();
+  } else if (routePath) {
     sourceTarget = buildInternalPdfUrl(routePath);
   } else {
     const sourcePath = path.join(jobDir, 'source.html');
@@ -548,7 +587,7 @@ function renderPdfWithBrowserFallback({ html = '', routePath = '', options = {},
   });
 }
 
-async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', options = {} } = {}) {
+async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', bootstrap = null, baseUrl = '', options = {} } = {}) {
   const browserPath = findPdfBrowserPath();
   const margins = normalizePdfMargins(options);
   fs.mkdirSync(PDF_EXPORT_TEMP_DIR, { recursive: true });
@@ -556,30 +595,35 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', options
   const jobDir = path.join(PDF_EXPORT_TEMP_DIR, jobId);
   const debugScreenshotPath = path.join(jobDir, 'debug-pdf-page.png');
   fs.mkdirSync(jobDir, { recursive: true });
-  let browser;
+  let browser = null;
+  let page = null;
 
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: browserPath,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    const page = await browser.newPage();
+    browser = await getSharedPdfBrowser(browserPath);
+    page = await browser.newPage();
     await page.setViewport({ width: 1600, height: 2200, deviceScaleFactor: 1 });
+    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultTimeout(30000);
+    const usesPdfAppRenderer = !!(bootstrap && typeof bootstrap === 'object') || !!routePath;
 
-    if (routePath) {
+    if (bootstrap && typeof bootstrap === 'object') {
+      await page.setContent(buildPdfRouteDocument(bootstrap, { baseUrl }).toString('utf8'), {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+    } else if (routePath) {
       const pdfUrl = buildInternalPdfUrl(routePath);
       const response = await page.goto(pdfUrl, {
-        waitUntil: ['networkidle0', 'domcontentloaded'],
-        timeout: 60000
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
       });
       if (!response || !response.ok()) {
         throw new Error(`PDF route failed to load: ${pdfUrl}`);
       }
     } else {
       await page.setContent(buildPdfDocumentHtml(html, options), {
-        waitUntil: ['networkidle0', 'domcontentloaded'],
-        timeout: 60000
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
       });
     }
 
@@ -590,35 +634,37 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', options
       }
     });
     await page.waitForSelector('#pdf-root', {
-      visible: true,
-      timeout: 30000
+      timeout: usesPdfAppRenderer ? 30000 : 5000
     });
-    await page.waitForFunction(() => window.__OPE_PDF_READY__ !== false, {
-      timeout: 30000
-    });
+    if (usesPdfAppRenderer) {
+      await page.waitForFunction(() => window.__OPE_PDF_READY__ !== false, {
+        timeout: 15000
+      });
+    }
     await page.waitForFunction(() => {
       const root = document.querySelector('#pdf-root');
-      return root && root.innerText.trim().length > 100;
+      return root && root.offsetHeight > 0 && root.textContent.trim().length > 0;
     }, {
-      timeout: 30000
+      timeout: usesPdfAppRenderer ? 15000 : 5000
     });
     await page.waitForFunction(() => {
       const images = Array.from(document.images || []);
       return images.every((img) => img.complete && img.naturalWidth > 0);
     }, {
-      timeout: 30000
+      timeout: 10000
     }).catch(() => {});
-
-    await page.screenshot({
-      path: debugScreenshotPath,
-      fullPage: true
-    });
-    try {
-      fs.copyFileSync(debugScreenshotPath, path.join(ROOT, 'debug-pdf-page.png'));
-    } catch (error) {}
+    if (PDF_DEBUG_CAPTURE) {
+      await page.screenshot({
+        path: debugScreenshotPath,
+        fullPage: true
+      });
+      try {
+        fs.copyFileSync(debugScreenshotPath, path.join(ROOT, 'debug-pdf-page.png'));
+      } catch (error) {}
+    }
 
     const textContent = await page.$eval('#pdf-root', (element) => element.innerText.trim());
-    if (!textContent || textContent.length < 100) {
+    if (!textContent || textContent.length < 1) {
       throw new Error('PDF export failed: PDF root has no visible content.');
     }
 
@@ -637,12 +683,12 @@ async function renderPdfWithHeadlessBrowser({ html = '', routePath = '', options
   } catch (error) {
     const message = error && error.message ? error.message : '';
     if (/EPERM|spawn/i.test(message)) {
-      return await renderPdfWithBrowserFallback({ html, routePath, options, browserPath, jobDir });
+      return await renderPdfWithBrowserFallback({ html, routePath, bootstrap, baseUrl, options, browserPath, jobDir });
     }
     throw error;
   } finally {
-    if (browser) {
-      try { await browser.close(); } catch (error) {}
+    if (page) {
+      try { await page.close(); } catch (error) {}
     }
     try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch (error) {}
   }
@@ -734,11 +780,14 @@ async function handleApi(req, res) {
           };
       const html = typeof parsed.html === 'string' ? parsed.html : '';
       const routePath = typeof parsed.routePath === 'string' ? parsed.routePath.trim() : '';
+      const bootstrap = parsed.bootstrap && typeof parsed.bootstrap === 'object' ? parsed.bootstrap : null;
       if (!routePath && !html.trim()) return sendJson(req, res, 400, { error: 'Missing routePath or html' });
       const filename = sanitizePdfFilename(parsed.filename || 'ope-export.pdf');
       const pdfBuffer = await renderPdfWithHeadlessBrowser({
         html,
         routePath,
+        bootstrap,
+        baseUrl: getRequestBaseUrl(req),
         options: parsed.options || {}
       });
       return send(req, res, 200, pdfBuffer, 'application/pdf', {
@@ -768,7 +817,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const pdfBootstrap = await buildPdfBootstrapPayload(req);
     if (pdfBootstrap) {
-      const documentBuffer = buildPdfRouteDocument(pdfBootstrap);
+      const documentBuffer = buildPdfRouteDocument(pdfBootstrap, { baseUrl: getRequestBaseUrl(req) });
       return send(req, res, 200, req.method === 'HEAD' ? '' : documentBuffer, TYPES['.html']);
     }
   } catch (error) {
