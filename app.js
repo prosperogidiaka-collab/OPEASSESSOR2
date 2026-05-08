@@ -6703,16 +6703,26 @@ function downloadPagedPdfFromHtmlClientFallback(html, filename, successMessage =
   source = document.createElement('div');
   source.id = sourceId;
   source.innerHTML = html;
+  // Park the element on-screen with a zero-size overflow:hidden wrapper.
+  // Mobile Chrome/Safari skip layout for nodes at left:-99999px, which makes
+  // html2canvas capture a blank canvas. Using opacity:0 doesn't help because
+  // html2canvas honors opacity. A 0x0 wrapper with overflow:hidden hides the
+  // content visually while letting the inner box keep its real dimensions for
+  // capture (html2canvas measures bounding boxes from the target element).
   Object.assign(source.style, {
-    position: 'absolute',
-    left: '-99999px',
+    position: 'fixed',
+    left: '0',
     top: '0',
     width: `${contentWidthMm}mm`,
     minWidth: `${contentWidthMm}mm`,
     maxWidth: `${contentWidthMm}mm`,
+    height: 'auto',
     background: '#ffffff',
     overflow: 'visible',
-    display: 'block'
+    display: 'block',
+    pointerEvents: 'none',
+    zIndex: '-1',
+    clipPath: 'inset(50%)'
   });
   document.body.appendChild(source);
   if (exportOptions.preferCanvasSnapshot) {
@@ -10864,8 +10874,8 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
 function buildPdfExportSandboxCss(widthCss = '210mm', paddingCss = '24px') {
   return `
     .pdf-export-sandbox {
-      position: absolute !important;
-      left: -99999px !important;
+      position: fixed !important;
+      left: 0 !important;
       top: 0 !important;
       width: ${widthCss} !important;
       min-width: ${widthCss} !important;
@@ -10875,6 +10885,7 @@ function buildPdfExportSandboxCss(widthCss = '210mm', paddingCss = '24px') {
       opacity: 1 !important;
       pointer-events: none !important;
       z-index: -1 !important;
+      clip-path: inset(50%) !important;
     }
     .pdf-export-root,
     .pdf-export-root * {
@@ -11014,9 +11025,14 @@ function createPdfExportSandbox({
 } = {}) {
   const sandbox = document.createElement('div');
   sandbox.className = 'pdf-export-sandbox';
+  // Park on-screen so layout/paint actually happen (mobile Chrome/Safari
+  // optimize away nodes at left:-99999px → blank canvas), then hide visually
+  // via clip-path. The inner .pdf-export-root resets clip-path to `none`
+  // (see buildPdfExportSandboxCss), so html2canvas captures the full content
+  // even though the user sees nothing.
   Object.assign(sandbox.style, {
-    position: 'absolute',
-    left: '-99999px',
+    position: 'fixed',
+    left: '0',
     top: '0',
     width: widthCss,
     minWidth: widthCss,
@@ -11025,7 +11041,8 @@ function createPdfExportSandbox({
     visibility: 'visible',
     opacity: '1',
     pointerEvents: 'none',
-    zIndex: '-1'
+    zIndex: '-1',
+    clipPath: 'inset(50%)'
   });
 
   const exportRoot = document.createElement('div');
