@@ -2000,21 +2000,24 @@ async function initializeApp() {
     return;
   }
   // Detect the user-facing print routes (/student-correction/:id and
-  // /facility-index/:id). These open a polished, A4-styled HTML page that the
-  // browser can print or save as PDF natively — no canvas/jsPDF involved, so
-  // there are no blank-page failures.
+  // /facility-index/:id). The source tab writes a one-shot payload to
+  // localStorage before opening the new tab, so the destination renders the
+  // full A4-styled report instantly. No spinner, no network round-trip.
   const printRoute = parsePrintRouteFromLocation();
   if (printRoute) {
     ensureSuperAdminAccount();
     migrateAndNormalizeSubmissions();
     state.printRoute = printRoute;
     state.view = printRoute.type === 'facility-index' ? 'print.facility' : 'print.correction';
-    // Pull the latest shared state so the lookup can resolve even if this
-    // device hasn't seen the submission/quiz yet.
-    if (canUseNetworkSync()) {
-      try { await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 }); } catch (e) {}
-    }
     render();
+    // If the destination opened the URL directly (no payload), pull shared
+    // state in the background and re-render once it arrives. Doesn't block
+    // the first paint.
+    if (canUseNetworkSync()) {
+      pullSharedStateSilently({ forcePull: true, timeoutMs: 8000 })
+        .then((didChange) => { if (didChange !== false) render(); })
+        .catch(() => {});
+    }
     return;
   }
   ensureSuperAdminAccount();
@@ -6458,6 +6461,33 @@ function getPublicAppBaseUrl() {
   return '/';
 }
 
+// Print-route payload helpers. The source tab writes a one-shot payload here
+// (typed by route + id), and the destination tab reads + clears it on render
+// so the print view is instant even without shared sync.
+const PRINT_PAYLOAD_PREFIX = 'ope_print_payload_';
+
+function writePrintPayload(type, id, data) {
+  if (typeof localStorage === 'undefined' || !type || !id) return;
+  try {
+    const key = `${PRINT_PAYLOAD_PREFIX}${type}_${id}`;
+    localStorage.setItem(key, JSON.stringify({ ...(data || {}), savedAt: Date.now() }));
+  } catch (e) { /* quota or serialization error — fall back to lookup */ }
+}
+
+function readPrintPayload(type, id) {
+  if (typeof localStorage === 'undefined' || !type || !id) return null;
+  const key = `${PRINT_PAYLOAD_PREFIX}${type}_${id}`;
+  let payload = null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) payload = JSON.parse(raw);
+  } catch (e) { payload = null; }
+  // Clean up: payload is single-use. If user reloads the print tab, we'll fall
+  // through to shared-state lookup which is also fine.
+  try { localStorage.removeItem(key); } catch (e) {}
+  return payload;
+}
+
 function parsePrintRouteFromLocation() {
   if (typeof window === 'undefined' || !window.location) return null;
   const pathname = (window.location.pathname || '').replace(/\/+$/, '');
@@ -7444,9 +7474,9 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
 }
 
 function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
-  // Open a polished, print-ready HTML view in a new tab instead of generating
-  // a PDF in-browser. Students can read it directly or use the browser's
-  // "Print > Save as PDF" for a clean, properly-paginated PDF every time.
+  // Open a polished, print-ready HTML view in a new tab. Source tab also
+  // writes a one-shot payload to localStorage so the new tab can render
+  // instantly — no spinner, no network round-trip, no race conditions.
   const shareKey = getSubmissionShareKey(submission);
   if (!shareKey) {
     showNotification('This submission cannot be opened yet — share key missing.', 'error');
@@ -7454,13 +7484,18 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
   }
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
   const resolvedSubjectName = correctionView.subjectName;
+  writePrintPayload('student-correction', shareKey, {
+    submission,
+    quiz,
+    subject: resolvedSubjectName || '',
+    showNegativePenalty: opts.showNegativePenalty !== false
+  });
   const params = new URLSearchParams();
   if (resolvedSubjectName) params.set('subject', resolvedSubjectName);
   if (opts.showNegativePenalty === false) params.set('showNegativePenalty', '0');
   const url = `/student-correction/${encodeURIComponent(shareKey)}${params.toString() ? `?${params.toString()}` : ''}`;
   const opened = window.open(url, '_blank', 'noopener');
   if (!opened) {
-    // Popup blocker — fall back to same-tab navigation.
     window.location.href = url;
   } else {
     showNotification('Correction view opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
@@ -7744,14 +7779,19 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
 }
 
 function downloadFacilityIndexPdfText(quiz, data, options = {}) {
-  // Open the facility index in a new tab as a print-ready HTML view. Browser
-  // "Print > Save as PDF" produces the actual PDF without the blank-page
-  // failures we got from in-browser canvas rendering.
+  // Open the facility index print view in a new tab and stash the payload
+  // (quiz + facility data) in localStorage so the destination tab renders
+  // instantly without re-pulling shared state.
   if (!quiz || !quiz.id) {
     showNotification('Quiz information is missing — facility index cannot be opened.', 'error');
     return Promise.resolve(false);
   }
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
+  writePrintPayload('facility-index', quiz.id, {
+    quiz,
+    data: Array.isArray(data) ? data : [],
+    subject: subjectName
+  });
   const params = new URLSearchParams();
   if (subjectName) params.set('subject', subjectName);
   const url = `/facility-index/${encodeURIComponent(quiz.id)}${params.toString() ? `?${params.toString()}` : ''}`;
@@ -9193,30 +9233,46 @@ function renderPdfExportView() {
 
 function renderPrintRouteView() {
   const route = state.printRoute || {};
-  const quizzes = getAllQuizzes();
   let contentHtml = '';
   let documentTitle = 'OPE Assessor';
   let notFoundReason = '';
 
   if (route.type === 'student-correction') {
-    const submission = findSubmissionByShareKey(route.shareKey || '');
-    const quiz = submission ? quizzes[submission.quizId] : null;
-    if (!submission) notFoundReason = 'No submission was found for this link. The student may not have submitted yet, or the link may be from a different teacher account.';
-    else if (!quiz) notFoundReason = 'The quiz this submission belongs to is no longer available on this device.';
+    // Try the one-shot payload first (instant). Fall back to local/shared
+    // state lookup. If neither is available we show "not ready" — the
+    // background pull triggered in initializeApp will re-render once data
+    // arrives.
+    const payload = readPrintPayload('student-correction', route.shareKey || '');
+    let submission = (payload && payload.submission) || null;
+    let quiz = (payload && payload.quiz) || null;
+    if (!submission) {
+      submission = findSubmissionByShareKey(route.shareKey || '');
+      quiz = submission ? getAllQuizzes()[submission.quizId] : null;
+    }
+    if (!submission) notFoundReason = 'Loading the correction. If this message stays up, the submission link may be from a different teacher account, or shared sync has not finished yet.';
+    else if (!quiz) notFoundReason = 'The quiz for this submission is not available on this device yet. It will appear once shared sync pulls the quiz data.';
     else {
       documentTitle = `Correction · ${submission.name || submission.email || 'Student'}`;
       contentHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
-        showNegativePenalty: route.showNegativePenalty !== false,
-        subjectName: route.subject || ''
+        showNegativePenalty: payload ? payload.showNegativePenalty !== false : (route.showNegativePenalty !== false),
+        subjectName: (payload && payload.subject) || route.subject || ''
       });
     }
   } else if (route.type === 'facility-index') {
-    const quiz = quizzes[route.quizId || ''];
-    if (!quiz) notFoundReason = 'This quiz could not be found on this device. Open it from a device where the quiz exists, or wait for shared sync to complete.';
+    const payload = readPrintPayload('facility-index', route.quizId || '');
+    let quiz = (payload && payload.quiz) || null;
+    let facilityData = (payload && Array.isArray(payload.data)) ? payload.data : null;
+    let subjectFilter = (payload && payload.subject) || (route.subject || '').toString().trim();
+    if (!quiz) {
+      quiz = getAllQuizzes()[route.quizId || ''];
+      if (quiz) {
+        const allSubs = getAllSubmissions().filter((item) => item && item.quizId === quiz.id);
+        facilityData = computeFacilityIndexFromQuizAndSubmissions(quiz, allSubs);
+      }
+    }
+    if (!quiz) notFoundReason = 'Loading the facility index. If this message stays up, the quiz is not available on this device yet — shared sync has not finished pulling it.';
     else {
-      const allSubs = getAllSubmissions().filter((item) => item && item.quizId === quiz.id);
-      const facilityData = computeFacilityIndexFromQuizAndSubmissions(quiz, allSubs);
-      const subjectFilter = (route.subject || '').toString().trim();
+      if (!Array.isArray(facilityData)) facilityData = [];
       const visibleData = subjectFilter && subjectFilter !== 'General'
         ? facilityData.filter((item) => normalizeSubjectName(item.subject || 'General') === normalizeSubjectName(subjectFilter))
         : facilityData;
