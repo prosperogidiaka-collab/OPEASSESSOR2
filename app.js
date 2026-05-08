@@ -412,7 +412,7 @@ function clearNetworkKeyDirty(key) {
 function schedulePendingNetworkFlush(delayMs = DEFAULT_NETWORK_SYNC_RETRY_MS) {
   if (!canUseNetworkSync()) return;
   if (networkSyncRetryTimer) clearTimeout(networkSyncRetryTimer);
-  const waitMs = Math.max(50, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
+  const waitMs = Math.max(250, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
   networkSyncRetryTimer = setTimeout(() => {
     networkSyncRetryTimer = null;
     flushPendingNetworkWrites();
@@ -7326,41 +7326,41 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   return `
     <div class="pdf-doc-root correction-pdf-root">
       <style>
-        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.55;font-size:12pt}
+        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:12pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .pdf-doc-root *{box-sizing:border-box}
         .pdf-doc-shell{display:flex;flex-direction:column;gap:14px}
-        .pdf-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px 18px 16px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
+        .pdf-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px 18px 16px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%);text-align:left}
         .pdf-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
         .pdf-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
         .pdf-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
         .pdf-section-card{border:1px solid #CBD5E1;border-radius:16px;padding:14px;background:#fff}
-        .pdf-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .pdf-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
         .pdf-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-        .pdf-meta-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
-        .pdf-meta-card strong{display:block;font-size:11pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .pdf-meta-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px;text-align:left}
+        .pdf-meta-card strong{display:block;font-size:12pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
         .pdf-meta-card span{display:block;color:#000;font-size:12pt;line-height:1.55;word-break:break-word}
         .pdf-question-card{border:1px solid #CBD5E1;border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
         .pdf-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
-        .pdf-question-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
+        .pdf-question-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;text-align:left}
         .pdf-question-number{font-size:13pt;font-weight:900;color:#1F2937}
-        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:11pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:12pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
         .pdf-question-card.status-correct .pdf-question-status{background:#DCFCE7}
         .pdf-question-card.status-incorrect .pdf-question-status{background:#FEE2E2}
-        .pdf-question-text{margin-top:10px;color:#000;font-size:12.4pt;line-height:1.58;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
-        .pdf-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-question-text{margin-top:10px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .pdf-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .pdf-meta-line strong{color:#000}
         .pdf-writeup{color:#000}
         .pdf-option-list{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
-        .pdf-option-row{display:flex;gap:10px;align-items:flex-start;border:1px solid #E2E8F0;border-radius:10px;padding:8px 10px;background:#fff}
+        .pdf-option-row{display:flex;gap:10px;align-items:flex-start;border:1px solid #E2E8F0;border-radius:10px;padding:8px 10px;background:#fff;text-align:left}
         .pdf-option-row.is-correct{border-color:#93C5FD;background:#EFF6FF}
         .pdf-option-row.is-selected{box-shadow:inset 0 0 0 1px rgba(47,128,237,.22)}
         .pdf-option-letter{font-weight:900;color:#000;min-width:18px;font-size:12pt}
-        .pdf-option-text{color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
-        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+        .pdf-option-text{color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:left}
+        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .rich-text-output > :first-child{margin-top:0}
         .rich-text-output > :last-child{margin-bottom:0}
         .rich-text-output p,.rich-text-output div,.rich-text-output ul,.rich-text-output ol{margin:0 0 .45em}
-        .rich-text-output li{margin:0 0 .2em}
+        .rich-text-output li{margin:0 0 .2em;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         @media(max-width:640px){.pdf-meta-grid{grid-template-columns:1fr}}
       </style>
       <div class="pdf-doc-shell">
@@ -7407,12 +7407,14 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     successMessage,
     {
       disableServerHtmlExport: true,
-      scale: 2.35,
-      contentWidthMm: 186,
-      marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      renderDelayMs: 450,
-      pagebreakAvoid: ['.avoid-break', '.pdf-question-card', '.pdf-summary-card', '.pdf-meta-card'],
-      pagebreakBefore: ['.pdf-question-card.long-card']
+      // Canvas snapshot path is more reliable than html2pdf's pagebreak engine
+      // and produces consistent A4-fitted pages with no blank-content failures.
+      preferCanvasSnapshot: true,
+      contentWidthMm: 190,
+      sourceWidthPx: 912,
+      renderScale: 2.4,
+      marginMm: 10,
+      orientation: 'p'
     }
   );
 }
@@ -7608,35 +7610,35 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
   return `
     <div class="pdf-doc-root facility-pdf-root">
       <style>
-        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.55;font-size:12pt}
+        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:12pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .facility-pdf-root *{box-sizing:border-box}
         .facility-shell{display:flex;flex-direction:column;gap:14px}
-        .facility-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%)}
+        .facility-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%);text-align:left}
         .facility-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
         .facility-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
         .facility-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
         .facility-summary{border:1px solid #CBD5E1;border-radius:16px;background:#fff;padding:14px}
-        .facility-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px}
+        .facility-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
         .facility-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-        .facility-summary-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px}
-        .facility-summary-card strong{display:block;font-size:11pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .facility-summary-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px;text-align:left}
+        .facility-summary-card strong{display:block;font-size:12pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
         .facility-summary-card span{display:block;color:#000;font-size:12pt;line-height:1.55}
         .facility-band-section{display:flex;flex-direction:column;gap:10px}
-        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:12pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill)}
+        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:12pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill);text-align:left}
         .facility-question-card{border:1px solid #CBD5E1;border-left:4px solid var(--band-accent);border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
         .facility-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
-        .facility-question-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+        .facility-question-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;text-align:left}
         .facility-question-title{font-size:13pt;font-weight:900;color:#1F2937}
-        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:11pt;font-weight:800}
-        .facility-question-text{margin-top:10px;color:#000;font-size:12.4pt;line-height:1.58;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
-        .facility-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere}
+        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:12pt;font-weight:800}
+        .facility-question-text{margin-top:10px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .facility-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .facility-meta-line strong{color:#000}
         .facility-writeup{color:#000}
-        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere}
+        .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .rich-text-output > :first-child{margin-top:0}
         .rich-text-output > :last-child{margin-bottom:0}
         .rich-text-output p,.rich-text-output div,.rich-text-output ul,.rich-text-output ol{margin:0 0 .45em}
-        .rich-text-output li{margin:0 0 .2em}
+        .rich-text-output li{margin:0 0 .2em;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         @media(max-width:640px){.facility-summary-grid{grid-template-columns:1fr}}
       </style>
       <div class="facility-shell">
@@ -7702,12 +7704,12 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
     successMessage,
     {
       disableServerHtmlExport: true,
-      scale: 2.3,
-      contentWidthMm: 186,
-      marginsMm: { top: 10, right: 8, bottom: 10, left: 8 },
-      renderDelayMs: 450,
-      pagebreakAvoid: ['.avoid-break', '.facility-question-card', '.facility-summary-card', '.facility-band-heading', '.facility-band-section'],
-      pagebreakBefore: ['.facility-question-card.long-card']
+      preferCanvasSnapshot: true,
+      contentWidthMm: 190,
+      sourceWidthPx: 912,
+      renderScale: 2.4,
+      marginMm: 10,
+      orientation: 'p'
     }
   );
 }
@@ -11772,6 +11774,18 @@ function renderStudentEntry() {
         if (!found) return showNotification('You are not on the allowed list for this quiz', 'error');
       }
       state.currentQuiz = quiz;
+      // Defensive cleanup: a prior attempt may have left a snapshot interval,
+      // a webcam stream, or a timer running. If we don't kill those before
+      // overwriting state.currentSubmission, the references are lost and the
+      // intervals keep firing — this is what causes "state not clearing
+      // between attempts" and the after-click sluggishness.
+      stopWebcam();
+      if (typeof timerInterval !== 'undefined' && timerInterval) {
+        try { clearInterval(timerInterval); } catch (e) {}
+        timerInterval = null;
+      }
+      timeRemaining = 0;
+      startTime = null;
       state.currentSubmission = null; // reset
       state.view = 'take';
       // set student details into submission placeholder
@@ -11963,6 +11977,11 @@ async function collectAndSubmit() {
     // cleanup proctoring
     try { if (document.fullscreenElement) document.exitFullscreen(); } catch(e){}
     stopWebcam();
+    // Stop the exam timer — otherwise it ticks forever on a removed DOM node,
+    // throws on every tick, and leaks interval handles across attempts.
+    if (timerInterval) { try { clearInterval(timerInterval); } catch (e) {} timerInterval = null; }
+    timeRemaining = 0;
+    startTime = null;
     const calculator = document.getElementById('examCalculatorPanel'); if (calculator) calculator.remove();
     // re-enable selection
     try{ document.body.classList.remove('exam-no-select'); }catch(e){}
