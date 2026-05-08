@@ -3221,6 +3221,7 @@ function computeFacilityIndexFromQuizAndSubmissions(quiz = {}, submissions = [])
       const q = normalizedSource[i];
       quizQuestions.push({
         _sourceId: q._sourceId,
+        type: normalizeQuestionType(q.type),
         question: q.question || '',
         subject: subj.name || q.subject || 'General',
         topic: q.topic || '',
@@ -3230,6 +3231,7 @@ function computeFacilityIndexFromQuizAndSubmissions(quiz = {}, submissions = [])
         mediaAssets: sanitizeQuestionMediaAssets(q.mediaAssets || []),
         options: q.options || [],
         answer: q.answer || null,
+        acceptedAnswers: Array.isArray(q.acceptedAnswers) ? q.acceptedAnswers : [],
         difficulty: q.difficulty || 'Medium'
       });
     }
@@ -3245,6 +3247,11 @@ function computeFacilityIndexFromQuizAndSubmissions(quiz = {}, submissions = [])
       count: 0
     }));
     let seen = 0, attempted = 0, correct = 0, unanswered = 0;
+    const liveQType = normalizeQuestionType(qq.type);
+    const liveCorrectLetter = (qq.answer || '').toString().toUpperCase();
+    const liveCorrectIndex = liveCorrectLetter.charCodeAt(0) - 65;
+    const liveCorrectText = (qq.options || [])[liveCorrectIndex] || '';
+    const liveAcceptedShort = Array.isArray(qq.acceptedAnswers) ? qq.acceptedAnswers.map((entry) => (entry || '').toString().trim().toLowerCase()) : [];
     submissions.forEach(submission => {
       const allQuestions = submission.allQuestions || [];
       const answerMap = submission.answers || {};
@@ -3258,7 +3265,21 @@ function computeFacilityIndexFromQuizAndSubmissions(quiz = {}, submissions = [])
           return;
         }
         attempted++;
-        if (ans === studentQ.answer) correct++;
+        // Score against the LIVE quiz answer (not the snapshot) so question /
+        // option edits reflect in correctness counts and the resulting
+        // facility index ordering.
+        let isCorrect = false;
+        if (liveQType === 'mcq') {
+          const chosenText = optionText(studentQ, ans);
+          if (chosenText && liveCorrectText) isCorrect = (chosenText === liveCorrectText);
+          else isCorrect = (ans.toString().toUpperCase() === liveCorrectLetter);
+        } else if (liveQType === 'yesno') {
+          isCorrect = ans.toString().trim().toLowerCase() === liveCorrectLetter.toLowerCase();
+        } else if (liveQType === 'short') {
+          const norm = ans.toString().trim().toLowerCase();
+          isCorrect = liveAcceptedShort.some((entry) => entry === norm);
+        }
+        if (isCorrect) correct++;
         const chosenText = optionText(studentQ, ans);
         const originalOptionIndex = (qq.options || []).findIndex(opt => opt === chosenText);
         if (originalOptionIndex >= 0 && optionCounts[originalOptionIndex]) {
@@ -7617,16 +7638,26 @@ function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
   const showNegativePenalty = !!opts.showNegativePenalty;
   const questions = submission.allQuestions || [];
   const scoreNote = hasManualScoreOverride(submission) ? 'Teacher-adjusted score applied' : '';
+  const liveQuestionMap = quiz ? getQuizLiveQuestionMap(quiz) : null;
+  const answerMap = quiz ? getQuizAnswerMap(quiz) : null;
   const rows = questions.map((question, idx) => {
     const chosen = submission.answers && submission.answers[idx] ? submission.answers[idx] : '';
-    const correct = (question.answer || '').toString().toUpperCase();
-    const isCorrect = chosen && chosen === correct;
+    const sourceId = (question && question._sourceId) || makeQuestionId(question, idx);
+    const liveQuestion = liveQuestionMap ? liveQuestionMap[sourceId] : null;
+    // Re-grade against the live quiz so post-edit corrections show the current
+    // correct answer and updated correct/incorrect verdict.
+    const verdict = evaluateAnswerForQuestion(question, chosen, answerMap, idx, liveQuestionMap);
+    const isCorrect = verdict === 'correct';
+    const liveCorrectLetter = ((liveQuestion && liveQuestion.answer) || question.answer || '').toString().toUpperCase();
+    const correctOptionText = liveQuestion && Array.isArray(liveQuestion.options)
+      ? (liveQuestion.options[liveCorrectLetter.charCodeAt(0) - 65] || '')
+      : optionText(question, liveCorrectLetter);
     return `
       <tr>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top">Q${idx + 1}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(question.question || '')}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml((liveQuestion && liveQuestion.question) || question.question || '')}</td>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(optionText(question, chosen))}</td>
-        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(optionText(question, correct))}</td>
+        <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;white-space:normal;word-break:break-word;overflow-wrap:anywhere">${renderRichTextHtml(correctOptionText || liveCorrectLetter)}</td>
         <td style="padding:8px;border:1px solid #CBD5E1;vertical-align:top;color:${isCorrect ? '#047857' : '#B91C1C'};font-weight:700">${isCorrect ? 'Correct' : 'Incorrect'}</td>
       </tr>
     `;
@@ -10896,6 +10927,7 @@ function showCreateQuizModal(editQuizId = '') {
               <p class="section-subtitle">Use the upload button inside each subject row. Paste CSV below only when creating a single-subject quiz.</p>
             </div>
           </div>
+          <p class="helper-text" id="cqQuestionFormatHint" style="margin-top:0">Pick the question type above so the upload template and paste-CSV columns match.</p>
           <div class="form-group">
             <label class="form-label" for="cqPaste">Paste CSV</label>
             <textarea id="cqPaste" class="input-beautiful" placeholder="question,optionA,optionB,optionC,optionD,answer,topic,difficulty"></textarea>
@@ -10904,7 +10936,7 @@ function showCreateQuizModal(editQuizId = '') {
             <div class="form-group form-toggle-stack">
               <label class="form-label">Delivery options</label>
               <label class="check-row"><input type="checkbox" id="cqShuffleQs" checked /> <span>Shuffle questions</span></label>
-              <label class="check-row"><input type="checkbox" id="cqShuffleOpts" checked /> <span>Shuffle options</span></label>
+              <label class="check-row" id="cqShuffleOptsRow"><input type="checkbox" id="cqShuffleOpts" checked /> <span>Shuffle options</span></label>
             </div>
           </div>
         </section>
@@ -11185,7 +11217,8 @@ function showCreateQuizModal(editQuizId = '') {
         inp.onchange = async (ev) => {
           const f = ev.target.files[0]; if (!f) return;
           try {
-            row._importedQuestions = (await parseQuestionsFile(f, false)).filter(isMeaningfulQuestion);
+            const expectedType = normalizeQuestionType((document.getElementById('cqDefaultQuestionType') || {}).value || 'mcq');
+            row._importedQuestions = (await parseQuestionsFile(f, false, expectedType)).filter(isMeaningfulQuestion);
             row.querySelector('.subject-file-status').textContent = `${row._importedQuestions.length} question(s) loaded`;
             updateSubjectRowSummary(row);
             showNotification(`${row._importedQuestions.length} question(s) loaded for this subject`, 'success');
@@ -11313,15 +11346,34 @@ function showCreateQuizModal(editQuizId = '') {
     updateDerivedTotalMarks();
     updateAudienceState();
     audienceSelect.onchange = updateAudienceState;
+    const defaultTypeSelect = document.getElementById('cqDefaultQuestionType');
+    const updateQuestionTypeUi = () => {
+      const type = normalizeQuestionType(defaultTypeSelect.value || 'mcq');
+      const layout = getQuizFormatLayoutForType(type);
+      const pasteEl = document.getElementById('cqPaste');
+      if (pasteEl) {
+        pasteEl.placeholder = layout.csvHeader;
+        pasteEl.setAttribute('data-question-type', type);
+      }
+      const hintEl = document.getElementById('cqQuestionFormatHint');
+      if (hintEl) hintEl.innerHTML = layout.hintHtml;
+      const shuffleRow = document.getElementById('cqShuffleOptsRow');
+      if (shuffleRow) shuffleRow.style.display = type === 'mcq' ? '' : 'none';
+      const shuffleInput = document.getElementById('cqShuffleOpts');
+      if (shuffleInput && type !== 'mcq') shuffleInput.checked = false;
+    };
+    defaultTypeSelect.onchange = updateQuestionTypeUi;
+    updateQuestionTypeUi();
     document.getElementById('btnAddSubject').onclick = () => createSubjectRow();
     document.getElementById('btnAddSignatory').onclick = () => createSignatoryRow();
     document.getElementById('closeCreate').onclick = ()=>m.remove();
     document.getElementById('btnCancelCreate').onclick = ()=>m.remove();
-    document.getElementById('btnExportTemplate').onclick = ()=> exportQuizTemplate();
+    document.getElementById('btnExportTemplate').onclick = ()=> exportQuizTemplate(normalizeQuestionType(defaultTypeSelect.value || 'mcq'));
     document.getElementById('btnPreviewQuizDraft').onclick = () => {
       const subjects = getSubjectRows();
+      const previewType = normalizeQuestionType(defaultTypeSelect.value || 'mcq');
       const pastedBank = (document.getElementById('cqPaste').value || '').trim()
-        ? parseQuestionsFromCSVString(document.getElementById('cqPaste').value.trim()).filter(isMeaningfulQuestion)
+        ? parseQuestionsFromCSVString(document.getElementById('cqPaste').value.trim(), previewType).filter(isMeaningfulQuestion)
         : [];
       const previewSubjects = subjects.map((subject, subjectIndex) => {
         const sourceBank = subject.importedQuestions && subject.importedQuestions.length
@@ -11443,7 +11495,7 @@ function showCreateQuizModal(editQuizId = '') {
       if (scheduleStart && scheduleEnd && new Date(scheduleStart) >= new Date(scheduleEnd)) return showNotification('End time must be after start time', 'error');
       const subjects = getSubjectRows();
       const pastedBank = (document.getElementById('cqPaste').value||'').trim()
-        ? parseQuestionsFromCSVString(document.getElementById('cqPaste').value.trim()).filter(isMeaningfulQuestion)
+        ? parseQuestionsFromCSVString(document.getElementById('cqPaste').value.trim(), defaultQuestionType).filter(isMeaningfulQuestion)
         : [];
       const shuffleQs = document.getElementById('cqShuffleQs').checked;
       const shuffleOpts = document.getElementById('cqShuffleOpts').checked;
@@ -11540,23 +11592,69 @@ function showCreateQuizModal(editQuizId = '') {
   },0);
 }
 
-function parseQuestionsFromCSVString(s) {
+function buildQuestionFromRowParts(parts, type) {
+  const t = normalizeQuestionType(type);
+  const cell = (index) => (parts[index] != null ? parts[index].toString() : '');
+  if (t === 'yesno') {
+    return {
+      type: 'yesno',
+      question: cell(0),
+      answer: cell(1).trim(),
+      options: [],
+      topic: cell(2),
+      difficulty: cell(3) || 'Medium',
+      explanation: cell(4),
+      learningPoint: cell(5),
+      keyConcept: cell(6)
+    };
+  }
+  if (t === 'short') {
+    return {
+      type: 'short',
+      question: cell(0),
+      acceptedAnswers: normalizeAcceptedAnswers(cell(1).replace(/[|;]/g, '\n')),
+      options: [],
+      topic: cell(2),
+      difficulty: cell(3) || 'Medium',
+      explanation: cell(4),
+      learningPoint: cell(5),
+      keyConcept: cell(6)
+    };
+  }
+  if (t === 'essay') {
+    return {
+      type: 'essay',
+      question: cell(0),
+      options: [],
+      answer: '',
+      topic: cell(1),
+      difficulty: cell(2) || 'Medium',
+      explanation: cell(3),
+      learningPoint: cell(4),
+      keyConcept: cell(5)
+    };
+  }
+  // mcq (default)
+  return {
+    type: 'mcq',
+    question: cell(0),
+    options: [cell(1), cell(2), cell(3), cell(4)].filter((option) => getRichTextPlainText(option || '').trim()),
+    answer: getRichTextPlainText(cell(5)).toUpperCase(),
+    topic: cell(6),
+    difficulty: getRichTextPlainText(cell(7)) || 'Medium',
+    explanation: cell(8),
+    learningPoint: cell(9),
+    keyConcept: cell(10)
+  };
+}
+
+function parseQuestionsFromCSVString(s, type = 'mcq') {
   const lines = s.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const out = [];
   for (const line of lines) {
     const parts = line.split(/\s*,\s*/);
     if ((parts[0] || '').toLowerCase() === 'question') continue;
-    // question, optA, optB, optC, optD, answer, topic, difficulty, explanation, learningPoint, keyConcept
-    const q = {
-      question: parts[0] || '',
-      options: parts.slice(1,5).filter(Boolean),
-      answer: (parts[5]||'').toString().trim().toUpperCase(),
-      topic: parts[6]||'',
-      difficulty: parts[7]||'Medium',
-      explanation: parts[8] || '',
-      learningPoint: parts[9] || '',
-      keyConcept: parts[10] || ''
-    };
+    const q = buildQuestionFromRowParts(parts, type);
     if (isMeaningfulQuestion(q)) out.push(q);
   }
   return out;
@@ -11593,33 +11691,27 @@ function readWorksheetRows(worksheet, columnCount = 11, options = {}) {
   return rows;
 }
 
-function parseQuestionsFile(file, whitelistOnly) {
+function parseQuestionsFile(file, whitelistOnly, expectedType = 'mcq') {
   return new Promise((resolve,reject)=>{
     const reader = new FileReader();
     reader.onload = (e)=>{
       try {
         const data = e.target.result;
+        const t = normalizeQuestionType(expectedType);
+        // Read enough columns for the widest schema (MCQ = 11). Narrower types
+        // simply ignore the trailing empty cells via buildQuestionFromRowParts.
+        const columnCount = whitelistOnly ? 4 : 11;
         let workbook;
         if (typeof XLSX !== 'undefined') {
           workbook = XLSX.read(data, { type: 'binary', cellHTML: true, cellStyles: true, cellText: true });
           const sheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[sheetName];
-          const rows = readWorksheetRows(worksheet, whitelistOnly ? 4 : 11, { preserveRichText: !whitelistOnly });
+          const rows = readWorksheetRows(worksheet, columnCount, { preserveRichText: !whitelistOnly });
           if (whitelistOnly) {
             const list = rows.map(r=>({ name: r[0]||'', email: (r[1]||'').toString(), id: (r[2]||'').toString(), registrationNo: (r[2]||'').toString(), className: normalizeClassName(r[3] || '') } )).filter(x=>x.name && (x.email || x.id));
             resolve(list);
           } else {
-            // assume columns: question,optA,optB,optC,optD,answer,topic,difficulty,explanation,learningPoint,keyConcept
-            const list = rows.map(r=>({
-              question: r[0]||'',
-              options: [r[1]||'',r[2]||'',r[3]||'',r[4]||''].filter((option) => getRichTextPlainText(option || '').trim()),
-              answer: getRichTextPlainText((r[5]||'').toString()).toUpperCase(),
-              topic: r[6]||'',
-              difficulty: getRichTextPlainText(r[7] || '') || 'Medium',
-              explanation: r[8] || '',
-              learningPoint: r[9] || '',
-              keyConcept: r[10] || ''
-            })).filter(isMeaningfulQuestion);
+            const list = rows.map((r) => buildQuestionFromRowParts(r, t)).filter(isMeaningfulQuestion);
             resolve(list);
           }
         } else {
@@ -11629,7 +11721,7 @@ function parseQuestionsFile(file, whitelistOnly) {
             const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
             const list = lines.map(l=>{ const p = l.split(','); return { name: p[0]||'', email: p[1]||'', id: p[2]||'', registrationNo: p[2]||'', className: normalizeClassName(p[3] || '') }; }).filter((x, index) => index > 0 && x.name && (x.email || x.id));
             resolve(list);
-          } else { const list = parseQuestionsFromCSVString(text); resolve(list); }
+          } else { resolve(parseQuestionsFromCSVString(text, t)); }
         }
       } catch (err) { reject(err); }
     };
@@ -11658,14 +11750,60 @@ function showLocalNetworkGuide() {
   document.getElementById('closeNetGuide').onclick = ()=>m.remove();
 }
 
-function exportQuizTemplate() {
-  // columns: question,optA,optB,optC,optD,answer,topic,difficulty,explanation,learningPoint,keyConcept
-  const header = ['question','optA','optB','optC','optD','answer','topic','difficulty','explanation','learningPoint','keyConcept'];
+// Schemas per question type. Each entry describes the expected column order
+// for an uploaded CSV/Excel file, the placeholder for the paste-CSV box, and
+// the helper hint shown beneath the question-type dropdown so the teacher
+// knows what columns to put in the spreadsheet.
+const QUIZ_TEMPLATE_SCHEMAS = {
+  mcq: {
+    columns: ['question','optA','optB','optC','optD','answer','topic','difficulty','explanation','learningPoint','keyConcept'],
+    sample: ['What is 2+2?','3','4','5','6','B','Arithmetic','Easy','2 + 2 gives 4 because it is simple addition.','Check the numbers and add carefully.','Addition'],
+    fileName: 'ope-quiz-template-mcq.xlsx',
+    csvHeader: 'question,optionA,optionB,optionC,optionD,answer,topic,difficulty,explanation,learningPoint,keyConcept',
+    hint: 'Multiple Choice columns: question, optA, optB, optC, optD, answer (A/B/C/D), topic, difficulty, explanation, learningPoint, keyConcept.'
+  },
+  yesno: {
+    columns: ['question','answer','topic','difficulty','explanation','learningPoint','keyConcept'],
+    sample: ['Is the sky blue on a clear day?','Yes','Science','Easy','Light scattering makes the sky appear blue.','Recall the colour of a clear daytime sky.','Sky'],
+    fileName: 'ope-quiz-template-yesno.xlsx',
+    csvHeader: 'question,answer,topic,difficulty,explanation,learningPoint,keyConcept',
+    hint: 'Yes / No columns: question, answer (Yes or No), topic, difficulty, explanation, learningPoint, keyConcept. No option columns are needed.'
+  },
+  short: {
+    columns: ['question','acceptedAnswers','topic','difficulty','explanation','learningPoint','keyConcept'],
+    sample: ['What is the capital of France?','Paris | paris | PARIS','Geography','Easy','Paris is the capital and largest city of France.','Recall European capitals.','Capitals'],
+    fileName: 'ope-quiz-template-short-answer.xlsx',
+    csvHeader: 'question,acceptedAnswers,topic,difficulty,explanation,learningPoint,keyConcept',
+    hint: 'Short Answer columns: question, acceptedAnswers (separate every accepted spelling with | or ;), topic, difficulty, explanation, learningPoint, keyConcept.'
+  },
+  essay: {
+    columns: ['question','topic','difficulty','explanation','learningPoint','keyConcept'],
+    sample: ['Discuss the impact of the Industrial Revolution on urban life.','History','Hard','Cover migration to cities, factory work, and living conditions.','Connect economic shifts to social change.','Industrial Revolution'],
+    fileName: 'ope-quiz-template-essay.xlsx',
+    csvHeader: 'question,topic,difficulty,explanation,learningPoint,keyConcept',
+    hint: 'Long Answer (Essay) columns: question, topic, difficulty, explanation, learningPoint, keyConcept. Essays are graded manually so no answer column is needed.'
+  }
+};
+
+function getQuizTemplateSchema(type) {
+  return QUIZ_TEMPLATE_SCHEMAS[normalizeQuestionType(type)] || QUIZ_TEMPLATE_SCHEMAS.mcq;
+}
+
+function getQuizFormatLayoutForType(type) {
+  const schema = getQuizTemplateSchema(type);
+  return {
+    csvHeader: schema.csvHeader,
+    hintHtml: `<strong>Format for this quiz type:</strong> ${escapeHtml(schema.hint)}`
+  };
+}
+
+function exportQuizTemplate(type = 'mcq') {
+  const schema = getQuizTemplateSchema(type);
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([header, ['What is 2+2?','3','4','5','6','B','Arithmetic','Easy','2 + 2 gives 4 because it is simple addition.','Check the numbers and add carefully.','Addition']]);
+  const ws = XLSX.utils.aoa_to_sheet([schema.columns, schema.sample]);
   XLSX.utils.book_append_sheet(wb, ws, 'Template');
-  XLSX.writeFile(wb, 'ope-quiz-template.xlsx');
-  showNotification('Template exported','success');
+  XLSX.writeFile(wb, schema.fileName);
+  showNotification(`Template exported (${schema.columns.length} columns)`, 'success');
 }
 
 // =================== Visibility / Tab Detection ===================
@@ -11734,24 +11872,66 @@ function getQuizAnswerMap(quiz) {
   return map;
 }
 
+// Full live-question lookup so grading and the facility index can compare
+// against the latest correct answer/options/accepted-answers — picks up any
+// edits the teacher made to the quiz after submissions were recorded.
+function getQuizLiveQuestionMap(quiz) {
+  const map = {};
+  (quiz?.subjects || []).forEach((subject) => {
+    const source = Array.isArray(subject?.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject?.questions;
+    (source || []).forEach((question, index) => {
+      const normalized = normalizeQuestionForStorage(question, index, subject?.name || 'General');
+      if (normalized._sourceId) map[normalized._sourceId] = normalized;
+    });
+  });
+  return map;
+}
+
 // Decide if a single answer is correct, normalized per question type.
 // Returns one of 'correct' | 'wrong' | 'pending' | 'unanswered'.
-function evaluateAnswerForQuestion(question, rawAnswer, answerMap, index) {
+//
+// `liveQuestionMap` (optional) lets us compare against the current quiz
+// definition rather than the snapshot stored on the submission. That way, when
+// the teacher edits the correct answer, an option's text, the yes/no answer,
+// or accepted short-answer spellings, every existing submission re-grades
+// against the new answer key — which is exactly what the results page and
+// facility index are expected to reflect.
+function evaluateAnswerForQuestion(question, rawAnswer, answerMap, index, liveQuestionMap) {
   const qType = normalizeQuestionType(question && question.type);
   const stored = rawAnswer == null ? '' : rawAnswer.toString();
   const trimmed = stored.trim();
   if (!trimmed) return 'unanswered';
+  const sourceId = (question && question._sourceId) || makeQuestionId(question, index);
+  const liveQuestion = liveQuestionMap ? liveQuestionMap[sourceId] : null;
   if (qType === 'mcq') {
-    const sourceId = (question && question._sourceId) || makeQuestionId(question, index);
+    if (liveQuestion) {
+      // Compare by option text so option reordering or answer-letter edits are
+      // honoured. The student's letter still maps to the option text they saw
+      // (taken from the snapshot). If that text now matches the live correct
+      // option, count it as correct — independent of letters.
+      const chosenLetter = trimmed.toUpperCase();
+      const chosenIndex = chosenLetter.charCodeAt(0) - 65;
+      const snapshotOptions = Array.isArray(question && question.options) ? question.options : [];
+      const chosenText = snapshotOptions[chosenIndex] || '';
+      const liveCorrectLetter = (liveQuestion.answer || '').toString().toUpperCase();
+      const liveCorrectIndex = liveCorrectLetter.charCodeAt(0) - 65;
+      const liveOptions = Array.isArray(liveQuestion.options) ? liveQuestion.options : [];
+      const liveCorrectText = liveOptions[liveCorrectIndex] || '';
+      if (chosenText && liveCorrectText) {
+        return chosenText === liveCorrectText ? 'correct' : 'wrong';
+      }
+    }
     const correctAnswer = ((question && question.answer) || (answerMap && answerMap[sourceId]) || '').toString().toUpperCase();
     return trimmed.toUpperCase() === correctAnswer ? 'correct' : 'wrong';
   }
   if (qType === 'yesno') {
-    const correct = ((question && question.answer) || '').toString().trim().toLowerCase();
-    return trimmed.toLowerCase() === correct ? 'correct' : 'wrong';
+    const liveAnswer = (liveQuestion && liveQuestion.answer) || (question && question.answer) || '';
+    return trimmed.toLowerCase() === liveAnswer.toString().trim().toLowerCase() ? 'correct' : 'wrong';
   }
   if (qType === 'short') {
-    const accepted = Array.isArray(question && question.acceptedAnswers) ? question.acceptedAnswers : [];
+    const accepted = Array.isArray(liveQuestion?.acceptedAnswers) && liveQuestion.acceptedAnswers.length
+      ? liveQuestion.acceptedAnswers
+      : (Array.isArray(question?.acceptedAnswers) ? question.acceptedAnswers : []);
     const norm = trimmed.toLowerCase();
     return accepted.some((entry) => (entry || '').toString().trim().toLowerCase() === norm)
       ? 'correct' : 'wrong';
@@ -11768,9 +11948,10 @@ function gradeSubmissionForQuiz(submission, quiz) {
   const all = submission.allQuestions || [];
   const answers = submission.answers || {};
   const answerMap = getQuizAnswerMap(quiz);
+  const liveQuestionMap = getQuizLiveQuestionMap(quiz);
   let correctCount = 0, wrongCount = 0, attemptedCount = 0, pendingCount = 0;
   all.forEach((question, index) => {
-    const verdict = evaluateAnswerForQuestion(question, answers[index], answerMap, index);
+    const verdict = evaluateAnswerForQuestion(question, answers[index], answerMap, index, liveQuestionMap);
     if (verdict === 'unanswered') return;
     attemptedCount++;
     if (verdict === 'correct') correctCount++;
@@ -11813,19 +11994,21 @@ function regradeSubmissionsForQuiz(quiz) {
   return changed;
 }
 
-function computeStudentTopicPerformance(submission) {
+function computeStudentTopicPerformance(submission, quiz) {
   const grouped = {};
   const all = submission.allQuestions || [];
   const answers = submission.answers || {};
+  const liveQuestionMap = quiz ? getQuizLiveQuestionMap(quiz) : null;
+  const answerMap = quiz ? getQuizAnswerMap(quiz) : null;
   all.forEach((question, index) => {
     const subject = question._subject || question.subject || 'General';
     if (!grouped[subject]) grouped[subject] = { total: 0, attempted: 0, correct: 0 };
     grouped[subject].total++;
-    const chosen = (answers[index] || '').toString().toUpperCase();
-    if (!chosen) return;
+    const rawAnswer = answers[index];
+    if (rawAnswer == null || rawAnswer === '') return;
     grouped[subject].attempted++;
-    const correct = (question.answer || '').toString().toUpperCase();
-    if (chosen === correct) grouped[subject].correct++;
+    const verdict = evaluateAnswerForQuestion(question, rawAnswer, answerMap, index, liveQuestionMap);
+    if (verdict === 'correct') grouped[subject].correct++;
   });
   return grouped;
 }
@@ -11837,6 +12020,7 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
   const negativeValue = parseFloat(quiz?.negativeMarkValue || 0) || 0;
   const subjectMetaMap = getQuizSubjectMetaMap(quiz);
   const answerMap = getQuizAnswerMap(quiz);
+  const liveQuestionMap = getQuizLiveQuestionMap(quiz);
   // Manual essay scores keyed by question source id, set by the teacher's
   // grading panel and stored on the submission as `essayScores`.
   const essayScores = (submission && submission.essayScores) || {};
@@ -11850,7 +12034,7 @@ function computeSubmissionSubjectBreakdown(quiz, submission) {
     section.indices.forEach((globalIndex) => {
       const question = submission.allQuestions[globalIndex];
       const qType = normalizeQuestionType(question && question.type);
-      const verdict = evaluateAnswerForQuestion(question, answers[globalIndex], answerMap, globalIndex);
+      const verdict = evaluateAnswerForQuestion(question, answers[globalIndex], answerMap, globalIndex, liveQuestionMap);
       if (verdict === 'unanswered') return;
       attempted++;
       if (qType === 'essay') {
