@@ -412,7 +412,7 @@ function clearNetworkKeyDirty(key) {
 function schedulePendingNetworkFlush(delayMs = DEFAULT_NETWORK_SYNC_RETRY_MS) {
   if (!canUseNetworkSync()) return;
   if (networkSyncRetryTimer) clearTimeout(networkSyncRetryTimer);
-  const waitMs = Math.max(250, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
+  const waitMs = Math.max(50, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
   networkSyncRetryTimer = setTimeout(() => {
     networkSyncRetryTimer = null;
     flushPendingNetworkWrites();
@@ -838,12 +838,23 @@ async function checkNetworkSyncHealth(options = {}) {
     if (!response.ok) throw new Error(await readApiErrorMessage(response, 'Shared sync server is unavailable'));
     const payload = await response.json();
     if (!payload || payload.ok !== true) throw new Error('Shared sync server returned an invalid health response');
+    // On serverless deployments, the file backend is impossible — only Supabase
+    // (or another shared backend) can persist data across invocations. When the
+    // health endpoint reports the backend isn't configured, fail loudly with
+    // exactly what's missing so the user can fix their env vars.
+    if (payload.runtime === 'serverless' && payload.supabaseConfigured === false) {
+      throw new Error('Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and STORAGE_BACKEND=supabase in Vercel env vars (then redeploy).');
+    }
     if (Object.prototype.hasOwnProperty.call(payload, 'pdfExportSupported')) {
       markServerPdfExportAvailability(payload.pdfExportSupported !== false);
     }
     if (options.captureFailure !== false) {
       networkSyncFailed = false;
       networkSyncFailureMessage = '';
+      // Health-check success is enough to consider sync live — otherwise the UI
+      // sits on "not active yet" until the first state PUT/GET, which can
+      // confuse the user when no state op has been triggered yet.
+      networkSyncReady = true;
     }
     return {
       ok: true,
@@ -1694,12 +1705,17 @@ function isSharedSyncAvailable() {
 
 function getSharedSyncWarningMessage() {
   if (!canUseNetworkSync()) {
-    return 'Saved on this device only. Cloud sync is not available in this browser session. Open Settings > Cloud Sync if this device should connect to a separate OPE Assessor server.';
+    return 'Not connected to the OPE Assessor server. Open Settings > Cloud Sync to set the server URL.';
   }
   if (networkSyncFailureMessage) {
-    return `Saved on this device only. Cloud sync failed: ${networkSyncFailureMessage}`;
+    return networkSyncFailureMessage;
   }
-  return `Saved on this device only. Cloud sync is not active on this deployment yet. Current target: ${getCurrentSyncServerLabel()}.`;
+  if (!getAuthSessionToken()) {
+    return 'Log in as a teacher first — cloud upload requires an active session.';
+  }
+  // Sync hasn't completed yet but no error was captured. Tell the user it's in
+  // progress instead of leaving them with a vague "not active" message.
+  return `Syncing with ${getCurrentSyncServerLabel()}… your changes are saved locally and will upload momentarily.`;
 }
 
 async function syncSharedKeys(keys = []) {
@@ -7439,7 +7455,7 @@ async function sendCorrectionByEmail(submission, quiz) {
   try {
     const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes]);
     if (!sharedSyncOk) {
-      showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 8000);
+      showNotification(getSharedSyncWarningMessage(), 'error', 8000);
       return false;
     }
     const subject = encodeURIComponent(`Correction for ${quiz.title || submission.quizId}`);
@@ -7468,7 +7484,7 @@ async function shareCorrectionViaWhatsapp(submission, quiz, options = {}) {
   try {
     const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions, STORAGE_KEYS.quizzes]);
     if (!sharedSyncOk) {
-      showNotification(`Cloud sync is not ready. ${getSharedSyncWarningMessage()}`, 'error', 8000);
+      showNotification(getSharedSyncWarningMessage(), 'error', 8000);
       return false;
     }
     const message = buildCorrectionShareMessage(submission, quiz);
