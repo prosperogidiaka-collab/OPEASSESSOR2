@@ -50,7 +50,10 @@ const NETWORK_STATE_KEY_MAP = {
 // teacher tab also force-pulls on focus / online / visibilitychange.
 const DEFAULT_NETWORK_SYNC_POLL_MS = 15000;
 const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
-const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 4000;
+// Cap how long the very first paint waits on the cloud pull. Keep this short
+// so a slow/cold serverless backend doesn't leave the user staring at a blank
+// screen — the app falls back to local data and a background sync still runs.
+const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 2000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
 const MAX_PORTABLE_LINK_LENGTH = 3500;
 const DEFAULT_SUPPORT_SETTINGS = {
@@ -429,15 +432,18 @@ async function flushPendingNetworkWrites(keys = [], options = {}) {
   const explicitKeys = resolveNetworkSyncKeys(keys);
   const targetKeys = explicitKeys.length ? explicitKeys : resolveNetworkSyncKeys(Array.from(dirtyNetworkKeys));
   if (!targetKeys.length) return true;
-  let ok = true;
-  for (const key of targetKeys) {
+  // Push every dirty key in parallel. Previously this loop awaited each PUT
+  // serially, so saving a quiz on a 5-key dirty state stacked five round-trips
+  // back-to-back. With parallel writes, total wall-time is bounded by the
+  // slowest key, not the sum.
+  const results = await Promise.all(targetKeys.map(async (key) => {
     if (pendingNetworkWritePromises.has(key)) {
       const completed = await pendingNetworkWritePromises.get(key).catch(() => false);
-      if (completed && !dirtyNetworkKeys.has(key)) continue;
+      if (completed && !dirtyNetworkKeys.has(key)) return true;
     }
-    const pushed = await pushNetworkValue(key, readLocalStorageValue(key), { skipRetrySchedule: true });
-    if (!pushed) ok = false;
-  }
+    return pushNetworkValue(key, readLocalStorageValue(key), { skipRetrySchedule: true });
+  }));
+  const ok = results.every(Boolean);
   if (ok && options.pullAfter) await pullNetworkState(true);
   if (!ok && options.retryOnFailure !== false) schedulePendingNetworkFlush();
   return ok;
@@ -3077,6 +3083,25 @@ const QUESTION_TYPES = ['mcq', 'yesno', 'short', 'essay'];
 function normalizeQuestionType(value) {
   const v = (value || 'mcq').toString().trim().toLowerCase();
   return QUESTION_TYPES.includes(v) ? v : 'mcq';
+}
+
+function inferQuizDefaultQuestionType(quiz) {
+  if (!quiz || typeof quiz !== 'object') return 'mcq';
+  if (quiz.defaultQuestionType) return normalizeQuestionType(quiz.defaultQuestionType);
+  const counts = { mcq: 0, yesno: 0, short: 0, essay: 0 };
+  (quiz.subjects || []).forEach((subject) => {
+    const bank = (Array.isArray(subject?.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject?.questions) || [];
+    bank.forEach((question) => {
+      const t = normalizeQuestionType(question && question.type);
+      counts[t] = (counts[t] || 0) + 1;
+    });
+  });
+  let topType = 'mcq';
+  let topCount = -1;
+  Object.keys(counts).forEach((type) => {
+    if (counts[type] > topCount) { topType = type; topCount = counts[type]; }
+  });
+  return topType;
 }
 
 function normalizeAcceptedAnswers(value) {
@@ -10745,6 +10770,16 @@ function showCreateQuizModal(editQuizId = '') {
             <label class="form-label" for="cqTitle">Quiz title</label>
             <input id="cqTitle" class="input-beautiful" />
           </div>
+          <div class="form-group">
+            <label class="form-label" for="cqDefaultQuestionType">Question type for this quiz</label>
+            <select id="cqDefaultQuestionType" class="input-beautiful">
+              <option value="mcq">Multiple Choice (MCQ)</option>
+              <option value="yesno">Yes / No (True/False)</option>
+              <option value="short">Short Answer</option>
+              <option value="essay">Long Answer (Essay)</option>
+            </select>
+            <p class="helper-text">Pick what the questions in this quiz are. Imported questions and pasted CSV rows take this type by default. You can still change individual questions later from the Quiz Content editor.</p>
+          </div>
           <div class="field-grid-2">
             <div class="form-group">
               <label class="form-label" for="cqAudience">Who can take this quiz?</label>
@@ -11265,10 +11300,12 @@ function showCreateQuizModal(editQuizId = '') {
       document.getElementById('cqVertical').checked = !!editingQuiz.verticalLayout;
       document.getElementById('cqCalculatorType').value = getQuizCalculatorType(editingQuiz);
       document.getElementById('cqWebcamRequired').checked = !!editingQuiz.webcamRequired;
+      document.getElementById('cqDefaultQuestionType').value = normalizeQuestionType(editingQuiz.defaultQuestionType || inferQuizDefaultQuestionType(editingQuiz));
       normalizeCertificateSignatories(editingQuiz.certificateSignatories).forEach(createSignatoryRow);
     } else {
       audienceSelect.value = 'public';
       document.getElementById('cqCalculatorType').value = 'basic';
+      document.getElementById('cqDefaultQuestionType').value = 'mcq';
     }
     if (!subjectsList.children.length) createSubjectRow();
     subjectsList.addEventListener('input', updateDerivedTotalMarks);
@@ -11395,6 +11432,12 @@ function showCreateQuizModal(editQuizId = '') {
       const scheduleStart = document.getElementById('cqStart').value || '';
       const scheduleEnd = document.getElementById('cqEnd').value || '';
       const calculatorType = getQuizCalculatorType({ calculatorType: document.getElementById('cqCalculatorType').value || 'none' });
+      const defaultQuestionType = normalizeQuestionType(document.getElementById('cqDefaultQuestionType').value || 'mcq');
+      const applyDefaultQuestionType = (list) => (Array.isArray(list) ? list : []).map((question) => {
+        if (!question || typeof question !== 'object') return question;
+        if (question.type) return question;
+        return { ...question, type: defaultQuestionType };
+      });
       if (!audienceMode) return showNotification('Choose who can take this quiz', 'error');
       if (audienceMode === 'class' && !assignedClassName) return showNotification('Choose the uploaded class for this quiz', 'error');
       if (scheduleStart && scheduleEnd && new Date(scheduleStart) >= new Date(scheduleEnd)) return showNotification('End time must be after start time', 'error');
@@ -11408,9 +11451,9 @@ function showCreateQuizModal(editQuizId = '') {
       const hasSubjectUploads = subjects.some(subject => subject.importedQuestions && subject.importedQuestions.length);
       if (hasSubjectUploads || pastedBank.length || !editingQuiz) {
         subjectsArr = subjects.map((subject, subjectIndex) => {
-          const sourceBank = subject.importedQuestions && subject.importedQuestions.length
+          const sourceBank = applyDefaultQuestionType(subject.importedQuestions && subject.importedQuestions.length
             ? subject.importedQuestions
-            : (subjectIndex === 0 ? pastedBank : []);
+            : (subjectIndex === 0 ? pastedBank : []));
           const questionImages = normalizeSubjectQuestionImages(subject.questionImages || []);
           const questions = buildQuestionsWithSubjectImages(sourceBank, subject.name, questionImages, { replaceExistingMedia: true });
           return {
@@ -11426,7 +11469,7 @@ function showCreateQuizModal(editQuizId = '') {
         subjectsArr = (editingQuiz.subjects || []).map((subject, idx) => {
           const nextSubject = subjects[idx] || {};
           const nextName = nextSubject.name || subject.name || 'General';
-          const sourceQuestions = Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions;
+          const sourceQuestions = applyDefaultQuestionType(Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions);
           const questionImages = normalizeSubjectQuestionImages(
             nextSubject.questionImages
             || subject.questionImages
@@ -11459,7 +11502,7 @@ function showCreateQuizModal(editQuizId = '') {
         registrationNo: student.registrationNo || student.id || '',
         className: normalizeClassName(student.className || student.class || '')
       }));
-      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: quizOwnerId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', calculatorType, webcamRequired: document.getElementById('cqWebcamRequired').checked, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
+      const qobj = { ...(editingQuiz || {}), id, examName, title: title || 'Untitled Quiz', password: password || '', timeLimit: time, maxGrade: maxGrade, attemptLimit, passMark, negativeMarkEnabled, negativeMarkValue, showInstantResult: document.getElementById('cqInstantResult').checked, showTopicsAfterSubmission: document.getElementById('cqShowTopicsAfter').checked, subjects: subjectsArr, questionPickCount: 0, createdAt: editingQuiz?.createdAt || now, editedAt: editingQuiz ? now : '', updatedAt: now, teacherId: quizOwnerId, shuffleQs, shuffleOpts, verticalLayout: document.getElementById('cqVertical').checked, rankingEnabled: document.getElementById('cqRanking').checked, whitelist, audienceMode, assignedClassName: audienceMode === 'class' ? assignedClassName : '', calculatorType, webcamRequired: document.getElementById('cqWebcamRequired').checked, defaultQuestionType, certificateSignatories: getSignatoryRows(), scheduleStart: scheduleStart ? new Date(scheduleStart).toISOString() : '', scheduleEnd: scheduleEnd ? new Date(scheduleEnd).toISOString() : '' };
       const accessResult = consumeTeacherAccessForQuizSave({
         teacherId: quizOwnerId,
         quizId: id,
