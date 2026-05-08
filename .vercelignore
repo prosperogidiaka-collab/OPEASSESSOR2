@@ -1,11 +1,16 @@
 server.js
 ope-shared-state.json
 ope-server.log
+*-server-*.log
+*-server.log
+e2e-shared-state*.json
+tmp-server-test.*
 allow-ope-firewall.ps1
 debug.html
 summary-preview.html
 summary-preview.png
 test.html
 test-all-features.html
+.pdf-export-cache/
 *.md
 *.txt

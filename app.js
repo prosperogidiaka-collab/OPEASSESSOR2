@@ -6,7 +6,11 @@
 // ============================================================================
 
 const SUPER_ADMIN_EMAIL = 'prosperogidiaka@gmail.com';
-const SUPER_ADMIN_PASSWORD = '7767737Prosper';
+// The super-admin password is no longer kept in the client bundle. It is verified
+// server-side via /api/auth/super-admin/login (see server.js). The constant below
+// remains only as a no-op marker so other tooling that referenced it still parses
+// cleanly; it is never used for authentication.
+const SUPER_ADMIN_PASSWORD = '';
 const ADMIN_CONTACT_EMAIL = SUPER_ADMIN_EMAIL;
 const STORAGE_KEYS = {
   quizzes: 'ope_quizzes_v2',
@@ -17,7 +21,14 @@ const STORAGE_KEYS = {
   teacherSession: 'ope_teacher_session_v1',
   students: 'ope_teacher_students_v1',
   appState: 'ope_app_state_v1',
-  syncApiBaseUrl: 'ope_sync_api_base_url_v1'
+  syncApiBaseUrl: 'ope_sync_api_base_url_v1',
+  // Local-only credential cache, never synced to the server. Used so that an
+  // already-registered teacher can still authenticate offline against a hash
+  // computed and stored after their last successful online login.
+  localAuth: 'ope_local_auth_v1',
+  // Active session token returned by /api/auth/* endpoints. Only used to gate
+  // mutation calls to /api/state/<key>; cleared on logout.
+  authSession: 'ope_auth_session_v1'
 };
 const NETWORK_SYNC_KEYS = [
   STORAGE_KEYS.quizzes,
@@ -118,6 +129,188 @@ function setNetworkSyncApiBaseUrl(value) {
   networkSyncFailed = false;
   networkSyncFailureMessage = '';
   lastNetworkPullAt = 0;
+}
+
+// --------------------------------------------------------------------------
+// Auth helpers
+// Server is the source of truth for credentials. Local hash cache only exists
+// to allow already-registered teachers to log in offline after a previous
+// successful online login. The super-admin login is server-only.
+// --------------------------------------------------------------------------
+const AUTH_PBKDF2_ITERATIONS = 100000;
+const AUTH_PBKDF2_KEY_BITS = 256;
+
+function getStoredAuthSession() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.authSession) || 'null');
+    if (!raw || typeof raw !== 'object') return null;
+    if (raw.expiresAt && Number(raw.expiresAt) < Date.now()) {
+      localStorage.removeItem(STORAGE_KEYS.authSession);
+      return null;
+    }
+    return raw;
+  } catch (error) {
+    return null;
+  }
+}
+
+function getAuthSessionToken() {
+  const session = getStoredAuthSession();
+  return session && session.token ? session.token : '';
+}
+
+function setStoredAuthSession({ token, role, email, expiresInMs }) {
+  if (!token) {
+    try { localStorage.removeItem(STORAGE_KEYS.authSession); } catch (error) {}
+    return;
+  }
+  const expiresAt = Date.now() + (Number(expiresInMs) > 0 ? Number(expiresInMs) : 24 * 60 * 60 * 1000);
+  try {
+    localStorage.setItem(STORAGE_KEYS.authSession, JSON.stringify({ token, role: role || '', email: email || '', expiresAt }));
+  } catch (error) {}
+  // Any keys that were marked dirty while we were anonymous (e.g. ensureSuperAdminAccount
+  // re-writing the teachers map at startup) can now be flushed to the server.
+  if (typeof schedulePendingNetworkFlush === 'function') {
+    try { schedulePendingNetworkFlush(50); } catch (error) {}
+  }
+}
+
+function clearStoredAuthSession() {
+  try { localStorage.removeItem(STORAGE_KEYS.authSession); } catch (error) {}
+}
+
+function withAuthHeader(headers = {}) {
+  const token = getAuthSessionToken();
+  if (!token) return headers;
+  return { ...headers, Authorization: `Bearer ${token}` };
+}
+
+function bytesToHex(bytes) {
+  return Array.from(new Uint8Array(bytes)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(hex) {
+  if (typeof hex !== 'string' || hex.length % 2 !== 0) return new Uint8Array();
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+
+async function deriveAuthHashRaw(password, saltBytes, iterations = AUTH_PBKDF2_ITERATIONS, keyBits = AUTH_PBKDF2_KEY_BITS) {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('Web Crypto API is required for password operations.');
+  }
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(String(password || '')),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
+    baseKey,
+    keyBits
+  );
+  return new Uint8Array(derived);
+}
+
+async function computeLocalAuthHash(password, saltBytes) {
+  const salt = saltBytes || crypto.getRandomValues(new Uint8Array(16));
+  const hash = await deriveAuthHashRaw(password, salt);
+  return `pbkdf2-sha256:${AUTH_PBKDF2_ITERATIONS}:${bytesToHex(salt)}:${bytesToHex(hash)}`;
+}
+
+async function verifyLocalAuthHash(password, encoded) {
+  if (!encoded || typeof encoded !== 'string') return false;
+  const parts = encoded.split(':');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2-sha256') return false;
+  const iterations = Number(parts[1]);
+  if (!Number.isFinite(iterations) || iterations < 1) return false;
+  const saltBytes = hexToBytes(parts[2]);
+  const expectedBytes = hexToBytes(parts[3]);
+  if (!saltBytes.length || !expectedBytes.length) return false;
+  const actualBytes = await deriveAuthHashRaw(password, saltBytes, iterations, expectedBytes.length * 8);
+  if (actualBytes.length !== expectedBytes.length) return false;
+  let diff = 0;
+  for (let i = 0; i < actualBytes.length; i++) diff |= actualBytes[i] ^ expectedBytes[i];
+  return diff === 0;
+}
+
+function getLocalAuthMap() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.localAuth) || '{}');
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function setLocalAuthRecord(email, record) {
+  const id = (email || '').toString().trim().toLowerCase();
+  if (!id) return;
+  const map = getLocalAuthMap();
+  map[id] = { ...(map[id] || {}), ...(record || {}), updatedAt: new Date().toISOString() };
+  try { localStorage.setItem(STORAGE_KEYS.localAuth, JSON.stringify(map)); } catch (error) {}
+}
+
+function clearLocalAuthRecord(email) {
+  const id = (email || '').toString().trim().toLowerCase();
+  if (!id) return;
+  const map = getLocalAuthMap();
+  if (!map[id]) return;
+  delete map[id];
+  try { localStorage.setItem(STORAGE_KEYS.localAuth, JSON.stringify(map)); } catch (error) {}
+}
+
+async function recordLocalAuthForPassword(email, password) {
+  try {
+    const hash = await computeLocalAuthHash(password);
+    setLocalAuthRecord(email, { passwordHash: hash });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function postAuthJson(path, body) {
+  const response = await fetch(buildApiUrl(path), {
+    method: 'POST',
+    headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body || {}),
+    cache: 'no-store'
+  });
+  let parsed = null;
+  try { parsed = await response.json(); } catch (error) { parsed = null; }
+  return { ok: response.ok, status: response.status, data: parsed };
+}
+
+function migrateLegacyLocalTeacherPasswords() {
+  // One-time cleanup so localStorage no longer carries plaintext passwords from
+  // previous app versions. We hash and stash them under STORAGE_KEYS.localAuth
+  // so offline login still works for teachers that were already registered.
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.teachers) || '{}');
+    if (!raw || typeof raw !== 'object') return;
+    let mutated = false;
+    const next = {};
+    Object.keys(raw).forEach((key) => {
+      const record = raw[key];
+      if (!record || typeof record !== 'object') { next[key] = record; return; }
+      if (typeof record.password === 'string' && record.password) {
+        const sanitized = { ...record };
+        delete sanitized.password;
+        next[key] = sanitized;
+        mutated = true;
+        // Fire-and-forget local hash so offline login keeps working.
+        recordLocalAuthForPassword((record.email || record.teacherId || key), record.password)
+          .catch(() => {});
+      } else {
+        next[key] = record;
+      }
+    });
+    if (mutated) localStorage.setItem(STORAGE_KEYS.teachers, JSON.stringify(next));
+  } catch (error) { /* ignore */ }
 }
 
 async function probeNetworkSyncHealth(apiBaseUrl, options = {}) {
@@ -1445,6 +1638,15 @@ async function pullNetworkState(force = false) {
 
 async function pushNetworkValue(key, value, options = {}) {
   if (!canUseNetworkSync() || !NETWORK_STATE_KEY_MAP[key]) return false;
+  // The server requires an auth session for every state key except `submissions`.
+  // If we have no token yet (anonymous page load, student-only flow, etc.), mark
+  // the key dirty so it'll be re-attempted after a successful login, and skip
+  // the actual PUT to avoid noisy 401 responses on the wire.
+  const stateKey = NETWORK_STATE_KEY_MAP[key];
+  if (stateKey !== 'submissions' && !getAuthSessionToken()) {
+    markNetworkKeyDirty(key);
+    return false;
+  }
   if (pendingNetworkWrites.has(key)) {
     markNetworkKeyDirty(key);
     if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
@@ -1455,7 +1657,7 @@ async function pushNetworkValue(key, value, options = {}) {
     try {
       const res = await fetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ value })
       });
       if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Failed to save shared state'));
@@ -1781,6 +1983,7 @@ async function initializeApp() {
     return;
   }
   ensureSuperAdminAccount();
+  migrateLegacyLocalTeacherPasswords();
   migrateAndNormalizeSubmissions();
   startOverlayBodyLockObserver();
   const params = new URLSearchParams(window.location.search);
@@ -2215,6 +2418,16 @@ function requireTeacher() {
 
 function logoutTeacher() {
   localStorage.removeItem(STORAGE_KEYS.teacherSession);
+  // Best-effort server logout — fire and forget so the UI never blocks on it.
+  if (canUseNetworkSync() && getAuthSessionToken()) {
+    fetch(buildApiUrl('/api/auth/logout'), {
+      method: 'POST',
+      headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+      body: '{}',
+      cache: 'no-store'
+    }).catch(() => {});
+  }
+  clearStoredAuthSession();
   state.teacherId = '';
   state.currentQuiz = null;
   state.view = 'teacher.login';
@@ -2342,19 +2555,25 @@ function removeStudentForTeacher(teacherId, student) {
 function ensureSuperAdminAccount() {
   const teachers = getAllTeachers();
   const id = normalizeEmail(SUPER_ADMIN_EMAIL);
+  const existing = teachers[id] || {};
+  // The super-admin record never carries password material — auth happens via
+  // server env vars (POST /api/auth/super-admin/login). Strip any legacy field
+  // that may have been written by older client builds.
+  const sanitized = { ...existing };
+  delete sanitized.password;
+  delete sanitized.passwordHash;
   teachers[id] = {
-    ...(teachers[id] || {}),
+    ...sanitized,
     teacherId: id,
     email: id,
-    password: SUPER_ADMIN_PASSWORD,
     role: 'super_admin',
-    name: teachers[id]?.name || '',
-    phone: teachers[id]?.phone || '',
-    supportEmail: teachers[id]?.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
-    supportWhatsapp: teachers[id]?.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
-    tokenBalance: teachers[id]?.tokenBalance ?? Number.MAX_SAFE_INTEGER,
-    tokenUpdatedAt: teachers[id]?.tokenUpdatedAt || new Date().toISOString(),
-    createdAt: teachers[id]?.createdAt || new Date().toISOString(),
+    name: existing.name || '',
+    phone: existing.phone || '',
+    supportEmail: existing.supportEmail || DEFAULT_SUPPORT_SETTINGS.email,
+    supportWhatsapp: existing.supportWhatsapp || DEFAULT_SUPPORT_SETTINGS.whatsapp,
+    tokenBalance: existing.tokenBalance ?? Number.MAX_SAFE_INTEGER,
+    tokenUpdatedAt: existing.tokenUpdatedAt || new Date().toISOString(),
+    createdAt: existing.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
   saveAllTeachers(teachers);
@@ -3560,12 +3779,28 @@ function renderAdminAuth() {
     document.getElementById('btnAdminLogin').onclick = async () => {
       const id = normalizeEmail(document.getElementById('adminLoginId').value);
       const password = document.getElementById('adminLoginPassword').value || '';
-      if (id !== SUPER_ADMIN_EMAIL || password !== SUPER_ADMIN_PASSWORD) return showNotification('Invalid admin email or password', 'error');
-      ensureSuperAdminAccount();
-      save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
-      localStorage.setItem(STORAGE_KEYS.teacherId, id);
-      state.teacherId = id;
-      await openTeacherWorkspace('teacher.settings');
+      if (!id || !password) return showNotification('Enter the admin email and password', 'error');
+      if (!canUseNetworkSync()) return showNotification('Admin login requires the OPE server. Connect to a network or set the sync server URL in Settings.', 'error', 8000);
+      try {
+        const result = await postAuthJson('/api/auth/super-admin/login', { email: id, password });
+        if (!result.ok) {
+          const message = (result.data && result.data.error) || 'Invalid admin email or password';
+          return showNotification(message, 'error');
+        }
+        setStoredAuthSession({
+          token: result.data.sessionToken,
+          role: result.data.role,
+          email: result.data.email,
+          expiresInMs: result.data.expiresInMs
+        });
+        ensureSuperAdminAccount();
+        save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
+        localStorage.setItem(STORAGE_KEYS.teacherId, id);
+        state.teacherId = id;
+        await openTeacherWorkspace('teacher.settings');
+      } catch (error) {
+        showNotification('Could not reach the OPE server to verify the admin login. Try again.', 'error', 8000);
+      }
     };
   }, 0);
   return wrapper;
@@ -3678,39 +3913,54 @@ function renderTeacherAuth() {
       if (id === SUPER_ADMIN_EMAIL) ensureSuperAdminAccount();
       setBusy(true, createMode ? 'create' : 'login');
       try {
-        let teachers = getAllTeachers();
-        const shouldRefreshSharedState = canUseNetworkSync() && (createMode || !networkSyncReady || !teachers[id]);
-        if (shouldRefreshSharedState) {
-          await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
-          teachers = getAllTeachers();
-        }
-        if (createMode) {
-          if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
-          if (teachers[id]) return showNotification('Teacher ID already exists. Login instead.', 'error');
-          const now = new Date().toISOString();
-          teachers[id] = {
-            teacherId: id,
-            email: id,
-            password,
-            role: 'teacher',
-            name: '',
-            phone: '',
-            tokenBalance: 0,
-            tokenUpdatedAt: now,
-            tokenRequestStatus: '',
-            unlimitedExpiresAt: '',
-            unlimitedDeviceId: '',
-            createdAt: now,
-            updatedAt: now
-          };
-          saveAllTeachers(teachers);
-          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers]);
-          showNotification(sharedSyncOk ? 'Teacher ID created' : `Teacher ID created locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
-        } else {
-          if (!teachers[id]) {
-            return showNotification(networkSyncFailed ? `Teacher account not found on this device yet. ${getSharedSyncWarningMessage()}` : 'Invalid teacher ID or password', 'error', 8000);
+        // Path A: server is reachable → authenticate against /api/auth/teacher/*
+        if (canUseNetworkSync()) {
+          if (createMode) {
+            if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin account already exists. Login instead.', 'error');
+            const result = await postAuthJson('/api/auth/teacher/register', { email: id, password });
+            if (!result.ok) {
+              const message = (result.data && result.data.error) || 'Could not create teacher ID';
+              return showNotification(message, 'error', 8000);
+            }
+            setStoredAuthSession({
+              token: result.data.sessionToken,
+              role: result.data.role,
+              email: result.data.email,
+              expiresInMs: result.data.expiresInMs
+            });
+            await recordLocalAuthForPassword(id, password);
+            await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 }).catch(() => {});
+            showNotification('Teacher ID created', 'success', 6000);
+          } else {
+            if (id === SUPER_ADMIN_EMAIL) return showNotification('Use the Admin Login from the home screen for the super-admin account.', 'error', 8000);
+            const result = await postAuthJson('/api/auth/teacher/login', { email: id, password });
+            if (!result.ok) {
+              const message = (result.data && result.data.error) || 'Invalid teacher ID or password';
+              return showNotification(message, 'error', 6000);
+            }
+            setStoredAuthSession({
+              token: result.data.sessionToken,
+              role: result.data.role,
+              email: result.data.email,
+              expiresInMs: result.data.expiresInMs
+            });
+            await recordLocalAuthForPassword(id, password);
           }
-          if (teachers[id].password !== password) return showNotification('Invalid teacher ID or password', 'error');
+        } else {
+          // Path B: offline. Allow login only — never registration — and only
+          // when we have a previously cached PBKDF2 hash from a prior online login.
+          if (createMode) {
+            return showNotification('Creating a teacher account requires the OPE server. Connect to a network and try again.', 'error', 8000);
+          }
+          if (id === SUPER_ADMIN_EMAIL) {
+            return showNotification('Admin login requires the OPE server. Connect to a network and try again.', 'error', 8000);
+          }
+          const localAuth = getLocalAuthMap()[id];
+          if (!localAuth || !localAuth.passwordHash) {
+            return showNotification('Cannot verify this account offline. Connect to the OPE server and log in once before going offline.', 'error', 8000);
+          }
+          const ok = await verifyLocalAuthHash(password, localAuth.passwordHash).catch(() => false);
+          if (!ok) return showNotification('Invalid teacher ID or password', 'error');
         }
         save(STORAGE_KEYS.teacherSession, { teacherId: id, loggedInAt: new Date().toISOString() });
         localStorage.setItem(STORAGE_KEYS.teacherId, id);
@@ -4449,25 +4699,23 @@ function renderSettingsView() {
     const editProfileBtn = document.getElementById('editTeacherProfileFromSettings');
     if (editProfileBtn) editProfileBtn.onclick = () => openTeacherProfileEditor();
     const ownPasswordBtn = document.getElementById('saveOwnPassword');
-    if (ownPasswordBtn) ownPasswordBtn.onclick = () => {
+    if (ownPasswordBtn) ownPasswordBtn.onclick = async () => {
       const teacher = getCurrentTeacher();
       if (!teacher) return showNotification('Teacher account not found', 'error');
+      if (isSuperAdmin()) return showNotification('The super-admin password is set via the SUPER_ADMIN_PASSWORD environment variable on the server, not from the app.', 'info', 9000);
       const currentPassword = document.getElementById('selfCurrentPassword').value || '';
       const newPassword = document.getElementById('selfNewPassword').value || '';
       const confirmPassword = document.getElementById('selfConfirmPassword').value || '';
-      if (teacher.password !== currentPassword) return showNotification('Current password is incorrect', 'error');
       if (!newPassword || newPassword.length < 4) return showNotification('New password must be at least 4 characters', 'error');
       if (newPassword !== confirmPassword) return showNotification('New password and confirmation do not match', 'error');
       if (!confirmTeacherAction('Save your new password now?')) return;
-      const teachersMap = getAllTeachers();
-      const id = normalizeEmail(state.teacherId);
-      teachersMap[id] = {
-        ...teachersMap[id],
-        password: newPassword,
-        passwordResetAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      saveAllTeachers(teachersMap);
+      if (!canUseNetworkSync()) return showNotification('Changing your password requires the OPE server. Connect to a network and try again.', 'error', 9000);
+      const result = await postAuthJson('/api/auth/teacher/change-password', { currentPassword, newPassword });
+      if (!result.ok) {
+        const message = (result.data && result.data.error) || 'Could not update password';
+        return showNotification(message, 'error', 8000);
+      }
+      await recordLocalAuthForPassword(state.teacherId, newPassword);
       showNotification('Password updated', 'success');
       document.getElementById('selfCurrentPassword').value = '';
       document.getElementById('selfNewPassword').value = '';
@@ -4654,17 +4902,20 @@ function renderSettingsView() {
         showNotification(sharedSyncOk ? 'Unlimited access cleared' : `Unlimited access cleared locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
         render();
       } else if (action === 'reset-password') {
+        if (id === SUPER_ADMIN_EMAIL) return showNotification('The super-admin password is rotated via the SUPER_ADMIN_PASSWORD env var, not from the app.', 'info', 9000);
         const next = prompt('Enter new password for ' + id);
         if (!next) return;
+        if (next.length < 4) return showNotification('Password must be at least 4 characters', 'error');
         if (!confirmTeacherAction(`Reset the password for ${id}?`)) return;
-        const all = getAllTeachers();
-        if (!all[id]) return showNotification('Teacher not found', 'error');
-        all[id].password = next;
-        all[id].passwordResetAt = new Date().toISOString();
-        all[id].updatedAt = all[id].passwordResetAt;
-        saveAllTeachers(all);
-        const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.teachers]);
-        showNotification(sharedSyncOk ? 'Password reset' : `Password reset locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
+        if (!canUseNetworkSync()) return showNotification('Resetting passwords requires the OPE server. Connect to a network and try again.', 'error', 9000);
+        const result = await postAuthJson('/api/auth/teacher/admin-reset-password', { teacherEmail: id, newPassword: next });
+        if (!result.ok) {
+          const message = (result.data && result.data.error) || 'Could not reset password';
+          return showNotification(message, 'error', 8000);
+        }
+        clearLocalAuthRecord(id);
+        await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 }).catch(() => {});
+        showNotification('Password reset', 'success', 6000);
       } else if (action === 'change-id') {
         if (id === SUPER_ADMIN_EMAIL) return showNotification('Admin email ID cannot be changed here', 'info');
         const newId = normalizeEmail(prompt('Enter new teacher email ID for ' + id) || '');

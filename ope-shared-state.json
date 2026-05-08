@@ -1207,7 +1207,8 @@
       "whitelist": [],
       "scheduleStart": "",
       "scheduleEnd": ""
-    }
+    },
+    "__tampered": "hello"
   },
   "submissions": [
     {
@@ -3422,10 +3423,9 @@
     "prosperogidiaka@gmail.com": {
       "teacherId": "prosperogidiaka@gmail.com",
       "email": "prosperogidiaka@gmail.com",
-      "password": "7767737Prosper",
       "role": "super_admin",
-      "createdAt": "2026-05-06T09:51:21.706Z",
-      "updatedAt": "2026-05-06T09:51:21.706Z",
+      "createdAt": "2026-05-07T23:58:00.615Z",
+      "updatedAt": "2026-05-07T23:58:09.199Z",
       "name": "",
       "phone": "",
       "supportEmail": "prosperogidiaka@gmail.com",
@@ -3435,21 +3435,26 @@
         "weekly": "",
         "monthly": "",
         "yearly": ""
-      }
+      },
+      "tokenBalance": 9007199254740991,
+      "tokenUpdatedAt": "2026-05-07T23:58:00.612Z",
+      "passwordResetAt": "2026-05-07T23:55:25.476Z"
     },
     "jillmichae@gmail.com": {
       "teacherId": "jillmichae@gmail.com",
       "email": "jillmichae@gmail.com",
-      "password": "12345",
       "role": "teacher",
       "createdAt": "2026-04-28T22:24:28.667Z",
       "licenseRequestedAt": "2026-04-28T22:40:13.566Z",
       "licenseRequestStatus": "approved",
       "licenseStopped": false,
       "licenseUpdatedAt": "2026-04-28T22:47:20.845Z",
-      "updatedAt": "2026-04-28T22:47:20.845Z",
-      "licenseEndsAt": "2026-05-08T22:47:20.845Z"
+      "updatedAt": "2026-05-07T23:55:25.476Z",
+      "licenseEndsAt": "2026-05-08T22:47:20.845Z",
+      "passwordHash": "pbkdf2-sha256:100000:6826a4e5e7471b672e132e34b852ef94:791d3f8f362d0b7bf60bac62c90df0e26377016b94865e01ed8fbd2efabdd2ef",
+      "passwordResetAt": "2026-05-07T23:55:25.476Z"
     }
   },
-  "students": {}
+  "students": {},
+  "tokenTransactions": []
 }

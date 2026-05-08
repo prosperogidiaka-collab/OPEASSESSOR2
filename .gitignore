@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+*.log
+ope-server.log
+*-server-*.log
+e2e-shared-state*.json
+*.bak.json
+ope-shared-state.before-*.json
+tmp-server-test.*
+.pdf-export-cache/
+debug-pdf-output.png

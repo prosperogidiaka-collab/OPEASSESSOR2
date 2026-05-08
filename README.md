@@ -55,14 +55,24 @@ A **privacy-first** Progressive Web App (PWA) for creating, sharing, and taking 
 
 ```
 ├── index.html          # App shell
-├── app.js             # Complete app logic
-├── service-worker.js  # PWA offline support
-├── manifest.json      # PWA metadata
-├── style.css          # Extra styles
-└── README.md          # This file
+├── app.js              # Client app logic (UI, sync, auth flows)
+├── server.js           # Optional Node sync/PDF backend
+├── state-store.js      # File or Supabase storage adapter
+├── pdf-templates.js    # Server-rendered PDF templates
+├── service-worker.js   # PWA offline support
+├── manifest.json       # PWA metadata
+├── style.css           # Theme + layout styles
+├── repository.js       # Lightweight in-page repo helper (legacy)
+├── presenter.js        # Lightweight in-page presenter (legacy)
+├── config.js           # Runtime client config (apiBaseUrl, polling)
+└── README.md           # This file
 ```
 
-**No build required.** Deploy as-is to any static host.
+The frontend (`index.html`, `app.js`, `style.css`, `service-worker.js`, `manifest.json`,
+`config.js`) is fully static and can ship to any static host.
+The backend (`server.js` + `state-store.js` + `pdf-templates.js`) is optional —
+run it with `npm start` to enable cross-device sync, server-rendered PDFs,
+and authenticated state mutations.
 
 ---
 
@@ -197,6 +207,42 @@ python -m http.server 8000
 | ID | "john@example.com" or "STU001" |
 
 ---
+
+## 🔐 Authentication & Server-Side Secrets
+
+The Node backend (`server.js`) is the source of truth for credentials.
+
+| What | Where it lives | How to rotate |
+|------|----------------|---------------|
+| Super-admin password | `SUPER_ADMIN_PASSWORD` env var (read by `server.js`) | Set it in `.env` (or your platform's secrets) and restart the server. Never commit it. |
+| Super-admin email    | `SUPER_ADMIN_EMAIL` env var (defaults to the bundled email) | Same — set in `.env`, restart. |
+| Teacher passwords    | Stored as PBKDF2-SHA256 hashes in `ope-shared-state.json` (or Supabase) | Reset from the Super-Admin → Teachers panel, or via `POST /api/auth/teacher/admin-reset-password`. |
+| Session tokens       | In-memory on the server (`SESSION_TTL_MS`, default 24h) | Restart the server to invalidate every session. |
+
+### Auth API endpoints (server)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/auth/super-admin/login` | Verify env-var credentials, return a session token |
+| POST | `/api/auth/teacher/login` | Verify a teacher's PBKDF2 hash; lazy-migrates legacy plaintext records |
+| POST | `/api/auth/teacher/register` | Create a new teacher with a hashed password |
+| POST | `/api/auth/teacher/change-password` | Update the logged-in teacher's password (requires session token) |
+| POST | `/api/auth/teacher/admin-reset-password` | Super-admin resets any teacher's password (requires admin session token) |
+| GET  | `/api/auth/session` | Inspect the current session |
+| POST | `/api/auth/logout` | Drop the current session token |
+
+### State endpoints
+
+- `GET  /api/state` and `GET /api/state/<key>` are public reads. The server **redacts `password` and `passwordHash` from teacher records** in every response.
+- `PUT  /api/state/submissions` is **public** (so anonymous students can submit). Existing submissions are merged in by `submissionId`, never overwritten silently.
+- `PUT  /api/state/<other-key>` requires `Authorization: Bearer <session-token>`. Any client-supplied `password` / `passwordHash` field on a teacher record is **stripped server-side before merge**, so credential storage stays under the auth-endpoint's control.
+
+### ⚠️ First-time deploy checklist
+
+1. Copy `.env.example` to `.env`.
+2. Set a long random `SUPER_ADMIN_PASSWORD` and (optionally) a custom `SUPER_ADMIN_EMAIL`.
+3. Start the server (`npm start`). On startup it eagerly migrates any legacy plaintext teacher passwords in your data file to PBKDF2 hashes; the super-admin record is stripped of any leftover password field.
+4. Sign in once from the Admin Login screen to mint a session token.
 
 ## 🔒 Security & Limitations
 

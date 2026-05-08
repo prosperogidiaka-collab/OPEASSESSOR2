@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { randomUUID } = require('crypto');
+const { randomUUID, randomBytes, pbkdf2Sync, timingSafeEqual } = require('crypto');
 const { pathToFileURL } = require('url');
 const puppeteer = require('puppeteer-core');
 const qrcodeGenerator = require('qrcode-generator');
@@ -38,6 +38,191 @@ const PDF_BROWSER_PATH = (process.env.PDF_BROWSER_PATH || '').trim();
 const PDF_EXPORT_TIMEOUT_MS = Number(process.env.PDF_EXPORT_TIMEOUT_MS || 45000);
 const PDF_EXPORT_TEMP_DIR = path.join(ROOT, '.pdf-export-cache');
 const PDF_DEBUG_CAPTURE = ['1', 'true', 'yes'].includes((process.env.PDF_DEBUG_CAPTURE || '').toString().trim().toLowerCase());
+
+// Auth: super-admin credentials are read from env vars so they never ship in the
+// client bundle. The defaults preserve backward compatibility with existing
+// installations; rotate them via env (.env) in any real deployment.
+const SUPER_ADMIN_EMAIL = (process.env.SUPER_ADMIN_EMAIL || 'prosperogidiaka@gmail.com').toString().trim().toLowerCase();
+const SUPER_ADMIN_PASSWORD = (process.env.SUPER_ADMIN_PASSWORD || '7767737Prosper').toString();
+const SESSION_TTL_MS = Math.max(60 * 1000, Number(process.env.SESSION_TTL_MS || 24 * 60 * 60 * 1000));
+const PBKDF2_ITERATIONS = Math.max(10000, Number(process.env.PBKDF2_ITERATIONS || 100000));
+const PBKDF2_KEY_BYTES = 32;
+const PBKDF2_SALT_BYTES = 16;
+
+// In-memory session store: token -> { email, role, expiresAt }
+const sessions = new Map();
+
+function hashPassword(plain) {
+  const salt = randomBytes(PBKDF2_SALT_BYTES);
+  const hash = pbkdf2Sync(String(plain || ''), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_BYTES, 'sha256');
+  return `pbkdf2-sha256:${PBKDF2_ITERATIONS}:${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function verifyPasswordHash(plain, encoded) {
+  if (!encoded || typeof encoded !== 'string') return false;
+  const parts = encoded.split(':');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2-sha256') return false;
+  const iterations = Number(parts[1]);
+  if (!Number.isFinite(iterations) || iterations < 1) return false;
+  let salt;
+  let expected;
+  try {
+    salt = Buffer.from(parts[2], 'hex');
+    expected = Buffer.from(parts[3], 'hex');
+  } catch (error) {
+    return false;
+  }
+  if (!salt.length || !expected.length) return false;
+  const actual = pbkdf2Sync(String(plain || ''), salt, iterations, expected.length, 'sha256');
+  if (actual.length !== expected.length) return false;
+  try {
+    return timingSafeEqual(actual, expected);
+  } catch (error) {
+    return false;
+  }
+}
+
+function pruneExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of sessions) {
+    if (!session || session.expiresAt <= now) sessions.delete(token);
+  }
+}
+
+function createSession(email, role) {
+  pruneExpiredSessions();
+  const token = randomBytes(32).toString('hex');
+  sessions.set(token, {
+    email: (email || '').toString().trim().toLowerCase(),
+    role: role || 'teacher',
+    expiresAt: Date.now() + SESSION_TTL_MS
+  });
+  return token;
+}
+
+function getSessionFromRequest(req) {
+  const header = (req.headers['authorization'] || '').toString().trim();
+  if (!header) return null;
+  const match = /^Bearer\s+(\S+)/i.exec(header);
+  if (!match) return null;
+  const token = match[1];
+  const session = sessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  return { token, ...session };
+}
+
+function deleteSessionFromRequest(req) {
+  const header = (req.headers['authorization'] || '').toString().trim();
+  const match = /^Bearer\s+(\S+)/i.exec(header);
+  if (match) sessions.delete(match[1]);
+}
+
+function redactTeacherRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+  // Never expose stored credential material to clients via /api/state.
+  const clone = { ...record };
+  delete clone.password;
+  delete clone.passwordHash;
+  return clone;
+}
+
+function redactTeachersMap(map) {
+  if (!map || typeof map !== 'object') return map;
+  const out = {};
+  Object.keys(map).forEach((key) => { out[key] = redactTeacherRecord(map[key]); });
+  return out;
+}
+
+function redactStateForClient(state) {
+  if (!state || typeof state !== 'object') return state;
+  return { ...state, teachers: redactTeachersMap(state.teachers || {}) };
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stripCredentialFieldsFromTeacherInput(value) {
+  if (!isPlainObject(value)) return value;
+  const out = {};
+  Object.keys(value).forEach((teacherKey) => {
+    const record = value[teacherKey];
+    if (!isPlainObject(record)) {
+      out[teacherKey] = record;
+      return;
+    }
+    const sanitized = { ...record };
+    delete sanitized.password;
+    delete sanitized.passwordHash;
+    out[teacherKey] = sanitized;
+  });
+  return out;
+}
+
+async function migrateLegacyPasswordsAtStartup() {
+  let teachers;
+  try {
+    teachers = await stateStore.getStateValue('teachers');
+  } catch (error) {
+    console.warn('[Auth] Skipped password migration — failed to read teachers state:', error.message || error);
+    return;
+  }
+  if (!isPlainObject(teachers)) return;
+  let mutated = false;
+  const next = {};
+  const now = new Date().toISOString();
+  Object.keys(teachers).forEach((key) => {
+    const record = teachers[key];
+    if (!isPlainObject(record)) {
+      next[key] = record;
+      return;
+    }
+    const isSuperAdmin = ((record.teacherId || record.email || key) || '').toString().trim().toLowerCase() === SUPER_ADMIN_EMAIL;
+    if (isSuperAdmin) {
+      // Super-admin credentials live only in env; strip any password residue.
+      // Use `undefined` explicitly so the state-store merge (which is spread-only)
+      // overwrites any existing field instead of leaving the legacy value behind,
+      // and bump updatedAt so the migrated record always has a newer stamp.
+      if ('password' in record || 'passwordHash' in record) {
+        next[key] = {
+          ...record,
+          password: undefined,
+          passwordHash: undefined,
+          passwordResetAt: now,
+          updatedAt: now
+        };
+        mutated = true;
+      } else {
+        next[key] = record;
+      }
+      return;
+    }
+    if (typeof record.password === 'string' && record.password) {
+      next[key] = {
+        ...record,
+        passwordHash: hashPassword(record.password),
+        password: undefined,
+        passwordResetAt: now,
+        updatedAt: now
+      };
+      mutated = true;
+      return;
+    }
+    next[key] = record;
+  });
+  if (mutated) {
+    try {
+      await stateStore.putStateValue('teachers', next);
+      console.log('[Auth] Migrated plaintext teacher passwords to PBKDF2 hashes.');
+    } catch (error) {
+      console.warn('[Auth] Failed to persist migrated teacher records:', error.message || error);
+    }
+  }
+}
 
 let sharedPdfBrowserPromise = null;
 
@@ -151,10 +336,17 @@ function buildShareMeta(req) {
     description = 'Open this secure OPE Assessor result link to view the verified score summary and certificate details.';
   }
   const imageUrl = new URL('/summary-preview.png', getRequestBaseUrl(req)).toString();
+  // Only treat the SPA root as a canonical URL — share-link variants get a query string
+  // we keep, but unknown deep paths fall back to the site root so we don't advertise
+  // arbitrary URLs (e.g. /healthz) as canonical pages.
+  const knownSpaPath = currentUrl.pathname === '/' || currentUrl.pathname === '/index.html';
+  const canonicalUrl = knownSpaPath
+    ? currentUrl.toString()
+    : new URL('/', getRequestBaseUrl(req)).toString();
   return {
     title,
     description,
-    url: currentUrl.toString(),
+    url: canonicalUrl,
     imageUrl,
     imageAlt: 'OPE Assessor dashboard preview with logo, analytics cards, quiz overview, and result verification highlights.'
   };
@@ -499,13 +691,40 @@ async function buildPdfBootstrapPayload(req) {
 }
 
 function getPdfBrowserCandidates() {
-  return [
-    PDF_BROWSER_PATH,
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
-  ].filter(Boolean);
+  const candidates = [PDF_BROWSER_PATH];
+  if (process.platform === 'win32') {
+    const programFiles = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const localAppData = process.env.LOCALAPPDATA || '';
+    candidates.push(
+      path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      path.join(programFilesX86, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      localAppData ? path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+      localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
+      programFiles ? path.join(programFiles, 'Chromium', 'Application', 'chrome.exe') : ''
+    );
+  } else if (process.platform === 'darwin') {
+    candidates.push(
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'
+    );
+  } else {
+    candidates.push(
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/microsoft-edge',
+      '/usr/bin/microsoft-edge-stable',
+      '/snap/bin/chromium',
+      '/snap/bin/google-chrome'
+    );
+  }
+  return candidates.filter(Boolean);
 }
 
 function findPdfBrowserPath() {
@@ -517,9 +736,18 @@ function findPdfBrowserPath() {
     }
   });
   if (!resolved) {
-    throw new Error('No Chromium-based browser was found for PDF export. Set PDF_BROWSER_PATH in the server environment.');
+    const tried = getPdfBrowserCandidates();
+    throw new Error(`No Chromium-based browser was found for PDF export on this server. Set PDF_BROWSER_PATH in the server environment to a Chrome/Edge/Chromium executable. Tried: ${tried.join(', ') || '(none)'}.`);
   }
   return resolved;
+}
+
+function detectPdfBrowserPath() {
+  try {
+    return findPdfBrowserPath();
+  } catch (error) {
+    return null;
+  }
 }
 
 function sanitizePdfFilename(value = '') {
@@ -800,9 +1028,11 @@ async function handleApi(req, res) {
   }
 
   if (route === '/api/health' && req.method === 'GET') {
+    const pdfBrowser = detectPdfBrowserPath();
     return sendJson(req, res, 200, {
       ok: true,
-      pdfExportSupported: true,
+      pdfExportSupported: !!pdfBrowser,
+      pdfBrowserPath: pdfBrowser ? path.basename(pdfBrowser) : null,
       host: HOST,
       port: PORT,
       addresses: getLocalAddresses(),
@@ -822,9 +1052,201 @@ async function handleApi(req, res) {
     });
   }
 
+  // ---- Auth endpoints ---------------------------------------------------
+  if (route === '/api/auth/super-admin/login' && req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const email = (parsed.email || '').toString().trim().toLowerCase();
+      const password = (parsed.password || '').toString();
+      if (email !== SUPER_ADMIN_EMAIL || password !== SUPER_ADMIN_PASSWORD) {
+        return sendJson(req, res, 401, { error: 'Invalid admin email or password' });
+      }
+      const token = createSession(SUPER_ADMIN_EMAIL, 'super_admin');
+      return sendJson(req, res, 200, {
+        ok: true,
+        sessionToken: token,
+        role: 'super_admin',
+        email: SUPER_ADMIN_EMAIL,
+        expiresInMs: SESSION_TTL_MS
+      });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = /JSON/i.test(message) || message === 'Payload too large';
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
+  if (route === '/api/auth/teacher/login' && req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const email = (parsed.email || '').toString().trim().toLowerCase();
+      const password = (parsed.password || '').toString();
+      if (!email || !password) return sendJson(req, res, 400, { error: 'Email and password are required' });
+      if (email === SUPER_ADMIN_EMAIL) return sendJson(req, res, 401, { error: 'Use the admin login for this account' });
+      const teachers = await stateStore.getStateValue('teachers');
+      const record = teachers && teachers[email];
+      if (!record || typeof record !== 'object') {
+        return sendJson(req, res, 401, { error: 'Invalid teacher ID or password' });
+      }
+      let ok = false;
+      let migratedRecord = null;
+      if (record.passwordHash) {
+        ok = verifyPasswordHash(password, record.passwordHash);
+      } else if (typeof record.password === 'string' && record.password) {
+        // Lazy-migrate: legacy plaintext password matches → upgrade to PBKDF2 hash now.
+        if (record.password === password) {
+          ok = true;
+          migratedRecord = { ...record, passwordHash: hashPassword(password), passwordResetAt: new Date().toISOString() };
+          delete migratedRecord.password;
+        }
+      }
+      if (!ok) return sendJson(req, res, 401, { error: 'Invalid teacher ID or password' });
+      if (migratedRecord) {
+        try {
+          await stateStore.putStateValue('teachers', { [email]: migratedRecord });
+        } catch (error) {
+          console.warn('[Auth] Could not persist lazy password migration:', error.message || error);
+        }
+      }
+      const token = createSession(email, 'teacher');
+      return sendJson(req, res, 200, {
+        ok: true,
+        sessionToken: token,
+        role: 'teacher',
+        email,
+        expiresInMs: SESSION_TTL_MS
+      });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = /JSON/i.test(message) || message === 'Payload too large';
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
+  if (route === '/api/auth/teacher/register' && req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const email = (parsed.email || '').toString().trim().toLowerCase();
+      const password = (parsed.password || '').toString();
+      const profile = isPlainObject(parsed.profile) ? parsed.profile : {};
+      if (!email || !password) return sendJson(req, res, 400, { error: 'Email and password are required' });
+      if (password.length < 4) return sendJson(req, res, 400, { error: 'Password must be at least 4 characters' });
+      if (email === SUPER_ADMIN_EMAIL) return sendJson(req, res, 409, { error: 'Admin account already exists. Login instead.' });
+      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      if (teachers[email]) return sendJson(req, res, 409, { error: 'Teacher ID already exists. Login instead.' });
+      const now = new Date().toISOString();
+      const cleanProfile = { ...profile };
+      delete cleanProfile.password;
+      delete cleanProfile.passwordHash;
+      const newRecord = {
+        ...cleanProfile,
+        teacherId: email,
+        email,
+        passwordHash: hashPassword(password),
+        role: 'teacher',
+        name: cleanProfile.name || '',
+        phone: cleanProfile.phone || '',
+        tokenBalance: cleanProfile.tokenBalance ?? 0,
+        tokenUpdatedAt: now,
+        tokenRequestStatus: cleanProfile.tokenRequestStatus || '',
+        unlimitedExpiresAt: cleanProfile.unlimitedExpiresAt || '',
+        unlimitedDeviceId: cleanProfile.unlimitedDeviceId || '',
+        createdAt: now,
+        updatedAt: now,
+        passwordResetAt: now
+      };
+      await stateStore.putStateValue('teachers', { [email]: newRecord });
+      const token = createSession(email, 'teacher');
+      return sendJson(req, res, 200, {
+        ok: true,
+        sessionToken: token,
+        role: 'teacher',
+        email,
+        expiresInMs: SESSION_TTL_MS
+      });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = /JSON/i.test(message) || message === 'Payload too large';
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
+  if (route === '/api/auth/teacher/change-password' && req.method === 'POST') {
+    const session = getSessionFromRequest(req);
+    if (!session) return sendJson(req, res, 401, { error: 'Not authenticated' });
+    if (session.role !== 'teacher') return sendJson(req, res, 403, { error: 'Only teacher accounts can change their own password here' });
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const currentPassword = (parsed.currentPassword || '').toString();
+      const newPassword = (parsed.newPassword || '').toString();
+      if (!newPassword || newPassword.length < 4) return sendJson(req, res, 400, { error: 'New password must be at least 4 characters' });
+      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      const record = teachers[session.email];
+      if (!record) return sendJson(req, res, 404, { error: 'Teacher not found' });
+      let currentOk = false;
+      if (record.passwordHash) currentOk = verifyPasswordHash(currentPassword, record.passwordHash);
+      else if (typeof record.password === 'string') currentOk = record.password === currentPassword;
+      if (!currentOk) return sendJson(req, res, 401, { error: 'Current password is incorrect' });
+      const updated = { ...record, passwordHash: hashPassword(newPassword), updatedAt: new Date().toISOString(), passwordResetAt: new Date().toISOString() };
+      delete updated.password;
+      await stateStore.putStateValue('teachers', { [session.email]: updated });
+      return sendJson(req, res, 200, { ok: true });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = /JSON/i.test(message) || message === 'Payload too large';
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
+  if (route === '/api/auth/teacher/admin-reset-password' && req.method === 'POST') {
+    const session = getSessionFromRequest(req);
+    if (!session || session.role !== 'super_admin') return sendJson(req, res, 403, { error: 'Admin authentication required' });
+    try {
+      const body = await readRequestBody(req);
+      const parsed = JSON.parse(body || '{}');
+      const teacherEmail = (parsed.teacherEmail || '').toString().trim().toLowerCase();
+      const newPassword = (parsed.newPassword || '').toString();
+      if (!teacherEmail || !newPassword) return sendJson(req, res, 400, { error: 'Teacher email and new password required' });
+      if (newPassword.length < 4) return sendJson(req, res, 400, { error: 'Password must be at least 4 characters' });
+      if (teacherEmail === SUPER_ADMIN_EMAIL) return sendJson(req, res, 400, { error: 'Admin password is set via environment variables, not the API' });
+      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      const record = teachers[teacherEmail];
+      if (!record) return sendJson(req, res, 404, { error: 'Teacher not found' });
+      const updated = { ...record, passwordHash: hashPassword(newPassword), updatedAt: new Date().toISOString(), passwordResetAt: new Date().toISOString() };
+      delete updated.password;
+      await stateStore.putStateValue('teachers', { [teacherEmail]: updated });
+      return sendJson(req, res, 200, { ok: true });
+    } catch (error) {
+      const message = error.message || 'Invalid request body';
+      const isBodyError = /JSON/i.test(message) || message === 'Payload too large';
+      return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+    }
+  }
+
+  if (route === '/api/auth/session' && req.method === 'GET') {
+    const session = getSessionFromRequest(req);
+    if (!session) return sendJson(req, res, 200, { authenticated: false });
+    return sendJson(req, res, 200, {
+      authenticated: true,
+      email: session.email,
+      role: session.role,
+      expiresAt: session.expiresAt
+    });
+  }
+
+  if (route === '/api/auth/logout' && req.method === 'POST') {
+    deleteSessionFromRequest(req);
+    return sendJson(req, res, 200, { ok: true });
+  }
+
+  // ---- Shared state ----------------------------------------------------
   if (route === '/api/state' && req.method === 'GET') {
     try {
-      return sendJson(req, res, 200, await stateStore.getState());
+      return sendJson(req, res, 200, redactStateForClient(await stateStore.getState()));
     } catch (error) {
       return sendJson(req, res, 500, { error: error.message || 'Failed to load shared state' });
     }
@@ -839,20 +1261,33 @@ async function handleApi(req, res) {
     if (req.method === 'GET') {
       try {
         const value = await stateStore.getStateValue(stateKey);
-        return sendJson(req, res, 200, { key: stateKey, value });
+        const safeValue = stateKey === 'teachers' ? redactTeachersMap(value || {}) : value;
+        return sendJson(req, res, 200, { key: stateKey, value: safeValue });
       } catch (error) {
         return sendJson(req, res, 500, { error: error.message || 'Failed to load shared state value' });
       }
     }
 
     if (req.method === 'PUT') {
+      // Mutation policy:
+      //   submissions  → public (anonymous students must be able to submit; merge-only semantics protect existing rows)
+      //   everything   → requires a valid session token
+      // In addition, PUT /api/state/teachers is rewritten to strip credential fields so that
+      //   the auth endpoints remain the only way to set or change passwords.
+      const session = getSessionFromRequest(req);
+      const requiresAuth = stateKey !== 'submissions';
+      if (requiresAuth && !session) {
+        return sendJson(req, res, 401, { error: 'Authentication required for this state key' });
+      }
       try {
         const body = await readRequestBody(req);
         const parsed = JSON.parse(body || '{}');
         if (!Object.prototype.hasOwnProperty.call(parsed, 'value')) {
           return sendJson(req, res, 400, { error: 'Missing value' });
         }
-        await stateStore.putStateValue(stateKey, parsed.value);
+        let nextValue = parsed.value;
+        if (stateKey === 'teachers') nextValue = stripCredentialFieldsFromTeacherInput(nextValue);
+        await stateStore.putStateValue(stateKey, nextValue);
         return sendJson(req, res, 200, { ok: true, key: stateKey, backend: stateStore.backend });
       } catch (error) {
         const message = error.message || 'Invalid request body';
@@ -902,6 +1337,14 @@ async function handleApi(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Convenience alias used by health-check probes that expect /healthz to return JSON.
+  if (req.url === '/healthz' || req.url === '/healthz/') {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return send(req, res, 405, 'Method not allowed');
+    }
+    req.url = '/api/health';
+  }
+
   if ((req.url || '').startsWith('/api/')) {
     const handled = await handleApi(req, res);
     if (handled !== false) return;
@@ -960,7 +1403,11 @@ server.listen(PORT, HOST, () => {
     console.log(`Public base URL: ${PUBLIC_BASE_URL}`);
   }
   console.log(`Allowed CORS origins: ${ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : 'same-origin only'}`);
+  console.log(`Super-admin email: ${SUPER_ADMIN_EMAIL} (password is read from SUPER_ADMIN_PASSWORD env var; rotate it in .env)`);
   getLocalAddresses().forEach((address) => {
     console.log(`Open from another device on this Wi-Fi: http://${address}:${PORT}`);
+  });
+  migrateLegacyPasswordsAtStartup().catch((error) => {
+    console.warn('[Auth] Password migration encountered an error:', error.message || error);
   });
 });
