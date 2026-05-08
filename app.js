@@ -7747,6 +7747,25 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
       studentAnswerText = chosen || 'No answer';
       correctAnswerText = 'Manually graded by teacher';
     }
+    // Essay-specific score + remarks (visible to the student in the result
+    // modal and in the correction PDF).
+    let essayScoreLine = '';
+    let essayRemarksLine = '';
+    if (qType === 'essay') {
+      const sid = (question && question._sourceId) || makeQuestionId(question, entry.originalIndex);
+      const recordedScore = ((submission && submission.essayScores) || {})[sid];
+      const teacherComment = (((submission && submission.essayComments) || {})[sid] || '').toString().trim();
+      const breakdownEntry = (Array.isArray(submission && submission.subjectBreakdown) ? submission.subjectBreakdown : [])
+        .find((item) => normalizeSubjectName(item.name || '') === normalizeSubjectName(entry.subject || question.subject || 'General'));
+      const maxMarks = breakdownEntry && breakdownEntry.markPerQuestion ? breakdownEntry.markPerQuestion : '';
+      const scoreText = recordedScore != null && Number.isFinite(Number(recordedScore))
+        ? `${formatScoreValue(Number(recordedScore))}${maxMarks ? ` / ${formatScoreValue(maxMarks)}` : ''}`
+        : 'Pending teacher review';
+      essayScoreLine = `<div class="pdf-meta-line"><strong>Essay score:</strong> ${escapeHtml(scoreText)}</div>`;
+      if (teacherComment) {
+        essayRemarksLine = `<div class="pdf-meta-line pdf-writeup"><strong>Teacher's remarks:</strong> <div style="white-space:pre-wrap">${escapeHtml(teacherComment)}</div></div>`;
+      }
+    }
     const statusClass = statusText === 'Correct' ? 'status-correct'
       : statusText === 'Pending Review' ? 'status-pending'
       : 'status-incorrect';
@@ -7766,6 +7785,8 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
         ${optionsBlock}
         <div class="pdf-meta-line"><strong>Student answer:</strong> <div style="white-space:pre-wrap">${escapeHtml(studentAnswerText)}</div></div>
         <div class="pdf-meta-line"><strong>Correct answer:</strong> ${escapeHtml(correctAnswerText)}</div>
+        ${essayScoreLine}
+        ${essayRemarksLine}
         <div class="pdf-meta-line"><strong>Topic:</strong> <div class="rich-text-output">${renderRichTextHtml(topic)}</div></div>
         <div class="pdf-meta-line pdf-writeup"><strong>Explanation:</strong> <div class="rich-text-output">${renderRichTextHtml(explanation)}</div></div>
         <div class="pdf-meta-line pdf-writeup"><strong>Learning point:</strong> <div class="rich-text-output">${renderRichTextHtml(learningPoint)}</div></div>
@@ -8927,6 +8948,7 @@ function buildEssayGradingPanelHtml(quiz, submission) {
   const questions = Array.isArray(submission && submission.allQuestions) ? submission.allQuestions : [];
   const answers = (submission && submission.answers) || {};
   const essayScores = (submission && submission.essayScores) || {};
+  const essayComments = (submission && submission.essayComments) || {};
   const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
   const subjectMaxBySection = new Map();
   breakdown.forEach((section) => subjectMaxBySection.set(normalizeSubjectName(section.name), section.markPerQuestion || 0));
@@ -8939,7 +8961,8 @@ function buildEssayGradingPanelHtml(quiz, submission) {
     const sectionName = normalizeSubjectName(q.subject || q._subject || 'General');
     const maxMarks = Math.round((subjectMaxBySection.get(sectionName) || 1) * 100) / 100 || 1;
     const recorded = essayScores[sid];
-    essayItems.push({ index, sourceId: sid, question: q, studentAnswer, maxMarks, recorded });
+    const comment = essayComments[sid] || '';
+    essayItems.push({ index, sourceId: sid, question: q, studentAnswer, maxMarks, recorded, comment });
   });
   if (!essayItems.length) return '';
   const rows = essayItems.map((item) => `
@@ -8952,16 +8975,28 @@ function buildEssayGradingPanelHtml(quiz, submission) {
         <label class="small">Score</label>
         <input type="number" min="0" max="${item.maxMarks}" step="0.5" class="input-beautiful essay-grade-score" value="${item.recorded != null && Number.isFinite(Number(item.recorded)) ? Number(item.recorded) : ''}" style="max-width:120px" />
         <span class="small">/ ${item.maxMarks}</span>
-        <button type="button" class="btn btn-primary btn-sm essay-grade-save">Save</button>
+      </div>
+      <div style="margin-top:10px">
+        <label class="small">Remarks / comments for the student</label>
+        <textarea class="input-beautiful essay-grade-comment" rows="3" placeholder="Feedback the student will see in their result and the correction PDF.">${escapeHtml(item.comment || '')}</textarea>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-primary btn-sm essay-grade-save">Save Score &amp; Remarks</button>
       </div>
     </div>
   `).join('');
   return `
     <div class="card-beautiful" id="essayGradingPanel" style="margin-top:18px;padding:14px">
-      <div class="h3" style="margin:0">Essay Grading</div>
-      <div class="small" style="margin-top:6px;color:#475569;line-height:1.55">
-        Long-answer questions are not auto-marked. Enter a score for each essay below and click Save.
-        The student's overall result stays "Pending Review" until every essay has a score.
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <div class="h3" style="margin:0">Essay Grading</div>
+          <div class="small" style="margin-top:6px;color:#475569;line-height:1.55">
+            Long-answer questions are not auto-marked. Enter a score and remarks for each essay, then click Save.
+            The student's overall result stays "Pending Review" until every essay has a score.
+            Remarks are visible to the student on their result screen and inside the correction PDF.
+          </div>
+        </div>
+        <button type="button" id="essayGradeDownloadDoc" class="btn btn-secondary btn-sm">Download Essays (Word .doc)</button>
       </div>
       ${rows}
     </div>
@@ -8973,16 +9008,18 @@ function wireEssayGradingPanel(quiz, submission) {
   if (!panel) return;
   panel.querySelectorAll('.essay-grade-row').forEach((row) => {
     const sourceId = row.dataset.sourceId || '';
-    const input = row.querySelector('.essay-grade-score');
+    const scoreInput = row.querySelector('.essay-grade-score');
+    const commentInput = row.querySelector('.essay-grade-comment');
     const saveBtn = row.querySelector('.essay-grade-save');
-    if (!sourceId || !input || !saveBtn) return;
+    if (!sourceId || !scoreInput || !saveBtn) return;
     saveBtn.onclick = () => {
-      const raw = (input.value || '').toString().trim();
+      const raw = (scoreInput.value || '').toString().trim();
       const numeric = raw === '' ? null : Number(raw);
       if (raw !== '' && (!Number.isFinite(numeric) || numeric < 0)) {
         showNotification('Enter a valid score (0 or higher).', 'error');
         return;
       }
+      const commentValue = commentInput ? (commentInput.value || '').toString() : '';
       // Update the source-of-truth submission stored in localStorage so the
       // grade survives reloads and sync.
       const all = getAllSubmissions();
@@ -8993,8 +9030,12 @@ function wireEssayGradingPanel(quiz, submission) {
       }
       const target = { ...all[idx] };
       target.essayScores = { ...(target.essayScores || {}) };
+      target.essayComments = { ...(target.essayComments || {}) };
       if (numeric == null) delete target.essayScores[sourceId];
       else target.essayScores[sourceId] = numeric;
+      const trimmedComment = commentValue.trim();
+      if (!trimmedComment) delete target.essayComments[sourceId];
+      else target.essayComments[sourceId] = commentValue;
       const grade = buildSubmissionGradeState(target, quiz);
       applyGradeToSubmission(target, grade);
       target.updatedAt = new Date().toISOString();
@@ -9002,15 +9043,96 @@ function wireEssayGradingPanel(quiz, submission) {
       saveAllSubmissions(all);
       // Reflect on the in-memory submission too.
       submission.essayScores = target.essayScores;
+      submission.essayComments = target.essayComments;
       applyGradeToSubmission(submission, grade);
       syncSharedKeys([STORAGE_KEYS.submissions]).catch(() => {});
-      showNotification('Essay score saved.', 'success', 4000);
+      showNotification('Essay score & remarks saved.', 'success', 4000);
       // Re-render the result modal to refresh score / Pending Review status.
       const modal = document.getElementById('studentResultModal');
       if (modal) modal.remove();
       showStudentResultModalFromSubmission(quiz, target, true);
     };
   });
+  const downloadBtn = document.getElementById('essayGradeDownloadDoc');
+  if (downloadBtn) downloadBtn.onclick = () => downloadSubmissionEssaysAsDoc(submission, quiz);
+}
+
+// Download every essay answer in a submission as a Word-readable .doc file.
+// Uses the long-standing Word HTML format trick (application/msword + an
+// HTML body) — works in MS Word, Google Docs, LibreOffice, and on phones.
+function downloadSubmissionEssaysAsDoc(submission, quiz) {
+  if (!submission) return showNotification('No submission to export.', 'error');
+  const questions = Array.isArray(submission.allQuestions) ? submission.allQuestions : [];
+  const answers = submission.answers || {};
+  const essayScores = submission.essayScores || {};
+  const essayComments = submission.essayComments || {};
+  const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
+  const maxBySection = new Map();
+  breakdown.forEach((s) => maxBySection.set(normalizeSubjectName(s.name), s.markPerQuestion || 0));
+  const essays = questions.map((q, idx) => ({ q, idx })).filter(({ q, idx }) => {
+    if (normalizeQuestionType(q && q.type) !== 'essay') return false;
+    return (answers[idx] || '').toString().trim();
+  });
+  if (!essays.length) {
+    showNotification('No essay answers in this submission to download.', 'info');
+    return;
+  }
+  const studentName = (submission.name || submission.email || 'Student').toString();
+  const studentEmail = (submission.email || submission.registrationNo || '').toString();
+  const quizTitle = (quiz && (quiz.title || quiz.id)) || submission.quizId || 'Quiz';
+  const submittedAt = submission.submittedAt ? new Date(submission.submittedAt).toLocaleString() : '';
+  const essayBlocks = essays.map(({ q, idx }) => {
+    const sid = (q && q._sourceId) || makeQuestionId(q, idx);
+    const sectionName = normalizeSubjectName(q.subject || q._subject || 'General');
+    const maxMarks = Math.round((maxBySection.get(sectionName) || 1) * 100) / 100 || 1;
+    const score = essayScores[sid];
+    const comment = essayComments[sid] || '';
+    const studentAnswer = (answers[idx] || '').toString();
+    return `
+      <h2 style="font-size:14pt;margin:18pt 0 6pt 0">Question ${idx + 1}</h2>
+      <p style="font-weight:bold;margin:0 0 8pt 0">${escapeHtml(getRichTextPlainText(q.question || ''))}</p>
+      <p style="margin:0 0 4pt 0;font-size:11pt;color:#444">Subject: ${escapeHtml(q.subject || q._subject || 'General')} &nbsp;|&nbsp; Max marks: ${maxMarks} &nbsp;|&nbsp; Score: ${score != null && Number.isFinite(Number(score)) ? Number(score) : 'Not graded yet'}</p>
+      <div style="white-space:pre-wrap;border:1pt solid #888;padding:10pt;margin-bottom:6pt;line-height:1.5;font-size:12pt">${escapeHtml(studentAnswer)}</div>
+      ${comment ? `<p style="margin:6pt 0 0 0;font-size:11pt"><strong>Teacher remarks:</strong> ${escapeHtml(comment)}</p>` : ''}
+    `;
+  }).join('');
+  const doc = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(`${studentName} — Essay Answers`)}</title>
+  <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 12pt; color: #000; line-height: 1.5; }
+    h1 { font-size: 18pt; margin: 0 0 10pt 0; }
+    p { margin: 0 0 6pt 0; }
+    @page { size: A4; margin: 1in; }
+  </style>
+</head>
+<body>
+  <h1>Essay Answers — ${escapeHtml(quizTitle)}</h1>
+  <p>Student: <strong>${escapeHtml(studentName)}</strong></p>
+  ${studentEmail ? `<p>Email / ID: ${escapeHtml(studentEmail)}</p>` : ''}
+  ${submittedAt ? `<p>Submitted: ${escapeHtml(submittedAt)}</p>` : ''}
+  <hr />
+  ${essayBlocks}
+</body>
+</html>
+  `.trim();
+  const blob = new Blob(['﻿', doc], { type: 'application/msword' });
+  const safeName = `${studentName} - essays - ${quizTitle}`.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim();
+  const filename = `${safeName || 'essays'}.doc`;
+  if (typeof saveAs === 'function') {
+    saveAs(blob, filename);
+  } else {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+  }
+  showNotification('Essay answers downloaded as Word document.', 'success', 5000);
 }
 
 function applyGradeToSubmission(submission, grade) {
@@ -9295,7 +9417,57 @@ function buildStudentResultSupplementHtml(quiz, submission) {
     </div>
   ` : '';
   const topicBreakdownHtml = buildStudentTopicBreakdownHtml(quiz, submission);
-  return `${performanceHtml}${topicBreakdownHtml}`;
+  const essayFeedbackHtml = buildStudentEssayFeedbackHtml(quiz, submission);
+  return `${performanceHtml}${topicBreakdownHtml}${essayFeedbackHtml}`;
+}
+
+// Per-essay feedback shown on the student's result screen — score awarded
+// and the teacher's remarks. Only renders if the submission has at least one
+// essay answer.
+function buildStudentEssayFeedbackHtml(quiz, submission) {
+  const questions = Array.isArray(submission && submission.allQuestions) ? submission.allQuestions : [];
+  const answers = (submission && submission.answers) || {};
+  const essayScores = (submission && submission.essayScores) || {};
+  const essayComments = (submission && submission.essayComments) || {};
+  const breakdown = Array.isArray(submission && submission.subjectBreakdown) && submission.subjectBreakdown.length
+    ? submission.subjectBreakdown
+    : computeSubmissionSubjectBreakdown(quiz, submission);
+  const maxBySection = new Map();
+  breakdown.forEach((s) => maxBySection.set(normalizeSubjectName(s.name || ''), s.markPerQuestion || 0));
+  const cards = [];
+  questions.forEach((q, index) => {
+    if (normalizeQuestionType(q && q.type) !== 'essay') return;
+    const studentAnswer = (answers[index] || '').toString();
+    if (!studentAnswer.trim()) return;
+    const sid = (q && q._sourceId) || makeQuestionId(q, index);
+    const recorded = essayScores[sid];
+    const comment = (essayComments[sid] || '').toString().trim();
+    const sectionName = normalizeSubjectName(q.subject || q._subject || 'General');
+    const max = Math.round((maxBySection.get(sectionName) || 1) * 100) / 100 || 1;
+    const scoreText = recorded != null && Number.isFinite(Number(recorded))
+      ? `${formatScoreValue(Number(recorded))} / ${formatScoreValue(max)}`
+      : 'Pending teacher review';
+    cards.push(`
+      <div class="cert-performance-card avoid-break" style="display:block">
+        <div class="cert-performance-subject">Question ${index + 1} • Long Answer</div>
+        <div class="cert-performance-score" style="margin-top:6px">Score: ${escapeHtml(scoreText)}</div>
+        <div class="small" style="margin-top:8px;color:#475569">Your answer:</div>
+        <div style="white-space:pre-wrap;border:1px solid #E2E8F0;border-radius:10px;padding:10px;background:#F8FAFC;margin-top:6px;line-height:1.55">${escapeHtml(studentAnswer)}</div>
+        ${comment
+          ? `<div class="small" style="margin-top:10px;color:#0F172A"><strong>Teacher's remarks:</strong></div><div style="white-space:pre-wrap;border:1px dashed #94A3B8;border-radius:10px;padding:10px;background:#FFFBEB;margin-top:4px;line-height:1.55">${escapeHtml(comment)}</div>`
+          : '<div class="small" style="margin-top:10px;color:#475569">No remarks from your teacher yet.</div>'}
+      </div>
+    `);
+  });
+  if (!cards.length) return '';
+  return `
+    <div class="cert-performance-section avoid-break" style="margin-top:18px">
+      <div class="cert-section-ribbon cert-section-ribbon-secondary">ESSAY FEEDBACK</div>
+      <div class="cert-performance-list" style="display:grid;gap:12px">
+        ${cards.join('')}
+      </div>
+    </div>
+  `;
 }
 
 function buildStudentResultFullHtml(quiz, submission, rankValue, opts = {}) {
