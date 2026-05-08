@@ -3932,10 +3932,12 @@ function renderTeacherAuth() {
             await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 }).catch(() => {});
             showNotification('Teacher ID created', 'success', 6000);
           } else {
-            if (id === SUPER_ADMIN_EMAIL) return showNotification('Use the Admin Login from the home screen for the super-admin account.', 'error', 8000);
-            const result = await postAuthJson('/api/auth/teacher/login', { email: id, password });
+            const isAdminLogin = id === SUPER_ADMIN_EMAIL;
+            const endpoint = isAdminLogin ? '/api/auth/super-admin/login' : '/api/auth/teacher/login';
+            const result = await postAuthJson(endpoint, { email: id, password });
             if (!result.ok) {
-              const message = (result.data && result.data.error) || 'Invalid teacher ID or password';
+              const fallback = isAdminLogin ? 'Invalid admin email or password' : 'Invalid teacher ID or password';
+              const message = (result.data && result.data.error) || fallback;
               return showNotification(message, 'error', 6000);
             }
             setStoredAuthSession({
@@ -3944,7 +3946,8 @@ function renderTeacherAuth() {
               email: result.data.email,
               expiresInMs: result.data.expiresInMs
             });
-            await recordLocalAuthForPassword(id, password);
+            // The super-admin password is server-only and never cached locally.
+            if (!isAdminLogin) await recordLocalAuthForPassword(id, password);
           }
         } else {
           // Path B: offline. Allow login only — never registration — and only
