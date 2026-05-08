@@ -7326,36 +7326,36 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   return `
     <div class="pdf-doc-root correction-pdf-root">
       <style>
-        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:12pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .pdf-doc-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:16pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .pdf-doc-root *{box-sizing:border-box}
         .pdf-doc-shell{display:flex;flex-direction:column;gap:14px}
         .pdf-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px 18px 16px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%);text-align:left}
-        .pdf-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
-        .pdf-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
-        .pdf-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
+        .pdf-brand{font-size:16pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .pdf-title{font-size:22pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .pdf-subtitle{font-size:16pt;color:#000;margin-top:6px;line-height:1.5}
         .pdf-section-card{border:1px solid #CBD5E1;border-radius:16px;padding:14px;background:#fff}
-        .pdf-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
+        .pdf-section-heading{font-size:18pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
         .pdf-meta-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
         .pdf-meta-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px;text-align:left}
-        .pdf-meta-card strong{display:block;font-size:12pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
-        .pdf-meta-card span{display:block;color:#000;font-size:12pt;line-height:1.55;word-break:break-word}
+        .pdf-meta-card strong{display:block;font-size:16pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .pdf-meta-card span{display:block;color:#000;font-size:16pt;line-height:1.55;word-break:break-word}
         .pdf-question-card{border:1px solid #CBD5E1;border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
         .pdf-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
         .pdf-question-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;text-align:left}
-        .pdf-question-number{font-size:13pt;font-weight:900;color:#1F2937}
-        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:12pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+        .pdf-question-number{font-size:17pt;font-weight:900;color:#1F2937}
+        .pdf-question-status{padding:4px 10px;border-radius:999px;background:#EFF6FF;color:#000;font-size:16pt;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
         .pdf-question-card.status-correct .pdf-question-status{background:#DCFCE7}
         .pdf-question-card.status-incorrect .pdf-question-status{background:#FEE2E2}
-        .pdf-question-text{margin-top:10px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
-        .pdf-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .pdf-question-text{margin-top:10px;color:#000;font-size:16pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .pdf-meta-line{margin-top:8px;color:#000;font-size:16pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .pdf-meta-line strong{color:#000}
         .pdf-writeup{color:#000}
         .pdf-option-list{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
         .pdf-option-row{display:flex;gap:10px;align-items:flex-start;border:1px solid #E2E8F0;border-radius:10px;padding:8px 10px;background:#fff;text-align:left}
         .pdf-option-row.is-correct{border-color:#93C5FD;background:#EFF6FF}
         .pdf-option-row.is-selected{box-shadow:inset 0 0 0 1px rgba(47,128,237,.22)}
-        .pdf-option-letter{font-weight:900;color:#000;min-width:18px;font-size:12pt}
-        .pdf-option-text{color:#000;font-size:12pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:left}
+        .pdf-option-letter{font-weight:900;color:#000;min-width:22px;font-size:16pt}
+        .pdf-option-text{color:#000;font-size:16pt;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:left}
         .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .rich-text-output > :first-child{margin-top:0}
         .rich-text-output > :last-child{margin-bottom:0}
@@ -7411,7 +7411,10 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
       // and produces consistent A4-fitted pages with no blank-content failures.
       preferCanvasSnapshot: true,
       contentWidthMm: 190,
-      sourceWidthPx: 912,
+      // 190mm at 96 DPI = 718px. Matching source-div CSS width (set in mm) to
+      // sandbox width (set in px) is what makes 1 CSS pt = 1 PDF pt and stops
+      // the canvas from leaving white space on the right of every page.
+      sourceWidthPx: 718,
       renderScale: 2.4,
       marginMm: 10,
       orientation: 'p'
@@ -7610,28 +7613,28 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
   return `
     <div class="pdf-doc-root facility-pdf-root">
       <style>
-        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:12pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .facility-pdf-root{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;color:#000;background:#fff;line-height:1.6;font-size:16pt;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .facility-pdf-root *{box-sizing:border-box}
         .facility-shell{display:flex;flex-direction:column;gap:14px}
         .facility-hero{border:2px solid #2F80ED;border-radius:18px;padding:18px;background:linear-gradient(180deg,#fff 0%,#F8FAFC 100%);text-align:left}
-        .facility-brand{font-size:13pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
-        .facility-title{font-size:18pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
-        .facility-subtitle{font-size:12pt;color:#000;margin-top:6px;line-height:1.5}
+        .facility-brand{font-size:16pt;font-weight:900;letter-spacing:.12em;text-transform:uppercase;color:#2F80ED}
+        .facility-title{font-size:22pt;font-weight:900;line-height:1.25;color:#1F2937;margin-top:8px;text-transform:uppercase}
+        .facility-subtitle{font-size:16pt;color:#000;margin-top:6px;line-height:1.5}
         .facility-summary{border:1px solid #CBD5E1;border-radius:16px;background:#fff;padding:14px}
-        .facility-section-heading{font-size:14pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
+        .facility-section-heading{font-size:18pt;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:#2F80ED;margin-bottom:10px;text-align:left}
         .facility-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
         .facility-summary-card{border:1px solid #CBD5E1;border-radius:12px;background:#F8FAFC;padding:10px 12px;text-align:left}
-        .facility-summary-card strong{display:block;font-size:12pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
-        .facility-summary-card span{display:block;color:#000;font-size:12pt;line-height:1.55}
+        .facility-summary-card strong{display:block;font-size:16pt;letter-spacing:.05em;text-transform:uppercase;color:#2F80ED;margin-bottom:6px}
+        .facility-summary-card span{display:block;color:#000;font-size:16pt;line-height:1.55}
         .facility-band-section{display:flex;flex-direction:column;gap:10px}
-        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:12pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill);text-align:left}
+        .facility-band-heading{padding:10px 14px;border-radius:14px;font-size:16pt;font-weight:900;letter-spacing:.05em;text-transform:uppercase;color:#000;border:1px solid var(--band-accent);background:var(--band-fill);text-align:left}
         .facility-question-card{border:1px solid #CBD5E1;border-left:4px solid var(--band-accent);border-radius:14px;background:#fff;padding:14px 14px 12px;page-break-inside:avoid;break-inside:avoid}
         .facility-question-card.long-card{page-break-inside:auto !important;break-inside:auto !important}
         .facility-question-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;text-align:left}
-        .facility-question-title{font-size:13pt;font-weight:900;color:#1F2937}
-        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:12pt;font-weight:800}
-        .facility-question-text{margin-top:10px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
-        .facility-meta-line{margin-top:8px;color:#000;font-size:12pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .facility-question-title{font-size:17pt;font-weight:900;color:#1F2937}
+        .facility-question-chip{padding:4px 10px;border-radius:999px;background:var(--band-fill);color:#000;font-size:16pt;font-weight:800}
+        .facility-question-text{margin-top:10px;color:#000;font-size:16pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
+        .facility-meta-line{margin-top:8px;color:#000;font-size:16pt;line-height:1.6;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
         .facility-meta-line strong{color:#000}
         .facility-writeup{color:#000}
         .rich-text-output{display:block;white-space:normal;word-break:break-word;overflow-wrap:anywhere;text-align:justify;hyphens:auto;-webkit-hyphens:auto}
@@ -7706,7 +7709,9 @@ function downloadFacilityIndexPdfText(quiz, data, options = {}) {
       disableServerHtmlExport: true,
       preferCanvasSnapshot: true,
       contentWidthMm: 190,
-      sourceWidthPx: 912,
+      // 718 = 190mm at 96 DPI — matches the source div so canvas fills the
+      // page from edge to edge with no left-cramming / right white margin.
+      sourceWidthPx: 718,
       renderScale: 2.4,
       marginMm: 10,
       orientation: 'p'
