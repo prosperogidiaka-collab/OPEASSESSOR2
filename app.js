@@ -44,7 +44,11 @@ const NETWORK_STATE_KEY_MAP = {
   [STORAGE_KEYS.students]: 'students',
   [STORAGE_KEYS.tokenTransactions]: 'tokenTransactions'
 };
-const DEFAULT_NETWORK_SYNC_POLL_MS = 5000;
+// 15s poll keeps the teacher dashboard reactive without thrashing the main
+// thread or burning Vercel cold-starts every 5s. Submissions still flow in
+// near-real-time because students PUT directly when they submit, and the
+// teacher tab also force-pulls on focus / online / visibilitychange.
+const DEFAULT_NETWORK_SYNC_POLL_MS = 15000;
 const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
 const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 4000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
@@ -6461,6 +6465,152 @@ function getPublicAppBaseUrl() {
   return '/';
 }
 
+// Build a complete standalone HTML document and write it into a new window.
+// Used by the correction and facility-index "PDF" buttons — instead of
+// generating a PDF in this tab (which had blank-page failures) we open a
+// print-ready report. Browser "Print > Save as PDF" gives a clean PDF.
+function openPrintableDocumentInNewWindow(title, innerHtml) {
+  if (typeof window === 'undefined') return false;
+  let win = null;
+  try { win = window.open('', '_blank'); } catch (e) { win = null; }
+  if (!win) {
+    showNotification('Pop-up blocked. Allow pop-ups for this site, then click again.', 'error', 9000);
+    return false;
+  }
+  const safeTitle = (title || 'OPE Assessor Report').toString();
+  const escapedTitle = safeTitle
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapedTitle}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    @page { size: A4 portrait; margin: 12mm 10mm; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #E5E7EB;
+      color: #0F172A;
+      font-family: "Inter","Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    * { box-sizing: border-box; }
+    .ope-print-toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 22px;
+      background: #0F172A;
+      color: #ffffff;
+      box-shadow: 0 2px 6px rgba(15,23,42,0.18);
+    }
+    .ope-print-toolbar h1 {
+      margin: 0;
+      font-size: 14pt;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .ope-print-toolbar-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .ope-print-toolbar button {
+      appearance: none;
+      border: 0;
+      cursor: pointer;
+      padding: 9px 18px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 13pt;
+      font-family: inherit;
+    }
+    .ope-print-toolbar .primary { background: #2F80ED; color: #ffffff; }
+    .ope-print-toolbar .primary:hover { background: #1D6FE0; }
+    .ope-print-toolbar .ghost { background: rgba(255,255,255,0.12); color: #ffffff; }
+    .ope-print-toolbar .ghost:hover { background: rgba(255,255,255,0.22); }
+    .ope-print-page {
+      background: #ffffff;
+      width: 210mm;
+      min-height: 297mm;
+      margin: 16px auto 32px;
+      padding: 12mm 10mm;
+      box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+      color: #000000;
+      overflow: visible;
+      font-size: 16pt;
+      line-height: 1.6;
+      text-align: justify;
+      hyphens: auto;
+      -webkit-hyphens: auto;
+    }
+    .ope-print-page img, .ope-print-page svg, .ope-print-page canvas { max-width: 100%; height: auto; }
+    .ope-print-page table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+    .ope-print-page th, .ope-print-page td { word-wrap: break-word; overflow-wrap: break-word; }
+    .avoid-break,
+    .pdf-question-card,
+    .pdf-summary-card,
+    .pdf-meta-card,
+    .facility-question-card,
+    .facility-summary-card,
+    .facility-band-section,
+    .facility-band-heading {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .long-card { break-inside: auto; page-break-inside: auto; }
+    @media print {
+      @page { size: A4 portrait; margin: 12mm 10mm; }
+      html, body { background: #ffffff !important; }
+      .ope-print-toolbar { display: none !important; }
+      .ope-print-page {
+        width: auto;
+        min-height: 0;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+        font-size: 16pt;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="ope-print-toolbar">
+    <h1>${escapedTitle}</h1>
+    <div class="ope-print-toolbar-actions">
+      <button class="primary" type="button" onclick="window.print()">Print / Save as PDF</button>
+      <button class="ghost" type="button" onclick="window.close()">Close</button>
+    </div>
+  </div>
+  <article class="ope-print-page">${innerHtml}</article>
+  <script>
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        window.print();
+      }
+    });
+  <\/script>
+</body>
+</html>`;
+  try {
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    return true;
+  } catch (e) {
+    showNotification('Could not write the report into the new tab. Please try again.', 'error', 9000);
+    try { win.close(); } catch (err) {}
+    return false;
+  }
+}
+
 // Print-route payload helpers. The source tab writes a one-shot payload here
 // (typed by route + id), and the destination tab reads + clears it on render
 // so the print view is instant even without shared sync.
@@ -7474,33 +7624,23 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
 }
 
 function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
-  // Open a polished, print-ready HTML view in a new tab. Source tab also
-  // writes a one-shot payload to localStorage so the new tab can render
-  // instantly — no spinner, no network round-trip, no race conditions.
-  const shareKey = getSubmissionShareKey(submission);
-  if (!shareKey) {
-    showNotification('This submission cannot be opened yet — share key missing.', 'error');
+  // Build the full A4-styled HTML in this tab (where we have all the data) and
+  // write it directly into a new window. No URL routing, no shared-state pull,
+  // no localStorage hand-off — the destination tab opens already rendered.
+  if (!submission || !quiz) {
+    showNotification('Cannot open correction view — submission or quiz data is missing.', 'error');
     return Promise.resolve(false);
   }
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
   const resolvedSubjectName = correctionView.subjectName;
-  writePrintPayload('student-correction', shareKey, {
-    submission,
-    quiz,
-    subject: resolvedSubjectName || '',
-    showNegativePenalty: opts.showNegativePenalty !== false
+  const title = `Correction · ${submission.name || submission.email || 'Student'}${resolvedSubjectName ? ` · ${resolvedSubjectName}` : ''}`;
+  const innerHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
+    showNegativePenalty: opts.showNegativePenalty !== false,
+    subjectName: resolvedSubjectName
   });
-  const params = new URLSearchParams();
-  if (resolvedSubjectName) params.set('subject', resolvedSubjectName);
-  if (opts.showNegativePenalty === false) params.set('showNegativePenalty', '0');
-  const url = `/student-correction/${encodeURIComponent(shareKey)}${params.toString() ? `?${params.toString()}` : ''}`;
-  const opened = window.open(url, '_blank', 'noopener');
-  if (!opened) {
-    window.location.href = url;
-  } else {
-    showNotification('Correction view opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
-  }
-  return Promise.resolve(true);
+  const ok = openPrintableDocumentInNewWindow(title, innerHtml);
+  if (ok) showNotification('Correction view opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
+  return Promise.resolve(ok);
 }
 
 async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch = {}) {
@@ -7779,29 +7919,20 @@ function buildFacilityIndexPdfDocumentHtml(quiz, data, options = {}) {
 }
 
 function downloadFacilityIndexPdfText(quiz, data, options = {}) {
-  // Open the facility index print view in a new tab and stash the payload
-  // (quiz + facility data) in localStorage so the destination tab renders
-  // instantly without re-pulling shared state.
+  // Same approach as the correction PDF: render the full A4-styled HTML here
+  // and document.write it into a new window. No URL routing, no race.
   if (!quiz || !quiz.id) {
     showNotification('Quiz information is missing — facility index cannot be opened.', 'error');
     return Promise.resolve(false);
   }
   const subjectName = (options.subjectName || '').toString().trim() || 'General';
-  writePrintPayload('facility-index', quiz.id, {
-    quiz,
-    data: Array.isArray(data) ? data : [],
-    subject: subjectName
-  });
-  const params = new URLSearchParams();
-  if (subjectName) params.set('subject', subjectName);
-  const url = `/facility-index/${encodeURIComponent(quiz.id)}${params.toString() ? `?${params.toString()}` : ''}`;
-  const opened = window.open(url, '_blank', 'noopener');
-  if (!opened) {
-    window.location.href = url;
-  } else if (options.successMessage !== '') {
+  const title = `Facility Index · ${quiz.title || quiz.id} · ${subjectName}`;
+  const innerHtml = buildFacilityIndexPdfDocumentHtml(quiz, Array.isArray(data) ? data : [], { subjectName });
+  const ok = openPrintableDocumentInNewWindow(title, innerHtml);
+  if (ok && options.successMessage !== '') {
     showNotification('Facility index opened in a new tab. Use "Print > Save as PDF" for a copy.', 'success', 6000);
   }
-  return Promise.resolve(true);
+  return Promise.resolve(ok);
 }
 
 function getTeacherSummaryQuestionCount(quiz, submissions = []) {
