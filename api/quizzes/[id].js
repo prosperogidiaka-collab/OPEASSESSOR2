@@ -29,39 +29,44 @@ function getRequestedQuizId(req) {
   return (raw || '').toString();
 }
 
+// Accept POST as well as PUT — the canonical method for this endpoint is PUT
+// (idempotent upsert keyed by quiz id), but a stray POST from an older client
+// build is harmless and shouldn't 405.
+const ALLOWED_METHODS = 'PUT, POST, OPTIONS';
+
 module.exports = async function quizUpsertHandler(req, res) {
-  if (handlePreflight(req, res, { allowMethods: 'PUT, OPTIONS' })) return;
-  if (req.method !== 'PUT') {
-    return sendJson(req, res, 405, { error: 'Method not allowed' }, {}, { allowMethods: 'PUT, OPTIONS' });
+  if (handlePreflight(req, res, { allowMethods: ALLOWED_METHODS })) return;
+  if (req.method !== 'PUT' && req.method !== 'POST') {
+    return sendJson(req, res, 405, { error: 'Method not allowed' }, {}, { allowMethods: ALLOWED_METHODS });
   }
 
   const session = getSessionFromRequest(req);
   if (!session) {
-    return sendJson(req, res, 401, { error: 'Authentication required' }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 401, { error: 'Authentication required' }, {}, { allowMethods: ALLOWED_METHODS });
   }
 
   const id = decodeURIComponent(getRequestedQuizId(req)).trim();
   if (!id) {
-    return sendJson(req, res, 400, { error: 'Missing quiz id' }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 400, { error: 'Missing quiz id' }, {}, { allowMethods: ALLOWED_METHODS });
   }
 
   let parsed;
   try {
     parsed = await readJsonBody(req);
   } catch (error) {
-    return sendJson(req, res, 400, { error: 'Invalid JSON body' }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 400, { error: 'Invalid JSON body' }, {}, { allowMethods: ALLOWED_METHODS });
   }
 
   const quiz = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   if (!quiz) {
-    return sendJson(req, res, 400, { error: 'Quiz body must be an object' }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 400, { error: 'Quiz body must be an object' }, {}, { allowMethods: ALLOWED_METHODS });
   }
 
   const bodyTeacherId = (quiz.teacherId || '').toString().trim().toLowerCase();
   const sessionEmail = (session.email || '').toString().trim().toLowerCase();
   const isAdmin = session.role === 'super_admin';
   if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
-    return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' }, {}, { allowMethods: ALLOWED_METHODS });
   }
   if (!isAdmin && !bodyTeacherId) {
     quiz.teacherId = sessionEmail;
@@ -81,7 +86,7 @@ module.exports = async function quizUpsertHandler(req, res) {
       throw wrapped;
     }
     if (existing && existing.teacher_id && existing.teacher_id !== sessionEmail && !isAdmin) {
-      return sendJson(req, res, 403, { error: 'Quiz id is already owned by another teacher' }, {}, { allowMethods: 'PUT, OPTIONS' });
+      return sendJson(req, res, 403, { error: 'Quiz id is already owned by another teacher' }, {}, { allowMethods: ALLOWED_METHODS });
     }
 
     const syncedAt = new Date().toISOString();
@@ -96,7 +101,7 @@ module.exports = async function quizUpsertHandler(req, res) {
       throw wrapped;
     }
 
-    return sendJson(req, res, 200, { ok: true, id, syncedAt }, {}, { allowMethods: 'PUT, OPTIONS' });
+    return sendJson(req, res, 200, { ok: true, id, syncedAt }, {}, { allowMethods: ALLOWED_METHODS });
   } catch (error) {
     return sendApiError(req, res, error, 'Failed to save quiz');
   }

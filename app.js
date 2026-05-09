@@ -7113,7 +7113,7 @@ function buildClientPdfBootstrapPayload(routePath = '') {
       title: 'Student Result Summary PDF',
       quiz,
       submission,
-      rankValue: computeRankingForQuiz(submission.quizId)[normalizeEmail(submission.email)] || '-',
+      rankValue: getSubmissionRank(submission, computeRankingForQuiz(submission.quizId)) || '-',
       verificationBaseUrl,
       verificationQrSvg: buildCertificateVerificationQrSvg(shareUrl),
       page: pagePortrait
@@ -7841,11 +7841,27 @@ function buildCorrectionPdfHtml(submission, quiz, opts = {}) {
 
 function buildCorrectionQuestionEntries(submission, opts = {}) {
   const requestedSubject = normalizeSubjectName(opts.subjectName || '');
-  const entries = (submission?.allQuestions || []).map((question, index) => ({
-    question,
-    originalIndex: index,
-    subject: getQuestionSubjectLabel(question)
-  }));
+  // When a quiz reference is supplied, overlay live question content (stem,
+  // options, correct answer, explanation, learning point, etc.) on top of the
+  // snapshot stored on the submission. That way teacher edits made after a
+  // student submitted are reflected in their correction view next time they
+  // open it. The student's recorded answer letter is preserved (it lives on
+  // submission.answers), and the snapshot's _subject / _sourceId are kept so
+  // grading + subject filtering still work.
+  const liveQuestionMap = opts.quiz ? getQuizLiveQuestionMap(opts.quiz) : null;
+  const entries = (submission?.allQuestions || []).map((question, index) => {
+    const sourceId = (question && question._sourceId) || makeQuestionId(question, index);
+    const liveQuestion = liveQuestionMap ? liveQuestionMap[sourceId] : null;
+    const merged = liveQuestion
+      ? { ...question, ...liveQuestion, _subject: question._subject || liveQuestion._subject, _sourceId: sourceId }
+      : question;
+    return {
+      question: merged,
+      snapshotQuestion: question,
+      originalIndex: index,
+      subject: getQuestionSubjectLabel(merged)
+    };
+  });
   if (!requestedSubject) return { entries, subjectName: '', matchedRequestedSubject: true };
   const filtered = entries.filter((entry) => normalizeSubjectName(entry.subject) === requestedSubject);
   return {
@@ -7894,7 +7910,7 @@ function buildPdfOptionListHtml(question = {}, options = {}) {
 }
 
 function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
-  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
+  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '', quiz });
   const entries = correctionView.entries.slice();
   const resolvedSubjectName = correctionView.subjectName;
   const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
@@ -8080,7 +8096,7 @@ function downloadCorrectionPdfFast(submission, quiz, opts = {}) {
     showNotification('Cannot open correction view — submission or quiz data is missing.', 'error');
     return Promise.resolve(false);
   }
-  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '' });
+  const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '', quiz });
   const resolvedSubjectName = correctionView.subjectName;
   const title = `Correction · ${submission.name || submission.email || 'Student'}${resolvedSubjectName ? ` · ${resolvedSubjectName}` : ''}`;
   const innerHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
@@ -8489,9 +8505,15 @@ function computeTeacherSummaryRanks(submissions = []) {
     (a.timeSpent || 0) - (b.timeSpent || 0) ||
     (a.name || '').localeCompare(b.name || '')
   );
+  // Same dual-keying scheme as computeRankingForQuiz: submissionId is the
+  // authoritative key (so duplicate / blank emails don't collide), and an
+  // email-keyed fallback is populated for legacy lookups.
   const ranks = {};
   ordered.forEach((item, index) => {
-    ranks[normalizeEmail(item?.email)] = index + 1;
+    const rank = index + 1;
+    ranks[buildSubmissionIdentity(item, index)] = rank;
+    const emailKey = normalizeEmail(item?.email);
+    if (emailKey && ranks[emailKey] == null) ranks[emailKey] = rank;
   });
   return ranks;
 }
@@ -8514,8 +8536,8 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
     { bg: '#e7f0ff', edge: '#d5e4ff' }
   ];
   const sortedSubmissions = (submissions || []).slice().sort((left, right) => {
-    const leftRank = Number(ranks[normalizeEmail(left.email)]) || Number.MAX_SAFE_INTEGER;
-    const rightRank = Number(ranks[normalizeEmail(right.email)]) || Number.MAX_SAFE_INTEGER;
+    const leftRank = Number(getSubmissionRank(left, ranks)) || Number.MAX_SAFE_INTEGER;
+    const rightRank = Number(getSubmissionRank(right, ranks)) || Number.MAX_SAFE_INTEGER;
     if (leftRank !== rightRank) return leftRank - rightRank;
     if ((right.percent || 0) !== (left.percent || 0)) return (right.percent || 0) - (left.percent || 0);
     return (left.name || '').localeCompare(right.name || '');
@@ -8523,7 +8545,7 @@ function buildTeacherSummaryPdfHtml(quiz, submissions, options = {}) {
   const rows = sortedSubmissions.map((s, idx) => {
     const tone = rowThemes[idx % rowThemes.length];
     const status = getTeacherSummaryStatus(s, quiz);
-    const rankTheme = getTeacherSummaryRankTheme(ranks[normalizeEmail(s.email)] || '');
+    const rankTheme = getTeacherSummaryRankTheme(getSubmissionRank(s, ranks) || '');
     const emailOrId = (s.email || s.registrationNo || '').toString().trim();
     const scoreBase = getSubmissionTotalMarks(s, quiz) || totalMarks || questionCount;
     const subjectBreakdown = getSubmissionSubjectBreakdownForDisplay(quiz, s);
@@ -9935,7 +9957,7 @@ function getCertificateResultCss() {
 }
 
 function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
-  const rankValue = (options.rankValue || '').toString().trim() || (computeRankingForQuiz(submission.quizId)[normalizeEmail(submission.email)] || '-');
+  const rankValue = (options.rankValue || '').toString().trim() || (getSubmissionRank(submission, computeRankingForQuiz(submission.quizId)) || '-');
   const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   return `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
@@ -10336,7 +10358,7 @@ async function openStudentResultPdfPreview(quiz, submission) {
 
 function printStudentSummary(quiz, submission) {
   const ranks = computeRankingForQuiz(submission.quizId);
-  const rankValue = ranks[normalizeEmail(submission.email)] || '-';
+  const rankValue = getSubmissionRank(submission, ranks) || '-';
   const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
   const printHtml = `
     <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
@@ -10460,7 +10482,7 @@ function renderResultsView() {
           const item = breakdown.find((entry) => normalizeSubjectName(entry.name) === normalizeSubjectName(subjectName));
           return item ? `${formatScoreValue(item.score)}/${formatScoreValue(item.totalMarks || item.total)}` : '';
         });
-        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), getSubmissionIpAddress(s) || 'Not captured', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), ranks[normalizeEmail(s.email)]||'', new Date(s.submittedAt).toLocaleString()]);
+        data.push([s.name, s.email, s.facility || q.facility || '', ...subjectScores, `${formatScoreValue(s.score)}/${formatScoreValue(getSubmissionTotalMarks(s, q))}`, `${getSubmissionAveragePercent(s, q)}%`, `${s.percent || 0}%`, s.resultStatus || ((s.percent || 0) >= (q.passMark || 50) ? 'Pass' : 'Fail'), hasManualScoreOverride(s) ? 'Teacher adjusted' : 'Auto', s.correctionRequested ? 'Requested' : '', s.correctionMessage || '', correctionContact.label || '', correctionShare.label, formatCorrectionActivityStamp(correctionShare.timestamp), getSubmissionIpAddress(s) || 'Not captured', (s.monitoring && s.monitoring.tabSwitches) || 0, Math.round((s.timeSpent||0)/60), getSubmissionRank(s, ranks) || '', new Date(s.submittedAt).toLocaleString()]);
       });
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet(data);
@@ -10534,7 +10556,7 @@ function renderResultsView() {
               <td class="text-right">${escapeHtml(getSubmissionIpAddress(s) || 'Not captured')}</td>
               <td class="text-right">${(s.monitoring && s.monitoring.tabSwitches) || 0}</td>
               <td class="text-right">${Math.floor((s.timeSpent||0) / 60)}m</td>
-              <td class="text-right">${ranks[normalizeEmail(s.email)] || ''}</td>
+              <td class="text-right">${getSubmissionRank(s, ranks) || ''}</td>
               <td class="text-right">
                 ${s.correctionRequested
                   ? `<span class="req-badge req-pending" title="${escapeHtml(s.correctionMessage || '')}">Requested</span>`
@@ -12579,9 +12601,26 @@ async function getClientTrackingContext() {
 function computeRankingForQuiz(quizId) {
   const subs = getAllSubmissions().filter(s=>s.quizId===quizId).slice();
   subs.sort((a,b)=>(b.percent || 0) - (a.percent || 0) || (a.timeSpent || 0) - (b.timeSpent || 0));
+  // Key by submissionId (falling back to a synthesized identity) so that
+  // multiple attempts from the same student each get a distinct rank, and so
+  // that submissions with empty/duplicate emails don't all collide on key ''.
+  // The legacy email-keyed entry is still populated so older callers keep
+  // working — for unique-email cases the two keys agree.
   const ranks = {};
-  for (let i=0;i<subs.length;i++) ranks[normalizeEmail(subs[i].email)] = i+1;
+  for (let i = 0; i < subs.length; i++) {
+    const rank = i + 1;
+    ranks[buildSubmissionIdentity(subs[i], i)] = rank;
+    const emailKey = normalizeEmail(subs[i].email);
+    if (emailKey && ranks[emailKey] == null) ranks[emailKey] = rank;
+  }
   return ranks;
+}
+
+function getSubmissionRank(submission, ranks) {
+  if (!submission || !ranks) return '';
+  const byIdentity = ranks[buildSubmissionIdentity(submission)];
+  if (byIdentity != null) return byIdentity;
+  return ranks[normalizeEmail(submission.email)] || '';
 }
 
 function showStudentResultModalFromSubmission(quiz, submission, includeActions = true) {
@@ -12598,7 +12637,7 @@ function showStudentResultModalFromSubmission(quiz, submission, includeActions =
   // teachers when the submission contains essay answers that need a manual
   // score. The panel only renders when the viewer is the quiz owner /
   // super-admin (regular students never see it).
-  const resultHtml = buildStudentResultFullHtml(quizData, submission, ranks[normalizeEmail(submission.email)] || '-', { includeActions });
+  const resultHtml = buildStudentResultFullHtml(quizData, submission, getSubmissionRank(submission, ranks) || '-', { includeActions });
   const canGradeEssays = includeActions && (
     isSuperAdmin() || (state.teacherId && quizData && normalizeEmail(quizData.teacherId) === normalizeEmail(state.teacherId))
   );
@@ -13383,6 +13422,16 @@ async function collectAndSubmit() {
     state.currentQuiz = null;
     render();
     if (quiz.showInstantResult !== false) {
+      // Pull the latest submissions from the cloud BEFORE we open the result
+      // modal so the displayed rank reflects every other student who has
+      // already submitted — not just whatever happens to live in this
+      // device's localStorage. Without this, every student tends to see
+      // "Rank 1" because they're the only submission their browser knows
+      // about. Bounded timeout so a slow backend doesn't block the modal.
+      if (canUseNetworkSync()) {
+        try { await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 }); }
+        catch (error) { console.warn('Pre-rank cloud pull failed', error); }
+      }
       showNotification(`Submitted. Score: ${formatScoreValue(score)}/${formatScoreValue(getSubmissionTotalMarks(sub, quiz))} (${percent}%) - ${sub.resultStatus}`, sub.resultStatus === 'Pass' ? 'success' : 'warning', 7000);
       setTimeout(() => showStudentResultModalFromSubmission(quiz, sub, true), 40);
     } else {
