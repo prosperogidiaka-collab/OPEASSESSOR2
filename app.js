@@ -853,8 +853,8 @@ async function checkNetworkSyncHealth(options = {}) {
     // (or another shared backend) can persist data across invocations. When the
     // health endpoint reports the backend isn't configured, fail loudly with
     // exactly what's missing so the user can fix their env vars.
-    if (payload.runtime === 'serverless' && payload.supabaseConfigured === false) {
-      throw new Error('Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and STORAGE_BACKEND=supabase in Vercel env vars (then redeploy).');
+    if (payload.runtime && payload.runtime !== 'node' && payload.supabaseConfigured === false) {
+      throw new Error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your hosting env vars (then redeploy).');
     }
     if (Object.prototype.hasOwnProperty.call(payload, 'pdfExportSupported')) {
       markServerPdfExportAvailability(payload.pdfExportSupported !== false);

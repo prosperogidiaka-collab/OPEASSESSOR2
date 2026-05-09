@@ -10,3 +10,8 @@ ope-shared-state.before-*.json
 tmp-server-test.*
 .pdf-export-cache/
 debug-pdf-output.png
+
+# Cloudflare Pages build output and wrangler state
+dist/
+.wrangler/
+.dev.vars
