@@ -1670,8 +1670,16 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
 
 async function pullNetworkState(force = false) {
   if (!canUseNetworkSync()) return false;
+  // The bulk read returns password hashes, student PII, and quiz answer
+  // keys, so the server now requires a valid session. Skip the request
+  // entirely if we don't have a token rather than waste a round-trip on a
+  // guaranteed 401 (e.g., the student-only print routes).
+  if (!getAuthSessionToken()) return false;
   if (networkSyncInFlight && !force) return networkSyncInFlight;
-  networkSyncInFlight = makeAbortableSyncFetch(buildApiUrl('/api/state'), { cache: 'no-store' })
+  networkSyncInFlight = makeAbortableSyncFetch(buildApiUrl('/api/state'), {
+    cache: 'no-store',
+    headers: withAuthHeader({})
+  })
     .then(async (res) => {
       if (!res.ok) throw new Error(await readApiErrorMessage(res, 'Network sync unavailable'));
       const snapshot = await res.json();

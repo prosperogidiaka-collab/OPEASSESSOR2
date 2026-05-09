@@ -9,12 +9,23 @@ const PBKDF2_KEY_BYTES = 32;
 const PBKDF2_SALT_BYTES = 16;
 
 export function getAuthConfig(env) {
-  const superAdminEmail = ((env && env.SUPER_ADMIN_EMAIL) || 'prosperogidiaka@gmail.com').toString().trim().toLowerCase();
-  const superAdminPassword = ((env && env.SUPER_ADMIN_PASSWORD) || '7767737Prosper').toString();
+  // No defaults for the admin credentials. If the env vars are unset, the
+  // returned config has empty strings — and the super-admin login handler
+  // will refuse all requests rather than fall back to a value an attacker
+  // could read out of the source. SESSION_SECRET also has no fallback to a
+  // password-derived value: misconfigured deployments produce invalid
+  // tokens (everyone gets logged out) instead of using a guessable secret.
+  const superAdminEmail = ((env && env.SUPER_ADMIN_EMAIL) || '').toString().trim().toLowerCase();
+  const superAdminPassword = ((env && env.SUPER_ADMIN_PASSWORD) || '').toString();
   const sessionTtlMs = Math.max(60 * 1000, Number((env && env.SESSION_TTL_MS) || 24 * 60 * 60 * 1000));
   const pbkdf2Iterations = Math.max(10000, Number((env && env.PBKDF2_ITERATIONS) || 100000));
-  const sessionSecret = ((env && env.SESSION_SECRET) || `ope-session::${superAdminPassword}`).toString();
+  const sessionSecret = ((env && env.SESSION_SECRET) || '').toString();
   return { superAdminEmail, superAdminPassword, sessionTtlMs, pbkdf2Iterations, sessionSecret };
+}
+
+export function isSuperAdminConfigured(env) {
+  const config = getAuthConfig(env);
+  return !!(config.superAdminEmail && config.superAdminPassword && config.sessionSecret);
 }
 
 function base64UrlEncode(buf) {
@@ -30,8 +41,21 @@ function signPayload(secret, payloadJson) {
   return createHmac('sha256', secret).update(payloadJson).digest();
 }
 
+export function isSessionConfigured(env) {
+  const config = getAuthConfig(env);
+  // Without a secret an attacker who reads the bundled source can forge
+  // tokens for any email/role. Reject any call that would mint or verify
+  // tokens without one configured.
+  return typeof config.sessionSecret === 'string' && config.sessionSecret.length > 0;
+}
+
 export function createSessionToken(env, email, role, ttlMs) {
   const config = getAuthConfig(env);
+  if (!config.sessionSecret) {
+    const error = new Error('SESSION_SECRET is not configured on this deployment.');
+    error.statusCode = 503;
+    throw error;
+  }
   const payload = {
     email: (email || '').toString().trim().toLowerCase(),
     role: role || 'teacher',
@@ -47,6 +71,7 @@ export function verifySessionToken(env, token) {
   const parts = token.split('.');
   if (parts.length !== 3 || parts[0] !== 'v1') return null;
   const config = getAuthConfig(env);
+  if (!config.sessionSecret) return null;
   let payloadBuf;
   let sigBuf;
   try {

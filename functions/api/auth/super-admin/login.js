@@ -5,7 +5,8 @@ import {
 } from '../../_lib/shared.js';
 import {
   createSessionToken,
-  getAuthConfig
+  getAuthConfig,
+  isSuperAdminConfigured
 } from '../../_lib/auth.js';
 
 const ALLOW = 'POST, OPTIONS';
@@ -16,6 +17,9 @@ export async function onRequest(context) {
   if (preflight) return preflight;
   if (request.method !== 'POST') {
     return jsonResponse(request, env, 405, { error: 'Method not allowed' }, {}, { allowMethods: ALLOW });
+  }
+  if (!isSuperAdminConfigured(env)) {
+    return jsonResponse(request, env, 503, { error: 'Super-admin login is not configured on this deployment. Set SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD, and SESSION_SECRET in the hosting environment.' }, {}, { allowMethods: ALLOW });
   }
   let parsed;
   try {

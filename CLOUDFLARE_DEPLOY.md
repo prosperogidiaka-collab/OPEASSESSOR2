@@ -48,7 +48,7 @@ The project name (`opeassessor`) must match `name` in `wrangler.toml`.
 
 Pages Functions read env vars from the project's settings, not from a `.env`
 file. Set them once via the dashboard (Pages → opeassessor → Settings →
-Environment variables) **or** via wrangler:
+Variables and Secrets) **or** via wrangler:
 
 ```sh
 npx wrangler pages secret put SUPABASE_URL
@@ -57,6 +57,23 @@ npx wrangler pages secret put SUPER_ADMIN_EMAIL
 npx wrangler pages secret put SUPER_ADMIN_PASSWORD
 npx wrangler pages secret put SESSION_SECRET
 ```
+
+> **All five secrets above are required.** The deploy intentionally has *no*
+> fallback values for `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, or
+> `SESSION_SECRET` — if any are missing, the super-admin login endpoint
+> returns 503 and every other auth endpoint refuses to mint a session.
+> This is to prevent a deployment with secrets left blank from silently
+> using known-bad defaults that an attacker could derive from the source.
+
+`SESSION_SECRET` should be a long random string (32+ chars), unique per
+deployment. Generate one with:
+
+```sh
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+If you rotate `SESSION_SECRET` after the initial deploy, every existing
+teacher session is invalidated and they have to log in again.
 
 Optional non-secret vars (set under "Environment variables", not "Secrets"):
 
@@ -67,10 +84,6 @@ Optional non-secret vars (set under "Environment variables", not "Secrets"):
 | `PUBLIC_BASE_URL` | (none) | Echoed by `/api/health` |
 | `SESSION_TTL_MS` | `86400000` | Session lifetime in ms (24 h) |
 | `PBKDF2_ITERATIONS` | `100000` | Password-hash iterations |
-
-> **Carry over from Vercel.** If your Vercel project already has these set,
-> copy the same values across so existing teacher passwords and student
-> sessions keep working without forced resets.
 
 ### 5. (Optional) Custom domain
 
@@ -142,13 +155,89 @@ Then open the site, log in as a teacher, edit a quiz question, and confirm:
 - `scripts/verify-quizzes-endpoint.js` — Vercel-only test harness; use
   `npm run cf:dev` to smoke-test locally instead.
 
+## Security model
+
+The auth layer enforces these rules:
+
+| Endpoint | Method | Auth required |
+| --- | --- | --- |
+| `/api/health` | GET | none |
+| `/api/auth/super-admin/login` | POST | none (validates email + password against env vars) |
+| `/api/auth/teacher/login` | POST | none (validates email + password against `ope_teachers`) |
+| `/api/auth/teacher/register` | POST | none |
+| `/api/auth/teacher/change-password` | POST | teacher session |
+| `/api/auth/teacher/admin-reset-password` | POST | super-admin session |
+| `/api/auth/logout` | POST | none (stateless tokens) |
+| `/api/quizzes/<id>` | PUT/POST | teacher session (must own the quiz, or super-admin) |
+| `/api/state` | GET | any session; password hashes redacted from response |
+| `/api/state/teachers` | GET / PUT | super-admin only |
+| `/api/state/submissions` | GET (session) / PUT (anonymous OK) | mixed — students need to submit without an account |
+| `/api/state/quizzes`, `students`, `tokenTransactions` | GET/PUT | any teacher session |
+| `/api/export/pdf` | GET/POST | none (returns 501 stub) |
+
+Sessions are stateless HMAC-SHA256 signed JWT-style tokens. No server-side
+session store — rotating `SESSION_SECRET` is how you globally invalidate
+all sessions.
+
+### Recovering from a security incident
+
+If you suspect a credential leak (e.g., a prior deploy ran with secrets
+unset, or `SUPABASE_SERVICE_ROLE_KEY` was committed to git):
+
+1. **Rotate everything.** Supabase dashboard → Project Settings → API → roll
+   the service-role key. Generate a fresh `SESSION_SECRET`. Pick a new
+   `SUPER_ADMIN_PASSWORD`. Update all three on Cloudflare.
+2. **Force teacher re-logins** by changing `SESSION_SECRET` (every old
+   token becomes invalid).
+3. **Reset teacher passwords** via the admin-reset endpoint if you suspect
+   any teacher account was compromised. Their `passwordHash` may have
+   leaked from `/api/state` GET before that endpoint required auth.
+4. **Audit the `ope_teachers` table** for any rows you didn't create —
+   prior to the auth-on-state fix, `PUT /api/state/teachers` was open to
+   anonymous writes and an attacker could have inserted rows.
+
 ## Known limitations
 
-- **Server-side PDF export** (`/api/export/pdf`) returns `501` on Cloudflare
-  the same way it did on Vercel. The browser fallback (jsPDF + html2canvas)
-  handles PDF generation client-side. Running puppeteer on Workers would
-  require Cloudflare Browser Rendering — out of scope for this migration.
+- **Server-side PDF export** (`/api/export/pdf`) returns `501`. The browser
+  fallback (jsPDF + html2canvas) handles PDF generation client-side.
+  Running puppeteer on Workers would require Cloudflare Browser Rendering
+  — out of scope for now.
 - **CPU time per request**: Workers free tier allows 10ms CPU per invocation;
   paid tier 30s. Supabase round-trips are wall time, not CPU time, so they
   don't count against this budget. PBKDF2 with 100k iterations is the only
   real CPU consumer and stays well under 10ms.
+- **Submissions PUT is anonymous.** Anyone can `POST` a fabricated
+  submission to `/api/state/submissions` with a fake score. This is by
+  design (students take quizzes without accounts), but means teachers must
+  spot-check submissions for impossible names / scores. A future hardening
+  step is server-side scoring so the score field is recomputed from the
+  answer key on submit instead of trusted from the client.
+- **Quiz answer keys travel in the bulk state response.** Any logged-in
+  teacher receives every other teacher's answer keys via `/api/state`.
+  Acceptable for a single-school deployment; not acceptable for a
+  multi-tenant SaaS. Refactor to a per-teacher scope if that's the goal.
+
+## Recovering quizzes / submissions from a teacher's browser
+
+The app is localStorage-first: every teacher's browser holds the canonical
+copy of their own quizzes and the submissions they've graded. If the
+Supabase tables get wiped or are restored from an older backup, the
+teacher just has to log into the live site from their usual browser and
+the per-quiz sync ([app.js:1810](app.js#L1810)) plus the bulk reconciler
+re-push everything to the cloud within ~30 seconds.
+
+Order to follow when recovering:
+
+1. Restore the most recent file backup with
+   `SOURCE_DATA_FILE=path/to/backup.json npm run migrate:supabase`. This
+   merges the snapshot into Supabase using the smart-merge logic in
+   [state-store.js:154](state-store.js#L154) — it never overwrites a newer
+   record with an older one.
+2. Have each teacher log in from the device they normally use. Their
+   localStorage will push any data created since the backup snapshot.
+3. Spot-check the row counts in Supabase SQL Editor:
+   ```sql
+   select count(*) from public.ope_quizzes;
+   select count(*) from public.ope_submissions;
+   select count(*) from public.ope_teachers;
+   ```
