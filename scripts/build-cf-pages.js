@@ -5,7 +5,8 @@
 // `dist/` and leaves /functions where it is (Pages reads functions from the
 // project root automatically).
 //
-// Run via `npm run cf:build` before `npm run cf:deploy`.
+// Run via `npm run build` (Cloudflare Pages calls this automatically; locally
+// it's chained from `npm run cf:deploy`).
 
 const fs = require('fs');
 const path = require('path');

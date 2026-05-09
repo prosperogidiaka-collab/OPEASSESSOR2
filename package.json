@@ -16,8 +16,8 @@
     "migrate:supabase": "node scripts/migrate-file-state-to-supabase.js",
     "start": "node server.js",
     "serve": "node server.js",
-    "cf:build": "node scripts/build-cf-pages.js",
+    "build": "node scripts/build-cf-pages.js",
     "cf:dev": "wrangler pages dev .",
-    "cf:deploy": "npm run cf:build && wrangler pages deploy"
+    "cf:deploy": "npm run build && wrangler pages deploy"
   }
 }
