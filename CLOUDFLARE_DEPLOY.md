@@ -39,15 +39,15 @@ npx wrangler login     # opens a browser to authorize wrangler
 ### 3. Create the Pages project
 
 ```sh
-npx wrangler pages project create ope-assessor --production-branch main
+npx wrangler pages project create opeassessor --production-branch main
 ```
 
-The project name (`ope-assessor`) must match `name` in `wrangler.toml`.
+The project name (`opeassessor`) must match `name` in `wrangler.toml`.
 
 ### 4. Configure environment variables
 
 Pages Functions read env vars from the project's settings, not from a `.env`
-file. Set them once via the dashboard (Pages → ope-assessor → Settings →
+file. Set them once via the dashboard (Pages → opeassessor → Settings →
 Environment variables) **or** via wrangler:
 
 ```sh
@@ -74,7 +74,7 @@ Optional non-secret vars (set under "Environment variables", not "Secrets"):
 
 ### 5. (Optional) Custom domain
 
-In the Pages dashboard → ope-assessor → Custom domains → Set up a custom
+In the Pages dashboard → opeassessor → Custom domains → Set up a custom
 domain. Cloudflare will auto-issue a TLS cert. You can either:
 
 - Move the domain's nameservers to Cloudflare (full DNS control), or
@@ -123,7 +123,7 @@ production branch (or create preview URLs for non-main branches).
 After deploy, smoke-test:
 
 ```sh
-curl https://ope-assessor.pages.dev/api/health
+curl https://opeassessor.pages.dev/api/health
 ```
 
 Expected: `200` with JSON containing `"runtime":"cloudflare-pages"`,

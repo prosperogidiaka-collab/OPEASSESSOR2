@@ -1,4 +1,4 @@
-name = "ope-assessor"
+name = "opeassessor"
 pages_build_output_dir = "dist"
 compatibility_date = "2025-09-23"
 compatibility_flags = ["nodejs_compat"]
