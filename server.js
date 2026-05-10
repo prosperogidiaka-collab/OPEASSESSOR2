@@ -1320,6 +1320,67 @@ async function handleApi(req, res) {
     }
   }
 
+  // ---- Per-quiz read/write -------------------------------------------------
+  // Mirrors functions/api/quizzes/[id].js for the Node dev path. The Cloudflare
+  // route is the production path; the Node route exists so `pushSingleQuizToCloud`
+  // and per-quiz refreshes work against `npm start` too.
+  if (route.startsWith('/api/quizzes/')) {
+    const session = getSessionFromRequest(req);
+    if (!session) return sendJson(req, res, 401, { error: 'Authentication required' });
+    const quizId = decodeURIComponent(route.replace('/api/quizzes/', '')).trim();
+    if (!quizId) return sendJson(req, res, 400, { error: 'Missing quiz id' });
+    const sessionEmail = (session.email || '').toString().trim().toLowerCase();
+    const isAdmin = session.role === 'super_admin';
+    const scope = deriveScope(session);
+
+    if (req.method === 'GET') {
+      try {
+        // Scope-filtered read: a non-admin teacher only sees their own quizzes,
+        // so an unowned/missing quiz is indistinguishable (404) — no info leak.
+        const quizzes = (await stateStore.getStateValue('quizzes', scope)) || {};
+        const quiz = quizzes[quizId];
+        if (!quiz) return sendJson(req, res, 404, { error: 'Quiz not found' });
+        const allSubmissions = (await stateStore.getStateValue('submissions', scope)) || [];
+        const submissions = allSubmissions.filter((item) => item && item.quizId === quizId);
+        return sendJson(req, res, 200, { quiz, submissions });
+      } catch (error) {
+        return sendJson(req, res, 500, { error: error.message || 'Failed to load quiz' });
+      }
+    }
+
+    if (req.method === 'PUT' || req.method === 'POST') {
+      try {
+        const body = await readRequestBody(req);
+        const parsedQuiz = JSON.parse(body || '{}');
+        if (!parsedQuiz || typeof parsedQuiz !== 'object' || Array.isArray(parsedQuiz)) {
+          return sendJson(req, res, 400, { error: 'Quiz body must be an object' });
+        }
+        const bodyTeacherId = (parsedQuiz.teacherId || '').toString().trim().toLowerCase();
+        if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
+          return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' });
+        }
+        if (!isAdmin && !bodyTeacherId) parsedQuiz.teacherId = sessionEmail;
+        // Ownership check against the existing row, mirroring the Cloudflare path.
+        const existingMap = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
+        const existing = existingMap[quizId];
+        const existingTeacher = (existing && (existing.teacherId || '')).toString().trim().toLowerCase();
+        if (existingTeacher && existingTeacher !== sessionEmail && !isAdmin) {
+          return sendJson(req, res, 403, { error: 'Quiz id is already owned by another teacher' });
+        }
+        const syncedAt = new Date().toISOString();
+        const next = { ...parsedQuiz, id: quizId, cloudSyncedAt: syncedAt, updatedAt: parsedQuiz.updatedAt || syncedAt };
+        await stateStore.putStateValue('quizzes', { [quizId]: next });
+        return sendJson(req, res, 200, { ok: true, id: quizId, syncedAt });
+      } catch (error) {
+        const message = error.message || 'Invalid request body';
+        const isBodyError = message === 'Payload too large' || /JSON/i.test(message);
+        return sendJson(req, res, isBodyError ? 400 : 500, { error: message });
+      }
+    }
+
+    return sendJson(req, res, 405, { error: 'Method not allowed' });
+  }
+
   if (route === '/api/export/pdf' && (req.method === 'POST' || req.method === 'GET')) {
     try {
       const parsed = req.method === 'POST'

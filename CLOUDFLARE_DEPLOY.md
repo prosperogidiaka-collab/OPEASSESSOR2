@@ -168,11 +168,12 @@ The auth layer enforces these rules:
 | `/api/auth/teacher/change-password` | POST | teacher session |
 | `/api/auth/teacher/admin-reset-password` | POST | super-admin session |
 | `/api/auth/logout` | POST | none (stateless tokens) |
+| `/api/quizzes/<id>` | GET | teacher session — returns `{ quiz, submissions }` for that quiz only, scoped by `teacher_id` (super-admin sees any) |
 | `/api/quizzes/<id>` | PUT/POST | teacher session (must own the quiz, or super-admin) |
-| `/api/state` | GET | any session; password hashes redacted from response |
-| `/api/state/teachers` | GET / PUT | super-admin only |
-| `/api/state/submissions` | GET (session) / PUT (anonymous OK) | mixed — students need to submit without an account |
-| `/api/state/quizzes`, `students`, `tokenTransactions` | GET/PUT | any teacher session |
+| `/api/state` | GET | session required; teacher sessions see only their own rows; super-admin sees all (password hashes redacted either way) |
+| `/api/state/teachers` | GET (any session) / PUT (super-admin only) | teachers GET returns only the caller's own row unless super-admin |
+| `/api/state/submissions` | GET (session) / PUT (anonymous OK) | mixed — students need to submit without an account; GET is filtered to the teacher's own quizzes |
+| `/api/state/quizzes`, `students`, `tokenTransactions` | GET/PUT | any teacher session; GET filtered to caller's `teacher_id` (or `user_id` for `tokenTransactions`) |
 | `/api/export/pdf` | GET/POST | none (returns 501 stub) |
 
 Sessions are stateless HMAC-SHA256 signed JWT-style tokens. No server-side

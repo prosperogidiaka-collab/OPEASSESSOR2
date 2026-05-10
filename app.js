@@ -1877,6 +1877,66 @@ async function pushSingleQuizToCloud(quiz) {
   }
 }
 
+// Two-way per-quiz sync: PUT the local quiz, then GET /api/quizzes/<id> to pull
+// back the merged cloud copy + that quiz's submissions. Used by the per-quiz
+// "Sync To Cloud" action in the Test Manager so teachers can refresh one quiz
+// without triggering a full /api/state pull.
+async function syncSingleQuizWithCloud(quiz) {
+  if (!quiz || !quiz.id) {
+    return { ok: false, message: 'No quiz selected.' };
+  }
+  if (!canUseNetworkSync()) {
+    return { ok: false, message: 'Cloud sync is not available on this deployment.' };
+  }
+  if (!getAuthSessionToken()) {
+    return { ok: false, message: 'Log out and log back in to sync your changes to the cloud.' };
+  }
+  const pushed = await pushSingleQuizToCloud(quiz);
+  if (!pushed) {
+    return { ok: false, message: networkSyncFailureMessage || `Failed to upload quiz ${quiz.id}.` };
+  }
+  let cloudPayload = null;
+  try {
+    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
+      cache: 'no-store',
+      headers: withAuthHeader({})
+    });
+    if (res.status === 401) {
+      return { ok: false, message: 'Your teacher session expired. Log out and log back in, then retry.' };
+    }
+    if (res.status === 404) {
+      // Push succeeded but cloud GET 404'd — most likely a transient race or a
+      // backend that doesn't yet expose the per-quiz GET. Treat the upload as the
+      // success and skip the merge.
+      return { ok: true, pulled: false, message: `Quiz ${quiz.id} uploaded.` };
+    }
+    if (!res.ok) {
+      const reason = await readApiErrorMessage(res, 'Failed to refresh quiz from cloud');
+      return { ok: true, pulled: false, message: `Quiz ${quiz.id} uploaded, but cloud refresh failed: ${reason}` };
+    }
+    cloudPayload = await res.json();
+  } catch (err) {
+    const reason = err && err.name === 'AbortError'
+      ? `Cloud refresh timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s`
+      : (err && err.message ? err.message : 'unknown error');
+    return { ok: true, pulled: false, message: `Quiz ${quiz.id} uploaded, but cloud refresh failed: ${reason}` };
+  }
+  const cloudQuiz = cloudPayload && cloudPayload.quiz && typeof cloudPayload.quiz === 'object' ? cloudPayload.quiz : null;
+  const cloudSubs = Array.isArray(cloudPayload && cloudPayload.submissions) ? cloudPayload.submissions : [];
+  if (cloudQuiz) {
+    const localQuizzes = getAllQuizzes();
+    const merged = mergeRecordMapForSync(localQuizzes || {}, { [quiz.id]: cloudQuiz });
+    saveAllQuizzes(merged);
+  }
+  if (cloudSubs.length) {
+    const localSubs = getAllSubmissions({ includeDeleted: true });
+    const mergedSubs = mergeSubmissionListsForSync(localSubs || [], cloudSubs);
+    saveAllSubmissions(mergedSubs, { includeDeleted: true });
+  }
+  markQuizzesCloudSynced([quiz.id]);
+  return { ok: true, pulled: true, submissionCount: cloudSubs.length, message: `Quiz ${quiz.id} synced. ${cloudSubs.length} submission(s) on cloud.` };
+}
+
 function encodeTextToBase64(value) {
   try {
     const bytes = new TextEncoder().encode((value || '').toString());
@@ -2107,29 +2167,6 @@ async function deleteQuizById(quizId, options = {}) {
   }
   render();
   return true;
-}
-
-async function syncAllLocalDataToCloud() {
-  if (!canUseNetworkSync()) {
-    showNotification('Shared sync is not available on this deployment.', 'error');
-    return false;
-  }
-  const ok = await syncSharedKeys([
-    STORAGE_KEYS.quizzes,
-    STORAGE_KEYS.students,
-    STORAGE_KEYS.submissions,
-    STORAGE_KEYS.teachers,
-    STORAGE_KEYS.tokenTransactions
-  ]);
-  if (ok) {
-    const quizIds = Object.keys(getAllQuizzes() || {});
-    const quizCount = quizIds.length;
-    markQuizzesCloudSynced(quizIds);
-    showNotification(`Cloud sync completed. ${quizCount} quiz(es) are now uploaded from this device.`, 'success', 7000);
-  } else {
-    showNotification(`Cloud sync failed. ${getSharedSyncWarningMessage()}`, 'error', 8000);
-  }
-  return ok;
 }
 
 function startNetworkSyncLoop() {
@@ -4476,19 +4513,21 @@ function showTeacherAccessModal() {
 
 function renderTeacherQuizzes() {
   const container = document.createElement('div');
-  const syncButton = canUseNetworkSync()
-    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 16px"><button id="syncLocalToCloudBtn" class="btn btn-primary btn-sm">Sync To Cloud</button></div>`
+  // The page-level "Sync To Cloud" button used to push every key for every
+  // teacher in one shot. That triggered a full /api/state pull (huge egress)
+  // and, on shared accounts, made it easy to thrash the backend. Per-quiz
+  // sync now lives in the Test Manager dropdown next to each quiz; the bulk
+  // option is moved to Settings → Force Sync Now.
+  const syncHelp = canUseNetworkSync()
+    ? `<div class="card small" style="margin:0 0 16px;padding:12px 14px;background:#F0F9FF;border-color:#BAE6FD;color:#075985;line-height:1.55">Sync one quiz at a time using <strong>Test Manager → Sync To Cloud</strong> on the row below. Need a full refresh? Open <button id="openSyncSettingsFromQuizzesInfo" class="btn btn-ghost btn-sm" style="padding:2px 8px;margin:0 2px">Settings → Cloud Sync</button> and use Force Sync Now.</div>`
     : '';
   const syncNotice = networkSyncFailed
     ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now.<div style="margin-top:8px;line-height:1.6">${escapeHtml(networkSyncFailureMessage || 'Fix the backend connection before sending quiz IDs or links to students.')}</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button id="openSyncSettingsFromQuizzes" class="btn btn-ghost btn-sm">Cloud Sync Settings</button><button id="testSyncFromQuizzes" class="btn btn-primary btn-sm">Test Connection</button></div></div>`
     : '';
-  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncButton}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
+  container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncHelp}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
   setTimeout(() => {
-    const syncBtn = document.getElementById('syncLocalToCloudBtn');
-    if (syncBtn) syncBtn.onclick = async () => {
-      if (!confirmTeacherAction('Sync this device to the cloud now? Use this after editing quizzes on this browser.')) return;
-      await syncAllLocalDataToCloud();
-    };
+    const openSyncSettingsFromQuizzesInfo = document.getElementById('openSyncSettingsFromQuizzesInfo');
+    if (openSyncSettingsFromQuizzesInfo) openSyncSettingsFromQuizzesInfo.onclick = () => { state.view = 'teacher.settings'; render(); };
     const openSyncSettingsFromQuizzes = document.getElementById('openSyncSettingsFromQuizzes');
     if (openSyncSettingsFromQuizzes) openSyncSettingsFromQuizzes.onclick = () => { state.view = 'teacher.settings'; render(); };
     const testSyncFromQuizzes = document.getElementById('testSyncFromQuizzes');
@@ -4525,6 +4564,7 @@ function renderTeacherQuizzes() {
           <div class="row-action-shell" style="width:min(320px,100%)">
             <select class="input-beautiful row-action-select teacherQuizActionSelect" data-id="${q.id}">
               <option value="">Test Manager</option>
+              <option value="sync-cloud">Sync To Cloud</option>
               <option value="copy-code">Copy Student Code</option>
               <option value="copy-link">Copy Link</option>
               <option value="share-whatsapp">Share on WhatsApp</option>
@@ -4546,6 +4586,21 @@ function renderTeacherQuizzes() {
         const quiz = getAllQuizzes()[event.currentTarget.dataset.id];
         if (!quiz) return showNotification('Quiz not found', 'error');
         if (!action) return showNotification('Choose a quiz action first', 'error');
+        if (action === 'sync-cloud') {
+          const triggerBtn = event.currentTarget;
+          const originalLabel = triggerBtn.textContent;
+          triggerBtn.disabled = true;
+          triggerBtn.textContent = 'Syncing…';
+          try {
+            const result = await syncSingleQuizWithCloud(quiz);
+            const tone = result.ok ? (result.pulled === false ? 'warning' : 'success') : 'error';
+            showNotification(result.message, tone, result.ok ? 6000 : 9000);
+            if (result.ok) render();
+          } finally {
+            triggerBtn.disabled = false;
+            triggerBtn.textContent = originalLabel;
+          }
+        }
         if (action === 'copy-code') await copyQuizAccessCode(quiz);
         if (action === 'copy-link') await copyQuizAccessLink(quiz);
         if (action === 'share-whatsapp') await shareQuizAccessLink(quiz);
