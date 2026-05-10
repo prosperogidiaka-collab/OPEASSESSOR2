@@ -1,5 +1,6 @@
 import {
   apiErrorResponse,
+  deriveScope,
   getStateStore,
   jsonResponse,
   preflightResponse
@@ -36,7 +37,7 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
-    const state = await stateStore.getState();
+    const state = await stateStore.getState(deriveScope(session));
     return jsonResponse(request, env, 200, redactState(state));
   } catch (error) {
     return apiErrorResponse(request, env, error, 'Failed to load shared state');

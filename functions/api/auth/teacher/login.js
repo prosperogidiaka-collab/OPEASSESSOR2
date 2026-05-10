@@ -1,5 +1,6 @@
 import {
   apiErrorResponse,
+  buildAdminScope,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -38,7 +39,8 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
-    const teachers = (await stateStore.getStateValue('teachers')) || {};
+    // Pre-session credential lookup: no session yet, must read full teachers map.
+    const teachers = (await stateStore.getStateValue('teachers', buildAdminScope())) || {};
     const record = teachers && teachers[email];
     if (!record || typeof record !== 'object') {
       return jsonResponse(request, env, 401, { error: 'Invalid teacher ID or password' }, {}, { allowMethods: ALLOW });

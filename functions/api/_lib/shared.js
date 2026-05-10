@@ -5,9 +5,17 @@
 // `process.env` at request time. Helpers below take `env` so handlers can
 // stay pure.
 
-import { createStateStore, VALID_STATE_KEYS } from '../../../state-store.js';
+import { createStateStore, VALID_STATE_KEYS, buildAdminScope, buildTeacherScope } from '../../../state-store.js';
 
-export { VALID_STATE_KEYS };
+export { VALID_STATE_KEYS, buildAdminScope, buildTeacherScope };
+
+// Mirror of server.js#deriveScope for the Workers runtime. Super-admin sessions
+// get full-table reads; teacher sessions are restricted to their own rows.
+export function deriveScope(session) {
+  if (!session) throw new Error('Session required to derive scope');
+  if (session.role === 'super_admin') return buildAdminScope();
+  return buildTeacherScope(session.email);
+}
 
 let cachedStateStore = null;
 

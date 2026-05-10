@@ -1,5 +1,6 @@
 import {
   apiErrorResponse,
+  deriveScope,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -40,7 +41,7 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
-    const teachers = (await stateStore.getStateValue('teachers')) || {};
+    const teachers = (await stateStore.getStateValue('teachers', deriveScope(session))) || {};
     const record = teachers[session.email];
     if (!record) {
       return jsonResponse(request, env, 404, { error: 'Teacher not found' }, {}, { allowMethods: ALLOW });

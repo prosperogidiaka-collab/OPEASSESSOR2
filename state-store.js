@@ -210,6 +210,36 @@ function getOptionalStateFallbackValue(stateKey) {
   return {};
 }
 
+function filterStateForScope(state, scope) {
+  if (!state || scope.isAdmin) return state;
+  const teacherId = scope.teacherId;
+  const filterMap = (map) => {
+    if (!map || typeof map !== 'object') return {};
+    const out = {};
+    Object.keys(map).forEach((key) => {
+      const item = map[key];
+      const owner = normalizeLowerKey(item && (item.teacherId || item.userId));
+      if (owner === teacherId) out[key] = item;
+    });
+    return out;
+  };
+  const ownQuizzes = filterMap(state.quizzes || {});
+  const ownQuizIds = new Set(Object.keys(ownQuizzes));
+  const ownTeachers = {};
+  if (state.teachers && state.teachers[teacherId]) ownTeachers[teacherId] = state.teachers[teacherId];
+  const ownStudents = {};
+  if (state.students && state.students[teacherId]) ownStudents[teacherId] = state.students[teacherId];
+  const ownSubmissions = (state.submissions || []).filter((item) => item && ownQuizIds.has(normalizeKey(item.quizId)));
+  const ownTokenTxns = (state.tokenTransactions || []).filter((item) => item && normalizeLowerKey(item.userId) === teacherId);
+  return {
+    quizzes: ownQuizzes,
+    submissions: ownSubmissions,
+    teachers: ownTeachers,
+    students: ownStudents,
+    tokenTransactions: ownTokenTxns
+  };
+}
+
 function createFileStateStore(options) {
   const dataFile = options.dataFile;
   return {
@@ -217,11 +247,13 @@ function createFileStateStore(options) {
     details: {
       dataFile
     },
-    async getState() {
-      return readJsonFile(dataFile);
+    async getState(scope) {
+      requireScope(scope, 'getState');
+      return filterStateForScope(readJsonFile(dataFile), scope);
     },
-    async getStateValue(stateKey) {
-      const state = readJsonFile(dataFile);
+    async getStateValue(stateKey, scope) {
+      requireScope(scope, `getStateValue(${stateKey})`);
+      const state = filterStateForScope(readJsonFile(dataFile), scope);
       return state[stateKey];
     },
     async putStateValue(stateKey, incomingValue) {
@@ -249,6 +281,39 @@ function buildSupabaseTableNames(prefix) {
     students: `${prefix}students`,
     tokenTransactions: `${prefix}token_transactions`
   };
+}
+
+// Per-table SELECT projections. The full record always lives in `payload`; the
+// columns below are the ones the rowsTo* helpers actually read off the row to
+// fall back when a payload field is missing. If a future rowsTo* needs another
+// column, add it here.
+const SUPABASE_SELECT_COLUMNS = {
+  quizzes: 'quiz_id, teacher_id, title, created_at, updated_at, payload',
+  teachers: 'teacher_id, email, role, created_at, updated_at, payload',
+  students: 'teacher_id, student_key, name, email, registration_no, uploaded_at, updated_at, payload',
+  submissions: 'submission_id, quiz_id, student_email, submitted_at, updated_at, payload',
+  tokenTransactions: 'transaction_id, user_id, type, created_at, updated_at, payload'
+};
+
+// Scope contract: every read into the storage layer must declare whether it is
+// allowed to see all rows or just one teacher's. There is no implicit default
+// because forgetting to pass a scope at a new call site would silently leak
+// other teachers' data.
+function buildAdminScope() {
+  return { isAdmin: true, teacherId: '' };
+}
+
+function buildTeacherScope(email) {
+  return { isAdmin: false, teacherId: normalizeLowerKey(email) };
+}
+
+function requireScope(scope, callerName) {
+  if (!scope || typeof scope !== 'object') {
+    throw new Error(`${callerName} requires a scope object (use buildAdminScope() or buildTeacherScope(email))`);
+  }
+  if (!scope.isAdmin && !scope.teacherId) {
+    throw new Error(`${callerName}: non-admin scope requires a teacherId`);
+  }
 }
 
 function buildQuizRow(id, item) {
@@ -434,7 +499,7 @@ function createSupabaseStateStore(options) {
     return getOptionalStateFallbackValue(stateKey);
   }
 
-  async function selectAllRows(table, columns = '*', orderings = []) {
+  async function selectAllRows(table, columns = '*', orderings = [], shapeQuery = null) {
     const rows = [];
     let from = 0;
     while (true) {
@@ -442,6 +507,7 @@ function createSupabaseStateStore(options) {
       orderings.forEach((ordering) => {
         query = query.order(ordering.column, { ascending: ordering.ascending !== false });
       });
+      if (typeof shapeQuery === 'function') query = shapeQuery(query);
       const { data, error } = await query;
       if (error) {
         const wrapped = new Error(`Supabase select failed for ${table}: ${error.message}`);
@@ -470,29 +536,81 @@ function createSupabaseStateStore(options) {
     }
   }
 
-  async function loadQuizzesMap() {
-    const rows = await selectAllRows(tables.quizzes, '*', [{ column: 'quiz_id' }]);
+  function teacherIdFilter(column, scope) {
+    if (scope.isAdmin) return null;
+    return (query) => query.eq(column, scope.teacherId);
+  }
+
+  async function loadQuizzesMap(scope) {
+    const rows = await selectAllRows(
+      tables.quizzes,
+      SUPABASE_SELECT_COLUMNS.quizzes,
+      [{ column: 'quiz_id' }],
+      teacherIdFilter('teacher_id', scope)
+    );
     return rowsToQuizMap(rows);
   }
 
-  async function loadTeachersMap() {
-    const rows = await selectAllRows(tables.teachers, '*', [{ column: 'teacher_id' }]);
+  async function loadTeachersMap(scope) {
+    // Even non-admin sessions can resolve their own row (so /api/state continues
+    // to render the teacher's profile). Cross-tenant rows are admin-only.
+    const rows = await selectAllRows(
+      tables.teachers,
+      SUPABASE_SELECT_COLUMNS.teachers,
+      [{ column: 'teacher_id' }],
+      teacherIdFilter('teacher_id', scope)
+    );
     return rowsToTeacherMap(rows);
   }
 
-  async function loadStudentsMap() {
-    const rows = await selectAllRows(tables.students, '*', [{ column: 'teacher_id' }, { column: 'student_key' }]);
+  async function loadStudentsMap(scope) {
+    const rows = await selectAllRows(
+      tables.students,
+      SUPABASE_SELECT_COLUMNS.students,
+      [{ column: 'teacher_id' }, { column: 'student_key' }],
+      teacherIdFilter('teacher_id', scope)
+    );
     return rowsToStudentMap(rows);
   }
 
-  async function loadSubmissionList() {
-    const rows = await selectAllRows(tables.submissions, '*', [{ column: 'submitted_at' }, { column: 'submission_id' }]);
+  async function loadTeacherQuizIds(scope) {
+    if (scope.isAdmin) return null;
+    const rows = await selectAllRows(
+      tables.quizzes,
+      'quiz_id',
+      [{ column: 'quiz_id' }],
+      (query) => query.eq('teacher_id', scope.teacherId)
+    );
+    return rows.map((row) => row.quiz_id).filter(Boolean);
+  }
+
+  async function loadSubmissionList(scope) {
+    let shape = null;
+    if (!scope.isAdmin) {
+      // Submissions has no teacher_id column, so scope it via the teacher's
+      // own quiz_ids. Empty quiz set → no submissions, skip the round-trip
+      // (PostgREST rejects an empty .in() filter with a 400).
+      const quizIds = await loadTeacherQuizIds(scope);
+      if (!quizIds || quizIds.length === 0) return [];
+      shape = (query) => query.in('quiz_id', quizIds);
+    }
+    const rows = await selectAllRows(
+      tables.submissions,
+      SUPABASE_SELECT_COLUMNS.submissions,
+      [{ column: 'submitted_at' }, { column: 'submission_id' }],
+      shape
+    );
     return rowsToSubmissionList(rows);
   }
 
-  async function loadTokenTransactionList() {
+  async function loadTokenTransactionList(scope) {
     try {
-      const rows = await selectAllRows(tables.tokenTransactions, '*', [{ column: 'created_at' }, { column: 'transaction_id' }]);
+      const rows = await selectAllRows(
+        tables.tokenTransactions,
+        SUPABASE_SELECT_COLUMNS.tokenTransactions,
+        [{ column: 'created_at' }, { column: 'transaction_id' }],
+        teacherIdFilter('user_id', scope)
+      );
       markOptionalStateKeyAvailable('tokenTransactions');
       return rowsToTokenTransactionList(rows);
     } catch (error) {
@@ -543,26 +661,32 @@ function createSupabaseStateStore(options) {
         return Array.from(missingOptionalStateKeys);
       }
     },
-    async getState() {
+    async getState(scope) {
+      requireScope(scope, 'getState');
       const [quizzes, submissions, teachers, students, tokenTransactions] = await Promise.all([
-        loadQuizzesMap(),
-        loadSubmissionList(),
-        loadTeachersMap(),
-        loadStudentsMap(),
-        loadTokenTransactionList()
+        loadQuizzesMap(scope),
+        loadSubmissionList(scope),
+        loadTeachersMap(scope),
+        loadStudentsMap(scope),
+        loadTokenTransactionList(scope)
       ]);
       return { quizzes, submissions, teachers, students, tokenTransactions };
     },
-    async getStateValue(stateKey) {
-      if (stateKey === 'quizzes') return loadQuizzesMap();
-      if (stateKey === 'submissions') return loadSubmissionList();
-      if (stateKey === 'teachers') return loadTeachersMap();
-      if (stateKey === 'students') return loadStudentsMap();
-      if (stateKey === 'tokenTransactions') return loadTokenTransactionList();
+    async getStateValue(stateKey, scope) {
+      requireScope(scope, `getStateValue(${stateKey})`);
+      if (stateKey === 'quizzes') return loadQuizzesMap(scope);
+      if (stateKey === 'submissions') return loadSubmissionList(scope);
+      if (stateKey === 'teachers') return loadTeachersMap(scope);
+      if (stateKey === 'students') return loadStudentsMap(scope);
+      if (stateKey === 'tokenTransactions') return loadTokenTransactionList(scope);
       throw new Error(`Unsupported state key: ${stateKey}`);
     },
     async putStateValue(stateKey, incomingValue) {
-      const currentValue = await this.getStateValue(stateKey);
+      // Writes still go through the admin path: the upstream merge needs the
+      // full current value to avoid clobbering other tenants' rows. Per-row
+      // ownership enforcement happens at the API layer (see server.js auth
+      // gating + functions/api/quizzes/[id].js ownership checks), not here.
+      const currentValue = await this.getStateValue(stateKey, buildAdminScope());
       const nextValue = mergeStateValue(stateKey, currentValue, incomingValue);
       await persistStateValue(stateKey, nextValue);
       return nextValue;
@@ -587,5 +711,7 @@ module.exports = {
   DEFAULT_STATE,
   VALID_STATE_KEYS,
   createStateStore,
-  buildQuizRow
+  buildQuizRow,
+  buildAdminScope,
+  buildTeacherScope
 };

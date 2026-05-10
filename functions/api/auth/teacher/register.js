@@ -1,5 +1,6 @@
 import {
   apiErrorResponse,
+  buildAdminScope,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -45,7 +46,8 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
-    const teachers = (await stateStore.getStateValue('teachers')) || {};
+    // Pre-session existence check: must see the full teachers map to detect duplicates.
+    const teachers = (await stateStore.getStateValue('teachers', buildAdminScope())) || {};
     if (teachers[email]) {
       return jsonResponse(request, env, 409, { error: 'Teacher ID already exists. Login instead.' }, {}, { allowMethods: ALLOW });
     }

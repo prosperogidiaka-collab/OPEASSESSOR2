@@ -1,6 +1,7 @@
 import {
   VALID_STATE_KEYS,
   apiErrorResponse,
+  deriveScope,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -50,7 +51,7 @@ export async function onRequest(context) {
       if (!session) {
         return jsonResponse(request, env, 401, { error: 'Authentication required' });
       }
-      let value = await stateStore.getStateValue(stateKey);
+      let value = await stateStore.getStateValue(stateKey, deriveScope(session));
       if (stateKey === 'teachers') value = redactTeachersValue(value);
       return jsonResponse(request, env, 200, { key: stateKey, value });
     }

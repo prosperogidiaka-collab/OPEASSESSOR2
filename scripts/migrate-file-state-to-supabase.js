@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const path = require('path');
 
-const { VALID_STATE_KEYS, createStateStore } = require('../state-store');
+const { VALID_STATE_KEYS, createStateStore, buildAdminScope } = require('../state-store');
 
 const ROOT = path.resolve(__dirname, '..');
 const sourceDataFile = process.env.SOURCE_DATA_FILE
@@ -24,7 +24,8 @@ async function main() {
     dataFile: sourceDataFile
   });
 
-  const state = await sourceStore.getState();
+  // Migration script runs offline as the operator — admin scope is appropriate.
+  const state = await sourceStore.getState(buildAdminScope());
   for (const key of VALID_STATE_KEYS) {
     await targetStore.putStateValue(key, state[key]);
     const size = Array.isArray(state[key]) ? state[key].length : Object.keys(state[key] || {}).length;

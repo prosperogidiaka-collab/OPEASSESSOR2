@@ -10,7 +10,7 @@ const { pathToFileURL } = require('url');
 const puppeteer = require('puppeteer-core');
 const qrcodeGenerator = require('qrcode-generator');
 
-const { VALID_STATE_KEYS, createStateStore } = require('./state-store');
+const { VALID_STATE_KEYS, createStateStore, buildAdminScope, buildTeacherScope } = require('./state-store');
 const { buildDedicatedPdfRouteDocument, isDedicatedPdfRouteType } = require('./pdf-templates');
 
 const HOST = process.env.HOST || '0.0.0.0';
@@ -121,6 +121,17 @@ function deleteSessionFromRequest(req) {
   if (match) sessions.delete(match[1]);
 }
 
+// Derive the storage-layer scope from a session. Super-admin sessions get the
+// admin scope (full table reads); regular teacher sessions are restricted to
+// their own rows. Throws on missing session — every read call site that uses
+// this helper is already auth-gated, so a missing session is a programming
+// bug, not a user-facing error.
+function deriveScope(session) {
+  if (!session) throw new Error('Session required to derive scope');
+  if (session.role === 'super_admin') return buildAdminScope();
+  return buildTeacherScope(session.email);
+}
+
 function redactTeacherRecord(record) {
   if (!record || typeof record !== 'object') return record;
   // Never expose stored credential material to clients via /api/state.
@@ -166,7 +177,8 @@ function stripCredentialFieldsFromTeacherInput(value) {
 async function migrateLegacyPasswordsAtStartup() {
   let teachers;
   try {
-    teachers = await stateStore.getStateValue('teachers');
+    // Startup migration runs before any session exists and must see every row.
+    teachers = await stateStore.getStateValue('teachers', buildAdminScope());
   } catch (error) {
     console.warn('[Auth] Skipped password migration — failed to read teachers state:', error.message || error);
     return;
@@ -495,8 +507,11 @@ async function buildDedicatedPdfRouteResponse(req) {
   const parsedRoute = parsePdfRoutePath(requestUrl.pathname);
   if (!parsedRoute || !isDedicatedPdfRouteType(parsedRoute.type)) return null;
 
-  const quizzes = await stateStore.getStateValue('quizzes');
-  const submissions = await stateStore.getStateValue('submissions');
+  // Public share-key-gated route: students download results via /pdf/...?r=<shareKey>
+  // without a session. Access control is the shareKey itself, so we need admin
+  // scope to look it up across submissions.
+  const quizzes = await stateStore.getStateValue('quizzes', buildAdminScope());
+  const submissions = await stateStore.getStateValue('submissions', buildAdminScope());
   const verificationBaseUrl = getVerificationBaseUrl(req);
 
   if (parsedRoute.type === 'result-summary') {
@@ -588,8 +603,9 @@ async function buildPdfBootstrapPayload(req) {
   const parsedRoute = parsePdfRoutePath(url.pathname);
   if (!parsedRoute) return null;
 
-  const quizzes = await stateStore.getStateValue('quizzes');
-  const submissions = await stateStore.getStateValue('submissions');
+  // Same public share-key-gated lookup as buildDedicatedPdfRouteResponse — no session.
+  const quizzes = await stateStore.getStateValue('quizzes', buildAdminScope());
+  const submissions = await stateStore.getStateValue('submissions', buildAdminScope());
   const pagePortrait = { orientation: 'portrait', rootWidthMm: 190, marginsMm: { top: 12, right: 10, bottom: 12, left: 10 } };
   const verificationBaseUrl = getVerificationBaseUrl(req);
 
@@ -1085,7 +1101,8 @@ async function handleApi(req, res) {
       const password = (parsed.password || '').toString();
       if (!email || !password) return sendJson(req, res, 400, { error: 'Email and password are required' });
       if (email === SUPER_ADMIN_EMAIL) return sendJson(req, res, 401, { error: 'Use the admin login for this account' });
-      const teachers = await stateStore.getStateValue('teachers');
+      // Pre-session credential lookup: no session yet, must read full teachers map.
+      const teachers = await stateStore.getStateValue('teachers', buildAdminScope());
       const record = teachers && teachers[email];
       if (!record || typeof record !== 'object') {
         return sendJson(req, res, 401, { error: 'Invalid teacher ID or password' });
@@ -1135,7 +1152,8 @@ async function handleApi(req, res) {
       if (!email || !password) return sendJson(req, res, 400, { error: 'Email and password are required' });
       if (password.length < 4) return sendJson(req, res, 400, { error: 'Password must be at least 4 characters' });
       if (email === SUPER_ADMIN_EMAIL) return sendJson(req, res, 409, { error: 'Admin account already exists. Login instead.' });
-      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      // Pre-session existence check: must see the full teachers map to detect duplicates.
+      const teachers = (await stateStore.getStateValue('teachers', buildAdminScope())) || {};
       if (teachers[email]) return sendJson(req, res, 409, { error: 'Teacher ID already exists. Login instead.' });
       const now = new Date().toISOString();
       const cleanProfile = { ...profile };
@@ -1184,7 +1202,7 @@ async function handleApi(req, res) {
       const currentPassword = (parsed.currentPassword || '').toString();
       const newPassword = (parsed.newPassword || '').toString();
       if (!newPassword || newPassword.length < 4) return sendJson(req, res, 400, { error: 'New password must be at least 4 characters' });
-      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      const teachers = (await stateStore.getStateValue('teachers', deriveScope(session))) || {};
       const record = teachers[session.email];
       if (!record) return sendJson(req, res, 404, { error: 'Teacher not found' });
       let currentOk = false;
@@ -1213,7 +1231,8 @@ async function handleApi(req, res) {
       if (!teacherEmail || !newPassword) return sendJson(req, res, 400, { error: 'Teacher email and new password required' });
       if (newPassword.length < 4) return sendJson(req, res, 400, { error: 'Password must be at least 4 characters' });
       if (teacherEmail === SUPER_ADMIN_EMAIL) return sendJson(req, res, 400, { error: 'Admin password is set via environment variables, not the API' });
-      const teachers = (await stateStore.getStateValue('teachers')) || {};
+      // Super-admin only — deriveScope returns admin scope so the cross-tenant lookup works.
+      const teachers = (await stateStore.getStateValue('teachers', deriveScope(session))) || {};
       const record = teachers[teacherEmail];
       if (!record) return sendJson(req, res, 404, { error: 'Teacher not found' });
       const updated = { ...record, passwordHash: hashPassword(newPassword), updatedAt: new Date().toISOString(), passwordResetAt: new Date().toISOString() };
@@ -1245,8 +1264,10 @@ async function handleApi(req, res) {
 
   // ---- Shared state ----------------------------------------------------
   if (route === '/api/state' && req.method === 'GET') {
+    const session = getSessionFromRequest(req);
+    if (!session) return sendJson(req, res, 401, { error: 'Authentication required' });
     try {
-      return sendJson(req, res, 200, redactStateForClient(await stateStore.getState()));
+      return sendJson(req, res, 200, redactStateForClient(await stateStore.getState(deriveScope(session))));
     } catch (error) {
       return sendJson(req, res, 500, { error: error.message || 'Failed to load shared state' });
     }
@@ -1259,8 +1280,10 @@ async function handleApi(req, res) {
     }
 
     if (req.method === 'GET') {
+      const session = getSessionFromRequest(req);
+      if (!session) return sendJson(req, res, 401, { error: 'Authentication required' });
       try {
-        const value = await stateStore.getStateValue(stateKey);
+        const value = await stateStore.getStateValue(stateKey, deriveScope(session));
         const safeValue = stateKey === 'teachers' ? redactTeachersMap(value || {}) : value;
         return sendJson(req, res, 200, { key: stateKey, value: safeValue });
       } catch (error) {

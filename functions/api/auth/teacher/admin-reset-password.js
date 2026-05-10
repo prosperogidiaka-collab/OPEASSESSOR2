@@ -1,5 +1,6 @@
 import {
   apiErrorResponse,
+  deriveScope,
   getStateStore,
   jsonResponse,
   preflightResponse,
@@ -44,7 +45,8 @@ export async function onRequest(context) {
   }
   try {
     const stateStore = getStateStore(env);
-    const teachers = (await stateStore.getStateValue('teachers')) || {};
+    // Super-admin only — deriveScope returns admin scope so the cross-tenant lookup works.
+    const teachers = (await stateStore.getStateValue('teachers', deriveScope(session))) || {};
     const record = teachers[teacherEmail];
     if (!record) {
       return jsonResponse(request, env, 404, { error: 'Teacher not found' }, {}, { allowMethods: ALLOW });
