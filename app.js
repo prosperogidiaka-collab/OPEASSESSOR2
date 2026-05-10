@@ -1715,6 +1715,13 @@ async function pushNetworkValue(key, value, options = {}) {
     networkSyncFailureMessage = 'Cloud sync paused: your teacher session expired. Log out and log back in to push your saved changes.';
     return false;
   }
+  // The server restricts /api/state/teachers writes to super-admin sessions
+  // only. Skip the push silently for regular teachers — otherwise every sync
+  // cycle 403s and the shared abort signal cancels the legitimate
+  // quizzes/submissions pushes that ride alongside it.
+  if (stateKey === 'teachers' && !isSuperAdmin()) {
+    return false;
+  }
   if (pendingNetworkWrites.has(key)) {
     markNetworkKeyDirty(key);
     if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
