@@ -1886,11 +1886,14 @@ async function pushNetworkValue(key, value, options = {}) {
     return false;
   }
   // The server restricts /api/state/teachers writes to super-admin sessions
-  // only. Skip the push silently for regular teachers — otherwise every sync
-  // cycle 403s and the shared abort signal cancels the legitimate
-  // quizzes/submissions pushes that ride alongside it.
+  // only. For a regular teacher this is a NO-OP, not a failure — clear the
+  // dirty flag and report success, exactly like the quizzes/submissions no-ops
+  // below. (Returning false here made flushPendingNetworkWrites — and therefore
+  // "Force Sync Now" — report "Cloud sync had problems" on every run even when
+  // every quiz uploaded fine.)
   if (stateKey === 'teachers' && !isSuperAdmin()) {
-    return false;
+    clearNetworkKeyDirty(key);
+    return true;
   }
   // Quizzes are exclusively per-quiz synced through /api/quizzes/<id> now.
   // Bulk PUT /api/state/quizzes was uploading the entire quizzes map
@@ -5937,7 +5940,7 @@ function renderSettingsView() {
         NETWORK_SYNC_KEYS
           .filter((key) => key !== STORAGE_KEYS.quizzes)
           .forEach(markNetworkKeyDirty);
-        const flushed = await flushPendingNetworkWrites([], { pullAfter: false });
+        await flushPendingNetworkWrites([], { pullAfter: false });
         const ownerId = normalizeEmail(state.teacherId);
         // Include unowned quizzes too — pushSingleQuizToCloud stamps the
         // current teacher on them, which is what populates the server's
@@ -5961,19 +5964,24 @@ function renderSettingsView() {
           if (ok) syncedQuizzes += 1;
           else failedQuizIds.push(quiz.id);
         }
-        const pulled = await pullNetworkState(true);
+        await pullNetworkState(true);
         renderSyncPendingStatus();
         renderSyncServerStatus();
         const failureCount = failedQuizIds.length;
-        if (flushed && pulled !== false && failureCount === 0) {
-          showNotification(`Cloud sync completed (${syncedQuizzes} of ${ownQuizzes.length} quiz${ownQuizzes.length === 1 ? '' : 'es'} pushed).`, 'success', 6000);
+        // networkSyncFailed is the source of truth for "did something actually
+        // go wrong": a successful pull clears it even when nothing changed
+        // (pullNetworkState returns `false` for "no changes", which used to be
+        // misread as a failure). A pull error / a real push error sets it.
+        const everythingOk = failureCount === 0 && !networkSyncFailed;
+        if (everythingOk) {
+          showNotification(`Cloud sync completed (${syncedQuizzes} of ${ownQuizzes.length} quiz${ownQuizzes.length === 1 ? '' : 'es'} synced).`, 'success', 6000);
         } else if (failureCount > 0) {
           lastSyncFailedForUser = true;
           console.warn('Force Sync Now: failed quiz ids:', failedQuizIds);
           showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced — ${failureCount} failed (${failedQuizIds.slice(0, 3).join(', ')}${failureCount > 3 ? '…' : ''}). ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         } else {
           lastSyncFailedForUser = true;
-          showNotification(`Cloud sync had problems. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
+          showNotification(`Quizzes uploaded, but refreshing the latest data hit a snag. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         }
       } catch (err) {
         lastSyncFailedForUser = true;

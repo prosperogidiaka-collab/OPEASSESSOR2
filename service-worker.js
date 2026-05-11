@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v59';
+const CACHE_NAME = 'ope-assessor-v60';
 
 // Pre-cache the shell so the app still opens when the device is offline. At
 // RUNTIME, though, we always prefer the network — see the fetch handler — so a
