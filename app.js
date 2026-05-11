@@ -8275,31 +8275,34 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
     let correctAnswerText = '';
     let optionsBlock = '';
     if (qType === 'mcq') {
-      // Render the option order the STUDENT saw (snapshot). chosen is a letter
-      // pointing into snapshot.options, so highlighting + "Student answer"
-      // text are correct against the snapshot question.
-      const snapOptions = Array.isArray(snapshotQuestion.options) ? snapshotQuestion.options : (Array.isArray(question.options) ? question.options : []);
-      const liveOptions = liveQuestion && Array.isArray(liveQuestion.options) ? liveQuestion.options : null;
-      const liveCorrectLetter = ((liveQuestion && liveQuestion.answer) || question.answer || snapshotQuestion.answer || '').toString().toUpperCase();
-      const liveCorrectIdx = liveCorrectLetter ? liveCorrectLetter.charCodeAt(0) - 65 : -1;
-      const liveCorrectText = liveOptions && liveCorrectIdx >= 0 ? (liveOptions[liveCorrectIdx] || '') : '';
-      // Map live correct text → letter in the snapshot order so the option
-      // list highlights the right row. Falls back to snapshot.answer if the
-      // live correct option no longer exists in the snapshot (e.g., teacher
-      // replaced it after this submission was recorded).
-      let snapCorrectIdx = liveCorrectText ? snapOptions.findIndex((opt) => opt === liveCorrectText) : -1;
-      if (snapCorrectIdx < 0 && snapshotQuestion.answer) {
-        const snapAnsLetter = snapshotQuestion.answer.toString().toUpperCase();
-        snapCorrectIdx = snapAnsLetter ? snapAnsLetter.charCodeAt(0) - 65 : -1;
-      }
-      const correctLetterForDisplay = snapCorrectIdx >= 0 ? String.fromCharCode(65 + snapCorrectIdx) : '';
+      // Visual layout matches the previous PDF design: options listed in the
+      // LIVE order (post-edit canonical view), correct answer = live letter.
+      // Verdict came from the evaluator above with text-based comparison so
+      // shuffled-option submissions still get marked right.
+      const liveCorrectLetter = ((liveQuestion && liveQuestion.answer) || question.answer || '').toString().toUpperCase();
+      const chosenLetter = (chosen || '').toString().toUpperCase();
+      // The chosen letter indexes into the SNAPSHOT options (what the student
+      // actually saw at exam time). Look the text up there so "Student answer"
+      // displays the option they actually picked, not whatever option happens
+      // to occupy that letter slot in today's live order.
+      const studentChosenText = chosenLetter
+        ? getDisplayOptionText(snapshotQuestion, chosenLetter)
+        : '';
+      // For the option-list highlighting we want the row matching the
+      // student's pick to show as selected. With shuffled options the
+      // student's letter doesn't map cleanly, so resolve by text.
+      const liveOptionsArr = Array.isArray(question.options) ? question.options : [];
+      const studentLiveIdx = studentChosenText ? liveOptionsArr.indexOf(studentChosenText) : -1;
+      const studentLiveLetter = studentLiveIdx >= 0
+        ? String.fromCharCode(65 + studentLiveIdx)
+        : (chosenLetter || '');
       studentAnswerText = chosen
-        ? `${chosen.toUpperCase()}. ${getDisplayOptionText(snapshotQuestion, chosen.toUpperCase())}`
+        ? `${chosenLetter}. ${studentChosenText}`
         : 'No answer';
-      correctAnswerText = correctLetterForDisplay
-        ? `${correctLetterForDisplay}. ${getDisplayOptionText(snapshotQuestion, correctLetterForDisplay)}`
+      correctAnswerText = liveCorrectLetter
+        ? `${liveCorrectLetter}. ${getDisplayOptionText(question, liveCorrectLetter)}`
         : 'Not set';
-      optionsBlock = `<div class="pdf-meta-line"><strong>Options:</strong></div>${buildPdfOptionListHtml(snapshotQuestion, { selectedAnswer: chosen.toUpperCase(), correctAnswer: correctLetterForDisplay })}`;
+      optionsBlock = `<div class="pdf-meta-line"><strong>Options:</strong></div>${buildPdfOptionListHtml(question, { selectedAnswer: studentLiveLetter, correctAnswer: liveCorrectLetter })}`;
     } else if (qType === 'yesno') {
       studentAnswerText = chosen || 'No answer';
       correctAnswerText = (question.answer || 'Not set').toString();
