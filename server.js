@@ -1381,6 +1381,26 @@ async function handleApi(req, res) {
     return sendJson(req, res, 405, { error: 'Method not allowed' });
   }
 
+  // ---- Public share-key correction lookup ---------------------------------
+  // No auth: the shareKey is the access token. Used by the student-correction
+  // route in the SPA so a student opening the link from WhatsApp / email on a
+  // device they didn't take the test on can still load their correction.
+  if (route.startsWith('/api/submissions/share/')) {
+    if (req.method !== 'GET') return sendJson(req, res, 405, { error: 'Method not allowed' });
+    const shareKey = decodeURIComponent(route.replace('/api/submissions/share/', '')).trim().toLowerCase();
+    if (!shareKey) return sendJson(req, res, 400, { error: 'Missing share key' });
+    try {
+      const submissions = (await stateStore.getStateValue('submissions', buildAdminScope())) || [];
+      const submission = submissions.find((item) => ((item && item.shareKey) || '').toString().trim().toLowerCase() === shareKey) || null;
+      if (!submission) return sendJson(req, res, 404, { error: 'Correction not found for this share link.' });
+      const quizzes = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
+      const quiz = quizzes[submission.quizId] || null;
+      return sendJson(req, res, 200, { submission, quiz });
+    } catch (error) {
+      return sendJson(req, res, 500, { error: error.message || 'Failed to load correction' });
+    }
+  }
+
   if (route === '/api/export/pdf' && (req.method === 'POST' || req.method === 'GET')) {
     try {
       const parsed = req.method === 'POST'

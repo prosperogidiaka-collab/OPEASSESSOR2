@@ -2020,8 +2020,13 @@ function buildPortableQuizAccessTransport(quiz) {
 
 async function prepareQuizAccessTransport(quiz) {
   if (!quiz || !quiz.id) return null;
-  const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.quizzes, STORAGE_KEYS.students]);
-  if (sharedSyncOk) {
+  // Push only this one quiz to the cloud through the per-quiz endpoint —
+  // bulk syncSharedKeys here was the source of the long links: when the
+  // bulk PUT to /api/state/quizzes timed out (15GB-egress era), this fell
+  // back to encoding the entire quiz as base64 in the URL. Per-quiz push is
+  // small + reliable, so the short cloud-keyed link wins almost every time.
+  const cloudOk = await pushSingleQuizToCloud(quiz);
+  if (cloudOk) {
     markQuizzesCloudSynced([quiz.id]);
     return {
       portable: false,
@@ -10185,6 +10190,71 @@ function renderPdfExportView() {
   return wrapper;
 }
 
+// Anonymous correction fallback: when the student-correction print route can't
+// resolve the submission/quiz from a one-shot payload or local storage, the
+// SPA fetches /api/submissions/share/<shareKey>. That endpoint is public —
+// the share key IS the access token — so it works without a session, which is
+// the normal case for a student opening the link from WhatsApp / email on a
+// device they didn't take the test on.
+const remoteCorrectionCache = new Map();
+const remoteCorrectionPending = new Set();
+const remoteCorrectionFailed = new Map();
+
+function getRemoteCorrectionFromCache(shareKey) {
+  const key = (shareKey || '').toString().trim().toLowerCase();
+  if (!key) return null;
+  return remoteCorrectionCache.get(key) || null;
+}
+
+function isRemoteCorrectionFetchPending(shareKey) {
+  const key = (shareKey || '').toString().trim().toLowerCase();
+  if (!key) return false;
+  // Don't retry a 404 in a tight render loop.
+  if (remoteCorrectionFailed.has(key)) return true;
+  return remoteCorrectionPending.has(key);
+}
+
+async function fetchRemoteCorrectionByShareKey(shareKey) {
+  const key = (shareKey || '').toString().trim().toLowerCase();
+  if (!key) return null;
+  if (remoteCorrectionPending.has(key)) return null;
+  if (remoteCorrectionFailed.has(key)) return null;
+  remoteCorrectionPending.add(key);
+  try {
+    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/submissions/share/${encodeURIComponent(key)}`), {
+      cache: 'no-store'
+    });
+    if (res.status === 404) {
+      remoteCorrectionFailed.set(key, 'not-found');
+      render();
+      return null;
+    }
+    if (!res.ok) {
+      const reason = await readApiErrorMessage(res, 'Failed to load correction');
+      remoteCorrectionFailed.set(key, reason);
+      render();
+      return null;
+    }
+    const data = await res.json();
+    const submission = data && data.submission && typeof data.submission === 'object' ? data.submission : null;
+    const quiz = data && data.quiz && typeof data.quiz === 'object' ? data.quiz : null;
+    if (!submission) {
+      remoteCorrectionFailed.set(key, 'not-found');
+      render();
+      return null;
+    }
+    remoteCorrectionCache.set(key, { submission, quiz });
+    render();
+    return remoteCorrectionCache.get(key);
+  } catch (err) {
+    remoteCorrectionFailed.set(key, (err && err.message) || 'network error');
+    render();
+    return null;
+  } finally {
+    remoteCorrectionPending.delete(key);
+  }
+}
+
 function renderPrintRouteView() {
   const route = state.printRoute || {};
   let contentHtml = '';
@@ -10193,19 +10263,40 @@ function renderPrintRouteView() {
 
   if (route.type === 'student-correction') {
     // Try the one-shot payload first (instant). Fall back to local/shared
-    // state lookup. If neither is available we show "not ready" — the
-    // background pull triggered in initializeApp will re-render once data
-    // arrives.
-    const payload = readPrintPayload('student-correction', route.shareKey || '');
+    // state lookup. If neither is available, fall back to the public
+    // /api/submissions/share/<shareKey> endpoint so a student opening the
+    // link from WhatsApp / email on a device they didn't take the test on
+    // can still load their correction.
+    const shareKey = route.shareKey || '';
+    const payload = readPrintPayload('student-correction', shareKey);
     let submission = (payload && payload.submission) || null;
     let quiz = (payload && payload.quiz) || null;
     if (!submission) {
-      submission = findSubmissionByShareKey(route.shareKey || '');
+      submission = findSubmissionByShareKey(shareKey);
       quiz = submission ? getAllQuizzes()[submission.quizId] : null;
     }
-    if (!submission) notFoundReason = 'Loading the correction. If this message stays up, the submission link may be from a different teacher account, or shared sync has not finished yet.';
-    else if (!quiz) notFoundReason = 'The quiz for this submission is not available on this device yet. It will appear once shared sync pulls the quiz data.';
-    else {
+    if (!submission || !quiz) {
+      const cached = getRemoteCorrectionFromCache(shareKey);
+      if (cached) {
+        submission = cached.submission || submission;
+        quiz = cached.quiz || quiz;
+      } else if (!isRemoteCorrectionFetchPending(shareKey)) {
+        // First render with no local data — kick off an anonymous fetch and
+        // re-render once it lands. Don't await; render the loading state now.
+        fetchRemoteCorrectionByShareKey(shareKey);
+      }
+    }
+    const remoteFailureReason = remoteCorrectionFailed.get((shareKey || '').toString().trim().toLowerCase());
+    if (!submission && remoteFailureReason === 'not-found') {
+      notFoundReason = 'This correction link is no longer valid. Ask your teacher to resend it.';
+    } else if (!submission && remoteFailureReason) {
+      notFoundReason = `Could not load the correction: ${remoteFailureReason}. Try again in a moment.`;
+    } else if (!submission) {
+      notFoundReason = 'Loading the correction…';
+    } else if (!quiz) {
+      notFoundReason = 'Loading the quiz for this correction…';
+    }
+    if (!notFoundReason) {
       documentTitle = `Correction · ${submission.name || submission.email || 'Student'}`;
       contentHtml = buildCorrectionPdfDocumentHtml(submission, quiz, {
         showNegativePenalty: payload ? payload.showNegativePenalty !== false : (route.showNegativePenalty !== false),

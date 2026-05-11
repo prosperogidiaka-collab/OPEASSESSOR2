@@ -170,6 +170,7 @@ The auth layer enforces these rules:
 | `/api/auth/logout` | POST | none (stateless tokens) |
 | `/api/quizzes/<id>` | GET | teacher session — returns `{ quiz, submissions }` for that quiz only, scoped by `teacher_id` (super-admin sees any) |
 | `/api/quizzes/<id>` | PUT/POST | teacher session (must own the quiz, or super-admin) |
+| `/api/submissions/share/<shareKey>` | GET | **public** — returns `{ submission, quiz }` for the given share key. No session: the random share key IS the access token. Used by the SPA's `/student-correction/<shareKey>` route so a student opening the link from WhatsApp / email on a different device can load their correction. |
 | `/api/state` | GET | session required; teacher sessions see only their own rows; super-admin sees all (password hashes redacted either way) |
 | `/api/state/teachers` | GET (any session) / PUT (super-admin only) | teachers GET returns only the caller's own row unless super-admin |
 | `/api/state/submissions` | GET (session) / PUT (anonymous OK) | mixed — students need to submit without an account; GET is filtered to the teacher's own quizzes |
