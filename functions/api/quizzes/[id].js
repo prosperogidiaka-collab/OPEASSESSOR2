@@ -192,7 +192,13 @@ export async function onRequest(context) {
     if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
       return jsonResponse(request, env, 403, { error: 'Cannot save a quiz owned by another teacher' }, {}, { allowMethods: ALLOW });
     }
-    if (!isAdmin && !bodyTeacherId) {
+    // Always stamp the session as owner when the body doesn't carry one (incl.
+    // for super-admin pushes). Without this, a quiz with no teacherId lands in
+    // Supabase with an empty teacher_id column — and the bulk submissions read
+    // filters by owned quiz_ids, so the teacher would never see its results.
+    // An admin who wants to assign the quiz to a specific teacher can still do
+    // that by including teacherId in the request body.
+    if (!bodyTeacherId && sessionEmail) {
       quiz.teacherId = sessionEmail;
     }
   }

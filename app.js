@@ -2039,6 +2039,24 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
     }
     return false;
   }
+  // Stamp the current teacher as the owner if the quiz doesn't already carry
+  // one. Without this, an imported quiz (or one created under an older flow)
+  // lands in Supabase with an empty teacher_id column — and the bulk
+  // /api/state read filters submissions by the teacher's owned quiz_ids, so the
+  // teacher would never see that quiz's results. Persist the owner locally too
+  // so subsequent reads / pushes keep it.
+  const sessionEmail = normalizeEmail(state.teacherId || getTeacherId());
+  if (!normalizeEmail(quiz.teacherId || '') && sessionEmail) {
+    quiz = { ...quiz, teacherId: sessionEmail };
+    try {
+      const storedQuizzes = getAllStoredQuizzes();
+      if (storedQuizzes && storedQuizzes[quiz.id]) {
+        storedQuizzes[quiz.id] = { ...storedQuizzes[quiz.id], teacherId: sessionEmail };
+        saveAllQuizzes(storedQuizzes, { skipNetworkSync: true });
+      }
+      if (state.currentQuiz && state.currentQuiz.id === quiz.id) state.currentQuiz = { ...state.currentQuiz, teacherId: sessionEmail };
+    } catch (e) {}
+  }
   // Shrink any oversized embedded images first so an image-heavy quiz uploads
   // fast and stays under the body limit. If anything actually shrank, persist
   // the slimmer copy locally too (no updatedAt bump — same content, smaller
@@ -2574,7 +2592,7 @@ async function initializeApp() {
     }
   }
   if (params.has('import')) {
-    const quiz = decodeQuizFromString(params.get('import'));
+    const quiz = stampImportedQuizOwner(decodeQuizFromString(params.get('import')));
     if (quiz) {
       const quizzes = getAllQuizzes();
       quizzes[quiz.id] = quiz;
@@ -4105,6 +4123,18 @@ function decodeQuizFromString(encoded) {
   } catch(e) { return null; }
 }
 
+// A portable-link / portable-code quiz carries no owner — stamp the importing
+// teacher (if there is one) so a later push doesn't land in Supabase with an
+// empty teacher_id and orphan all of that quiz's submissions on read.
+function stampImportedQuizOwner(quiz) {
+  if (!quiz || typeof quiz !== 'object') return quiz;
+  if (normalizeEmail(quiz.teacherId || '')) return quiz;
+  const email = normalizeEmail(state.teacherId || getTeacherId());
+  if (!email) return quiz;
+  quiz.teacherId = email;
+  return quiz;
+}
+
 function resolveQuizFromAccess(access) {
   const all = getAllQuizzes();
   if (access && access.link) {
@@ -4115,7 +4145,7 @@ function resolveQuizFromAccess(access) {
         if (matchedQuiz) return matchedQuiz;
       }
       if (params.has('import')) {
-        const importedQuiz = decodeQuizFromString(params.get('import'));
+        const importedQuiz = stampImportedQuizOwner(decodeQuizFromString(params.get('import')));
         if (importedQuiz) {
           all[importedQuiz.id] = importedQuiz;
           saveAllQuizzes(all);
@@ -4128,7 +4158,7 @@ function resolveQuizFromAccess(access) {
   }
   if (access && access.code) {
     if (access.code.toUpperCase().startsWith(PORTABLE_QUIZ_CODE_PREFIX)) {
-      const importedQuiz = decodeQuizFromString(access.code.slice(PORTABLE_QUIZ_CODE_PREFIX.length));
+      const importedQuiz = stampImportedQuizOwner(decodeQuizFromString(access.code.slice(PORTABLE_QUIZ_CODE_PREFIX.length)));
       if (importedQuiz) {
         all[importedQuiz.id] = importedQuiz;
         saveAllQuizzes(all);

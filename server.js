@@ -1398,7 +1398,9 @@ async function handleApi(req, res) {
           if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
             return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' });
           }
-          if (!isAdmin && !bodyTeacherId) parsedQuiz.teacherId = sessionEmail;
+          // Always stamp the session as owner when the body doesn't carry one
+          // (mirrors functions/api/quizzes/[id].js).
+          if (!bodyTeacherId && sessionEmail) parsedQuiz.teacherId = sessionEmail;
         }
         // Ownership check against the existing row regardless of shape.
         const existingMap = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
