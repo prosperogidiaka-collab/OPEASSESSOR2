@@ -392,6 +392,10 @@ let _clientTrackingContextPromise = null;
 let _historyApplying = false;
 let _lastHistoryView = '';
 let _lastRenderedView = '';
+// Throttle for the pull that runs when the teacher navigates into a dashboard
+// page (so new student attempts show up). Not a timer — fires on navigation
+// only — and at most once a minute so it never becomes the old polling loop.
+let _lastTeacherNavPullAt = 0;
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
 
@@ -1783,6 +1787,32 @@ async function fetchWithRetry(url, options = {}, attempt = 0) {
   return res;
 }
 
+// Used by the automatic (non-button) sync paths — a student finishing a quiz,
+// the per-quiz push after an edit. One immediate attempt, then ONE retry after
+// 2s if the first fails (network error / timeout / 402 / 429 / 5xx). After that
+// it gives up: the data stays local and the teacher's manual "Sync To Cloud" /
+// "Force Sync Now" is the recovery path. No further retries, no cooldown, no
+// background timer.
+const AUTO_SYNC_RETRY_DELAY_MS = 2000;
+async function autoSyncFetch(url, options) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, AUTO_SYNC_RETRY_DELAY_MS));
+    try {
+      const res = await makeAbortableSyncFetch(url, options);
+      // Transient backend states are worth the one retry; anything else
+      // (success, 4xx, etc.) is returned to the caller as-is.
+      if ((res.status === 402 || res.status === 429 || res.status >= 500) && attempt === 0) {
+        console.log(`Auto-sync got ${res.status}. Retrying once in ${AUTO_SYNC_RETRY_DELAY_MS}ms`);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (attempt === 1) throw err;
+      console.log(`Auto-sync request failed (${err && err.message ? err.message : 'network error'}). Retrying once in ${AUTO_SYNC_RETRY_DELAY_MS}ms`);
+    }
+  }
+}
+
 async function pullNetworkState(force = false) {
   if (!canUseNetworkSync()) return false;
   // The bulk read returns password hashes, student PII, and quiz answer
@@ -1898,9 +1928,11 @@ async function pushNetworkValue(key, value, options = {}) {
   pendingNetworkWrites.add(key);
   const writePromise = (async () => {
     try {
-      // One attempt only — automatic save() pushes never retry. A failure just
-      // leaves the key dirty for the next manual "Force Sync Now".
-      const res = await makeAbortableSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
+      // One attempt + one retry after 2s (autoSyncFetch). Important for the
+      // anonymous student-submit path: their answers ride this PUT, so a single
+      // flaky request shouldn't strand the result. If both attempts fail the
+      // key stays dirty for the next manual "Force Sync Now".
+      const res = await autoSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
         headers: withAuthHeader({ 'Content-Type': 'application/json' }),
         body
@@ -2017,7 +2049,7 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
     // auto = one shot (makeAbortableSyncFetch); manual = fetchWithRetry's
     // 1+4 attempts with 2s/4s/8s/16s backoff.
     const res = options.auto
-      ? await makeAbortableSyncFetch(url, requestOptions)
+      ? await autoSyncFetch(url, requestOptions)
       : await fetchWithRetry(url, requestOptions);
     if (res.status === 401) {
       if (!options.auto) {
@@ -2105,7 +2137,7 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions, options = {
     const url = buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`);
     const requestOptions = { method: 'PUT', headers, body: compressed.body };
     const res = options.auto
-      ? await makeAbortableSyncFetch(url, requestOptions)
+      ? await autoSyncFetch(url, requestOptions)
       : await fetchWithRetry(url, requestOptions);
     if (res.status === 401) {
       if (!options.auto) {
@@ -4061,6 +4093,23 @@ async function fetchQuizFromCloudByAccess(access) {
   }
 }
 
+// Refresh the shared state once when the teacher navigates into (or between)
+// their dashboard pages so new student submissions / attempts appear. This is
+// the read-side counterpart to manual sync: it's reactive to an actual
+// navigation (not a timer, not focus/visibilitychange), and a 60s throttle
+// keeps it from turning back into the egress-heavy 15s polling loop.
+function maybePullSharedStateOnTeacherNav(previousView) {
+  const view = state.view || '';
+  if (!view.startsWith('teacher') || view === 'teacher.login') return;
+  if (view === previousView) return;
+  if (!canUseNetworkSync() || !getAuthSessionToken()) return;
+  if (Date.now() - Math.max(_lastTeacherNavPullAt, lastNetworkPullAt) < 60000) return;
+  _lastTeacherNavPullAt = Date.now();
+  pullSharedStateSilently({ forcePull: true, timeoutMs: 4500 })
+    .then((changed) => { if (changed) applySharedStateUiRefresh(true, { forceRender: true }); })
+    .catch(() => {});
+}
+
 async function resolveQuizFromAccessWithSync(access) {
   let quiz = resolveQuizFromAccess(access);
   if (quiz || !canUseNetworkSync()) return quiz;
@@ -4088,6 +4137,7 @@ function render() {
   }
   const previousRenderedView = _lastRenderedView;
   if (previousRenderedView) captureViewScrollState(previousRenderedView);
+  maybePullSharedStateOnTeacherNav(previousRenderedView);
   document.body.classList.toggle('pdf-route-active', state.view === 'pdf.render');
   document.body.classList.toggle('print-route-active', state.view === 'print.correction' || state.view === 'print.facility');
   const app = document.getElementById('app');
