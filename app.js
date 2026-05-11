@@ -1630,6 +1630,7 @@ async function readApiErrorMessage(response, fallbackMessage = 'Request failed')
 function applyNetworkSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return false;
   let changed = false;
+  const cloudSyncedQuizIds = [];
   NETWORK_SYNC_KEYS.forEach((storageKey) => {
     const stateKey = NETWORK_STATE_KEY_MAP[storageKey];
     if (!stateKey || pendingNetworkWrites.has(storageKey)) return;
@@ -1645,7 +1646,22 @@ function applyNetworkSnapshot(snapshot) {
       markNetworkKeyDirty(storageKey);
       pushNetworkValue(storageKey, mergedValue);
     }
+    // Per-quiz "Cloud synced" marker. Any quiz the cloud already has, and whose
+    // local copy isn't newer than the cloud's, is by definition up to date — so
+    // it should read "Cloud synced", not "Sync to Cloud". Only quizzes the
+    // teacher actually edited locally (local copy newer than the cloud's) stay
+    // "Pending cloud sync". Without this, a quiz pulled fresh from the cloud has
+    // no cloudSyncedAt locally and wrongly shows "Sync to Cloud" forever.
+    if (storageKey === STORAGE_KEYS.quizzes && remoteValue && typeof remoteValue === 'object' && mergedValue && typeof mergedValue === 'object') {
+      Object.keys(remoteValue).forEach((quizId) => {
+        const remoteQuiz = remoteValue[quizId];
+        const mergedQuiz = mergedValue[quizId];
+        if (!remoteQuiz || !mergedQuiz) return;
+        if (getRecordStamp(mergedQuiz) <= getRecordStamp(remoteQuiz)) cloudSyncedQuizIds.push(quizId);
+      });
+    }
   });
+  if (cloudSyncedQuizIds.length && markQuizzesCloudSynced(cloudSyncedQuizIds)) changed = true;
   return changed;
 }
 
@@ -4817,7 +4833,7 @@ function renderTeacherQuizzes() {
           <div class="row-action-shell" style="width:min(320px,100%)">
             <select class="input-beautiful row-action-select teacherQuizActionSelect" data-id="${q.id}">
               <option value="">Test Manager</option>
-              <option value="sync-cloud">Sync To Cloud</option>
+              <option value="sync-cloud">${syncStatus.tone === 'success' ? 'Re-sync To Cloud (already synced)' : 'Sync To Cloud'}</option>
               <option value="copy-code">Copy Student Code</option>
               <option value="copy-link">Copy Link</option>
               <option value="share-whatsapp">Share on WhatsApp</option>
@@ -13210,21 +13226,27 @@ function getQuizSyncStatus(quiz) {
 
 function markQuizzesCloudSynced(quizIds = [], syncedAt = new Date().toISOString()) {
   const uniqueIds = [...new Set((Array.isArray(quizIds) ? quizIds : []).filter(Boolean))];
-  if (!uniqueIds.length) return;
+  if (!uniqueIds.length) return false;
   const quizzes = getAllQuizzes();
   let changed = false;
   uniqueIds.forEach((quizId) => {
     const quiz = quizzes[quizId];
     if (!quiz) return;
     if (quiz.cloudSyncedAt === syncedAt) return;
+    // Skip quizzes that already read "Cloud synced" (cloudSyncedAt is at/after
+    // the record's own stamp) so repeated pulls don't churn the quizzes map.
+    const existing = quiz.cloudSyncedAt ? new Date(quiz.cloudSyncedAt).getTime() : 0;
+    if (existing && existing >= getRecordStamp(quiz)) return;
     quizzes[quizId] = { ...quiz, cloudSyncedAt: syncedAt, updatedAt: quiz.updatedAt || syncedAt };
     changed = true;
   });
   // cloudSyncedAt is a per-device UI marker only — every caller of this
   // function has already pushed the underlying quiz via /api/quizzes/<id>
-  // (or an explicit syncSharedKeys), so triggering save()'s bulk PUT to
-  // /api/state/quizzes here would just re-upload the entire map for nothing.
+  // (or an explicit syncSharedKeys) or just confirmed it via a cloud pull, so
+  // triggering save()'s bulk PUT to /api/state/quizzes here would just
+  // re-upload the entire map for nothing.
   if (changed) saveAllQuizzes(quizzes, { skipNetworkSync: true });
+  return changed;
 }
 
 async function endQuizNow(quizId) {
