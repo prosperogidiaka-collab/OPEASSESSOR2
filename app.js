@@ -11208,6 +11208,7 @@ function renderResultsView() {
       <div class="text-sm text-gray-600">Facility: ${q.facility || ' '}</div>
       <div class="flex gap-3 justify-center mt-4">
         <button id="btnBackTeacher" class="btn-pastel-primary">Back to Dashboard</button>
+        <button id="btnRefreshResults" class="btn-pastel-secondary">Refresh</button>
         <button id="btnEndCurrentQuiz" class="btn-pastel-secondary"${alreadyEnded ? ' disabled' : ''}>End Test</button>
         <button id="btnExamAnalysis" class="btn-pastel-secondary">Exam Analysis</button>
       </div>
@@ -11265,6 +11266,21 @@ function renderResultsView() {
     document.getElementById('btnBackTeacher').onclick = () => {
       state.view = 'teacher';
       render();
+    };
+    const btnRefreshResults = document.getElementById('btnRefreshResults');
+    if (btnRefreshResults) btnRefreshResults.onclick = async () => {
+      const original = btnRefreshResults.textContent;
+      btnRefreshResults.disabled = true;
+      btnRefreshResults.textContent = 'Refreshing…';
+      try {
+        if (canUseNetworkSync() && getAuthSessionToken()) {
+          await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 });
+          _lastTeacherNavPullAt = Date.now();
+        }
+      } catch (e) {}
+      btnRefreshResults.disabled = false;
+      btnRefreshResults.textContent = original;
+      if (state.view === 'teacher.results') render();
     };
     const btnAnalysis = document.getElementById('btnExamAnalysis');
     if (btnAnalysis) btnAnalysis.onclick = () => showExamAnalysisModal(q);
