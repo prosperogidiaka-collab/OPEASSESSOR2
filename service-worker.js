@@ -1,5 +1,8 @@
-const CACHE_NAME = 'ope-assessor-v53';
-const urlsToCache = [
+const CACHE_NAME = 'ope-assessor-v54';
+
+// Same-origin app shell. These are cached one-by-one (not via cache.addAll, which
+// is all-or-nothing — one bad URL would wipe the whole precache).
+const APP_SHELL_URLS = [
   './',
   './index.html',
   './config.js',
@@ -8,17 +11,26 @@ const urlsToCache = [
   './manifest.json',
   './summary-preview.png',
   './ope-icon-192.png',
-  './ope-icon-512.png',
+  './ope-icon-512.png'
+];
+
+// Cross-origin assets loaded by index.html (the Tailwind CDN script). These must
+// be fetched with mode: 'no-cors' — a plain fetch()/cache.add() fails with a
+// CORS error because the CDN sends no Access-Control-Allow-Origin header. The
+// resulting opaque response can still be served back for the matching <script src>.
+const CROSS_ORIGIN_PRECACHE_URLS = [
   'https://cdn.tailwindcss.com'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(urlsToCache).catch(() => {
-        // Ignore errors for external resources
-        return Promise.resolve();
-      });
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await Promise.allSettled(APP_SHELL_URLS.map((url) => cache.add(url)));
+      await Promise.allSettled(
+        CROSS_ORIGIN_PRECACHE_URLS.map((url) =>
+          fetch(url, { mode: 'no-cors' }).then((res) => cache.put(url, res))
+        )
+      );
     })
   );
   self.skipWaiting();
@@ -63,7 +75,7 @@ self.addEventListener('fetch', (event) => {
   if (isAppShellAsset) {
     event.respondWith(
       fetch(event.request).then((response) => {
-        if (response && response.status === 200 && response.type === 'basic' && !requestUrl.pathname.startsWith('/api/')) {
+        if (response && response.status === 200 && response.type === 'basic') {
           const responseToCache = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
         }
@@ -74,21 +86,23 @@ self.addEventListener('fetch', (event) => {
   }
 
   event.respondWith(
-    caches.match(event.request).then((response) => {
-      if (response) {
-        return response;
-      }
+    caches.match(event.request).then((cached) => {
+      if (cached) return cached;
       return fetch(event.request).then((response) => {
-        if (!response || response.status !== 200 || response.type !== 'basic') {
-          return response;
+        // Only re-cache full, same-origin basic responses (skip 206 range
+        // responses, opaque cross-origin responses, errors, etc.).
+        if (response && response.status === 200 && response.type === 'basic') {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseToCache));
         }
-        const responseToCache = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
         return response;
       }).catch(() => {
-        return caches.match('./index.html');
+        // Offline: only navigations should fall back to the cached shell —
+        // returning index.html for an image/script request just breaks it.
+        if (event.request.mode === 'navigate') {
+          return caches.match('./index.html').then((shell) => shell || Response.error());
+        }
+        return Response.error();
       });
     })
   );
