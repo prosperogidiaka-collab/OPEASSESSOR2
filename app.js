@@ -368,6 +368,7 @@ const state = {
   printRoute: null
 };
 let _didCompactSubmissions = false;
+let _didReclaimOrphanQuizzes = false;
 let networkSyncReady = false;
 let networkSyncTimer = null;
 let networkSyncInFlight = null;
@@ -4280,6 +4281,47 @@ async function fetchQuizFromCloudByAccess(access) {
   }
 }
 
+// One-shot per session: stamp the current teacher as owner on any local quiz
+// that has no teacherId (so it stops being an "orphan"). These are the quizzes
+// the rest of the app filters OUT of "your" quiz list and OUT of Force Sync
+// Now, so they never make it into pushSingleQuizToCloud where the inline stamp
+// lives — they sit on the cloud with an empty teacher_id column and the bulk
+// submissions read silently drops every one of their results. After stamping
+// we fire-and-forget a per-quiz auto-push for each one so the server's
+// teacher_id column gets populated and the submissions become visible.
+function reclaimOrphanLocalQuizzes() {
+  const email = normalizeEmail(state.teacherId || getTeacherId());
+  if (!email) return;
+  const all = getAllStoredQuizzes();
+  if (!all || typeof all !== 'object') return;
+  const reclaimed = [];
+  Object.keys(all).forEach((id) => {
+    const q = all[id];
+    if (!q || typeof q !== 'object') return;
+    if (normalizeEmail(q.teacherId || '')) return; // already has an owner
+    const claimed = { ...q, teacherId: email };
+    all[id] = claimed;
+    reclaimed.push(claimed);
+  });
+  if (!reclaimed.length) return;
+  saveAllQuizzes(all, { skipNetworkSync: true });
+  console.log(`Reclaimed ${reclaimed.length} local quiz(zes) without an owner for ${email}:`, reclaimed.map((q) => q.id));
+  if (!canUseNetworkSync() || !getAuthSessionToken()) return;
+  Promise.all(reclaimed.map((q) =>
+    pushSingleQuizToCloud(q, { auto: true })
+      .then((ok) => ({ id: q.id, ok }))
+      .catch(() => ({ id: q.id, ok: false }))
+  )).then((results) => {
+    const ok = results.filter((r) => r.ok).map((r) => r.id);
+    const bad = results.filter((r) => !r.ok).map((r) => r.id);
+    if (ok.length) console.log(`Auto-resynced reclaimed quiz(zes):`, ok);
+    if (bad.length) console.warn(`Failed to auto-resync some reclaimed quiz(zes):`, bad);
+    // If we're on a teacher page, re-render so the new "Cloud synced" status
+    // shows and a follow-up pull picks up the now-visible submissions.
+    if (state.view && state.view.startsWith('teacher') && state.view !== 'teacher.login') render();
+  }).catch(() => {});
+}
+
 // Refresh the shared state once when the teacher navigates into (or between)
 // their dashboard pages so new student submissions / attempts appear. This is
 // the read-side counterpart to manual sync: it's reactive to an actual
@@ -4321,6 +4363,10 @@ function render() {
   if (!_didCompactSubmissions) {
     compactStoredSubmissions();
     _didCompactSubmissions = true;
+  }
+  if (!_didReclaimOrphanQuizzes && normalizeEmail(state.teacherId || getTeacherId())) {
+    reclaimOrphanLocalQuizzes();
+    _didReclaimOrphanQuizzes = true;
   }
   const previousRenderedView = _lastRenderedView;
   if (previousRenderedView) captureViewScrollState(previousRenderedView);
@@ -5170,7 +5216,13 @@ function renderTeacherQuizzes() {
       render();
     };
     const all = getAllQuizzes();
-    const keys = Object.keys(all).filter(k => normalizeEmail(all[k].teacherId) === normalizeEmail(state.teacherId)).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
+    const myEmail = normalizeEmail(state.teacherId);
+    // Include unowned quizzes too — the reclaim pass will adopt them as the
+    // current teacher's so they show up in the dashboard and can be re-synced.
+    const keys = Object.keys(all).filter(k => {
+      const qOwner = normalizeEmail(all[k].teacherId || '');
+      return !qOwner || qOwner === myEmail;
+    }).sort((a,b)=> new Date(all[b].createdAt)-new Date(all[a].createdAt));
     const listEl = document.getElementById('teacherQuizzesList');
     if (!keys.length) {
       listEl.innerHTML = '<div class="card small">No quizzes yet. Click Create Quiz to start.</div>';
@@ -5277,7 +5329,11 @@ function buildTeacherSupportRequestMessage() {
 
 function getTeacherQuizKeys() {
   const all = getAllQuizzes();
-  return Object.keys(all).filter(k => normalizeEmail(all[k].teacherId) === normalizeEmail(state.teacherId));
+  const myEmail = normalizeEmail(state.teacherId);
+  return Object.keys(all).filter(k => {
+    const qOwner = normalizeEmail(all[k].teacherId || '');
+    return !qOwner || qOwner === myEmail;
+  });
 }
 
 function renderQuestionBankView() {
@@ -5866,30 +5922,38 @@ function renderSettingsView() {
           .forEach(markNetworkKeyDirty);
         const flushed = await flushPendingNetworkWrites([], { pullAfter: false });
         const ownerId = normalizeEmail(state.teacherId);
+        // Include unowned quizzes too — pushSingleQuizToCloud stamps the
+        // current teacher on them, which is what populates the server's
+        // teacher_id column so the bulk submissions read stops dropping their
+        // results. Without this, an orphan quiz (no local teacherId) was
+        // filtered out HERE, never made it to pushSingleQuizToCloud's stamp,
+        // and stayed invisible forever — that's why "X synced successfully"
+        // was a count smaller than the dashboard list.
         const ownQuizzes = Object.values(getAllQuizzes() || {}).filter((quiz) => {
           if (!quiz || !quiz.id) return false;
           if (isSuperAdmin()) return true;
-          return normalizeEmail(quiz.teacherId) === ownerId;
+          const qOwner = normalizeEmail(quiz.teacherId || '');
+          return !qOwner || qOwner === ownerId;
         });
-        // Each pushSingleQuizToCloud already retries up to 4× with backoff via
-        // fetchWithRetry. If a quiz still fails after that, the backend is down —
-        // stop here rather than running the same doomed 30s retry storm for
-        // every remaining quiz. The teacher can click Sync Now again later.
+        // Try every quiz in this set, even if one fails — a "wrong teacherId"
+        // / oversize / transient failure on one shouldn't block the others.
         let syncedQuizzes = 0;
-        let stoppedEarly = false;
+        const failedQuizIds = [];
         for (const quiz of ownQuizzes) {
           const ok = await pushSingleQuizToCloud(quiz);
-          if (ok) { syncedQuizzes += 1; }
-          else { stoppedEarly = true; break; }
+          if (ok) syncedQuizzes += 1;
+          else failedQuizIds.push(quiz.id);
         }
-        const pulled = stoppedEarly ? false : await pullNetworkState(true);
+        const pulled = await pullNetworkState(true);
         renderSyncPendingStatus();
         renderSyncServerStatus();
-        if (flushed && pulled !== false && !stoppedEarly) {
-          showNotification(`Cloud sync completed (${syncedQuizzes} quiz${syncedQuizzes === 1 ? '' : 'es'} pushed individually).`, 'success', 6000);
-        } else if (stoppedEarly) {
+        const failureCount = failedQuizIds.length;
+        if (flushed && pulled !== false && failureCount === 0) {
+          showNotification(`Cloud sync completed (${syncedQuizzes} of ${ownQuizzes.length} quiz${ownQuizzes.length === 1 ? '' : 'es'} pushed).`, 'success', 6000);
+        } else if (failureCount > 0) {
           lastSyncFailedForUser = true;
-          showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced before sync failed. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
+          console.warn('Force Sync Now: failed quiz ids:', failedQuizIds);
+          showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced — ${failureCount} failed (${failedQuizIds.slice(0, 3).join(', ')}${failureCount > 3 ? '…' : ''}). ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         } else {
           lastSyncFailedForUser = true;
           showNotification(`Cloud sync had problems. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
