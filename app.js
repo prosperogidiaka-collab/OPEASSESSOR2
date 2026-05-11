@@ -2779,7 +2779,19 @@ function findSubmissionIndexByIdentity(submissions, quizId, email, submittedAt =
 
 function getCurrentTeacher() {
   if (!state.teacherId) return null;
-  return getAllTeachers()[normalizeEmail(state.teacherId)] || null;
+  const id = normalizeEmail(state.teacherId);
+  const local = getAllTeachers()[id];
+  if (local) return local;
+  // No local teacher record yet — e.g. a freshly-wiped device (or one that just
+  // cleared site data) that authenticated against the cloud before the teachers
+  // table has been pulled. Synthesize a minimal record from the active auth
+  // session so the teacher isn't bounced straight back to the login screen;
+  // the full record (tokens, license, name…) replaces this once it's pulled.
+  const session = getStoredAuthSession();
+  if (session && session.token && normalizeEmail(session.email) === id) {
+    return { teacherId: id, email: id, role: session.role || 'teacher', _synthesized: true };
+  }
+  return null;
 }
 
 function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options = {}) {
@@ -4928,6 +4940,11 @@ function renderTeacherAuth() {
             });
             // The super-admin password is server-only and never cached locally.
             if (!isAdminLogin) await recordLocalAuthForPassword(id, password);
+            // Pull the shared state now so this device actually has a teacher
+            // record (and quizzes/submissions) before the workspace renders —
+            // otherwise a wiped device authenticates fine but getCurrentTeacher()
+            // is empty and openTeacherWorkspace bounces straight back to login.
+            await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 }).catch(() => {});
           }
         } else {
           // Path B: offline. Allow login only — never registration — and only
