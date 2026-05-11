@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v54';
+const CACHE_NAME = 'ope-assessor-v55';
 
 // Same-origin app shell. These are cached one-by-one (not via cache.addAll, which
 // is all-or-nothing — one bad URL would wipe the whole precache).

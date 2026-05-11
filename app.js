@@ -2139,8 +2139,10 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions, options = {
     }
     return false;
   }
-  const list = (Array.isArray(submissions) ? submissions : [])
-    .filter((item) => item && typeof item === 'object' && (!item.quizId || item.quizId === id));
+  const list = slimSubmissionListForStorage(
+    (Array.isArray(submissions) ? submissions : [])
+      .filter((item) => item && typeof item === 'object' && (!item.quizId || item.quizId === id))
+  );
   if (!list.length) return true; // nothing to push, treat as success
   let body;
   try { body = JSON.stringify({ submissions: list }); }
@@ -2656,10 +2658,51 @@ function saveAllQuizzes(q, options = {}) {
   });
   save(STORAGE_KEYS.quizzes, { ...deletedRecords, ...nextVisible }, saveOptions);
 }
+// A submission's allQuestions/snapshots carry the FULL question objects the
+// student saw — including each question's embedded image (mediaAssets[].src,
+// base64). For an image-heavy quiz that bloats a single submission to several
+// MB, which (a) can blow the localStorage quota so the result never even saves
+// and (b) is far too big to upload, so the teacher never sees it. The images
+// belong to the quiz, not the submission — the correction view already re-merges
+// live question content (incl. mediaAssets) from the quiz by _sourceId — so we
+// strip them here. Idempotent; returns the same reference when there's nothing
+// to strip.
+function slimSubmissionForStorage(submission) {
+  if (!submission || typeof submission !== 'object') return submission;
+  let changed = false;
+  const stripQuestion = (q) => {
+    if (!q || typeof q !== 'object' || !Array.isArray(q.mediaAssets) || !q.mediaAssets.length) return q;
+    changed = true;
+    return { ...q, mediaAssets: [] };
+  };
+  let allQuestions = submission.allQuestions;
+  if (Array.isArray(allQuestions)) allQuestions = allQuestions.map(stripQuestion);
+  let snapshots = submission.snapshots;
+  if (Array.isArray(snapshots)) {
+    snapshots = snapshots.map((snap) => {
+      if (!snap || typeof snap !== 'object' || !snap.question) return snap;
+      const slimQ = stripQuestion(snap.question);
+      return slimQ === snap.question ? snap : { ...snap, question: slimQ };
+    });
+  }
+  if (!changed) return submission;
+  return { ...submission, allQuestions, snapshots };
+}
+function slimSubmissionListForStorage(list) {
+  if (!Array.isArray(list)) return list;
+  let changed = false;
+  const out = list.map((sub) => {
+    const slim = slimSubmissionForStorage(sub);
+    if (slim !== sub) changed = true;
+    return slim;
+  });
+  return changed ? out : list;
+}
+
 function saveAllSubmissions(submissions, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
   const saveOptions = options.skipNetworkSync ? { skipNetworkSync: true } : undefined;
-  const nextVisible = Array.isArray(submissions) ? submissions : [];
+  const nextVisible = slimSubmissionListForStorage(Array.isArray(submissions) ? submissions : []);
   const nextValue = keepDeleted
     ? mergeSubmissionRecordsForSync(nextVisible, getAllStoredSubmissions().filter(isDeletedSubmission))
     : mergeSubmissionRecordsForSync(nextVisible, []);
@@ -2679,6 +2722,10 @@ function compactStoredSubmissions() {
       changed = true;
     }
   });
+  // Also strip any embedded question images that older submissions still carry,
+  // so they shrink in localStorage and become small enough to upload. saveAllSubmissions
+  // slims unconditionally, so if there's anything to strip we just need to trigger a save.
+  if (!changed && slimSubmissionListForStorage(submissions) !== submissions) changed = true;
   if (changed) saveAllSubmissions(submissions);
 }
 
