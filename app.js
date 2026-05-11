@@ -10103,7 +10103,7 @@ function buildStudentTopicBreakdownHtml(quiz, submission) {
   const visibleSubjects = subjectBreakdown.filter((item) => Array.isArray(item.topics) && item.topics.length);
   if (!visibleSubjects.length) return '';
   return `
-    <div id="topicBreakdown" class="cert-topic-section avoid-break">
+    <div id="topicBreakdown" class="cert-topic-section">
       <div class="cert-section-ribbon cert-section-ribbon-secondary">TOPIC BREAKDOWN</div>
       <div class="cert-topic-groups">
         ${visibleSubjects.map((subjectEntry) => `
@@ -10502,17 +10502,40 @@ function getCertificateResultCss() {
       .cert-details-grid{grid-template-columns:1fr}
       .cert-verification{flex-direction:column;align-items:flex-start}
     }
-    @media print{.cert-result{box-shadow:none}.result-actions{display:none!important}}
+    @media print{
+      .cert-result{box-shadow:none}
+      .result-actions{display:none!important}
+      /* Keep the topic-by-topic breakdown on its own page after the summary. */
+      #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
+      .cert-result,.cert-performance-section,.cert-performance-card,.cert-topic-group,.cert-topic-card{break-inside:avoid;page-break-inside:avoid}
+    }
   `;
 }
 
 function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
   const rankValue = (options.rankValue || '').toString().trim() || (getSubmissionRank(submission, computeRankingForQuiz(submission.quizId)) || '-');
   const resultHtml = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
-  return `
-    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
-      <style>
-        ${getCertificateResultCss()}
+  // `paged` mode is used when there's a topic-by-topic breakdown: the page is
+  // allowed to flow onto extra A4 sheets (no forced 297mm min-height), and the
+  // topic section is forced to start on a fresh page so the summary keeps page
+  // one to itself. Non-paged mode keeps the original compact single-sheet look.
+  const paged = !!options.paged;
+  const layoutCss = paged
+    ? `
+        .student-result-export-page{width:100%;background:#ffffff}
+        .student-result-export-page .student-result-full{gap:12px}
+        .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
+        .student-result-export-page .cert-inner{border-width:3px;padding:8mm 8mm 10mm}
+        .student-result-export-page .cert-quiz-title{font-size:30px}
+        .student-result-export-page .cert-student-name{font-size:38px}
+        .student-result-export-page .cert-result,
+        .student-result-export-page .cert-performance-section,
+        .student-result-export-page .cert-performance-card,
+        .student-result-export-page .cert-topic-group,
+        .student-result-export-page .cert-topic-card{page-break-inside:avoid;break-inside:avoid}
+        .student-result-export-page #topicBreakdown{break-before:page;page-break-before:always;margin-top:0!important}
+      `
+    : `
         .student-result-export-page{width:210mm;min-height:297mm;margin:0 auto;background:#ffffff}
         .student-result-export-page .student-result-full{gap:10px}
         .student-result-export-page .cert-result{box-shadow:none!important;border-radius:0!important}
@@ -10520,6 +10543,12 @@ function buildStudentSummaryPdfHtml(quiz, submission, options = {}) {
         .student-result-export-page .cert-quiz-title{font-size:32px}
         .student-result-export-page .cert-student-name{font-size:40px}
         .student-result-export-page .cert-performance-section{page-break-inside:avoid;break-inside:avoid}
+      `;
+  return `
+    <div class="student-result-export-page" style="font-family:'Segoe UI','Noto Sans','DejaVu Sans','Arial Unicode MS','Liberation Sans',Arial,sans-serif;background:#ffffff;color:#0B1220;padding:0">
+      <style>
+        ${getCertificateResultCss()}
+        ${layoutCss}
       </style>
       ${resultHtml}
     </div>
@@ -10540,7 +10569,10 @@ function renderPdfExportView() {
   let contentHtml = '';
 
   if (payload.type === 'result-summary' && payload.quiz && payload.submission) {
-    contentHtml = buildStudentSummaryPdfHtml(payload.quiz, payload.submission, { rankValue: payload.rankValue || '-' });
+    contentHtml = buildStudentSummaryPdfHtml(payload.quiz, payload.submission, {
+      rankValue: payload.rankValue || '-',
+      paged: studentResultHasTopicBreakdown(payload.quiz, payload.submission)
+    });
   } else if (payload.type === 'student-correction' && payload.quiz && payload.submission) {
     contentHtml = buildCorrectionPdfDocumentHtml(payload.submission, payload.quiz, {
       showNegativePenalty: payload.showNegativePenalty !== false,
@@ -10967,6 +10999,45 @@ function renderPrintRouteView() {
   return wrapper;
 }
 
+// True when this submission's result PDF will include the topic-by-topic
+// breakdown. When it does, we lay the PDF out across A4 pages (summary on page
+// one, topics on page two onward) instead of shrinking everything onto a single
+// sheet — which was unreadable once the breakdown was long.
+function studentResultHasTopicBreakdown(quiz, submission) {
+  return !!buildStudentTopicBreakdownHtml(quiz, submission);
+}
+
+const STUDENT_RESULT_PAGED_PDF_OPTIONS = {
+  contentWidthMm: 190,
+  marginsMm: { top: 10, right: 10, bottom: 10, left: 10 },
+  pagebreakBefore: ['#topicBreakdown'],
+  pagebreakAvoid: ['.avoid-break', '.cert-result', '.cert-performance-section', '.cert-performance-card', '.cert-topic-group', '.cert-topic-card'],
+  scale: 2.4,
+  renderScale: 2.4,
+  disableServerHtmlExport: true,
+  title: 'Student Result Summary'
+};
+
+// Open a print window for ready-made HTML and let the browser paginate it
+// natively (respecting @page A4 + CSS page-break rules). Used for the result
+// summary when there's a topic breakdown so each page stays full-size.
+function printHtmlPaginated(html, options = {}) {
+  const win = window.open('', '_blank', 'width=960,height=760');
+  if (!win) throw new Error('Unable to open print window');
+  const safeTitle = escapeHtml(options.title || 'Print');
+  const marginCss = options.marginCss || '10mm';
+  win.document.open();
+  win.document.write(
+    '<!doctype html><html><head><meta charset="utf-8"><title>' + safeTitle + '</title>' +
+    '<style>@page{size:A4 portrait;margin:' + marginCss + ';}html,body{margin:0;padding:0;background:#ffffff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}body{font-family:"Segoe UI","Noto Sans","DejaVu Sans","Arial Unicode MS","Liberation Sans",Arial,sans-serif;}</style>' +
+    '</head><body>' + html +
+    '<script>(function(){function p(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},250);}if(document.readyState==="complete")p();else window.addEventListener("load",p);})();</script>' +
+    '</body></html>'
+  );
+  win.document.close();
+  return Promise.resolve(true);
+}
+
 async function downloadStudentResultPdfDocument(quiz, submission) {
   const filename = getStudentResultPdfFilename(submission, quiz.id || submission.quizId);
   const routePath = buildStudentResultPdfRoute(submission);
@@ -10983,6 +11054,15 @@ async function downloadStudentResultPdfDocument(quiz, submission) {
     } catch (error) {
       console.warn('Server result PDF export failed. Falling back to browser rendering.', error);
     }
+  }
+  if (studentResultHasTopicBreakdown(quiz, submission)) {
+    // Summary on page one, topic-by-topic breakdown on page two onward.
+    return downloadPagedPdfFromHtml(
+      buildStudentSummaryPdfHtml(quiz, submission, { paged: true }),
+      filename,
+      'Student result summary PDF downloaded',
+      { ...STUDENT_RESULT_PAGED_PDF_OPTIONS }
+    );
   }
   return downloadPdfFromHtml(
     buildStudentSummaryPdfHtml(quiz, submission),
@@ -11008,6 +11088,9 @@ async function openStudentResultPdfPreview(quiz, submission) {
       console.warn('Server print preview failed. Falling back to browser canvas print.', error);
     }
   }
+  if (studentResultHasTopicBreakdown(quiz, submission)) {
+    return printHtmlPaginated(buildStudentSummaryPdfHtml(quiz, submission, { paged: true }), { title: 'Student Result Summary' });
+  }
   return printHtmlAsSinglePage(buildStudentSummaryPdfHtml(quiz, submission), {
     title: 'Student Result Summary',
     paddingPx: 0,
@@ -11016,6 +11099,14 @@ async function openStudentResultPdfPreview(quiz, submission) {
 }
 
 function printStudentSummary(quiz, submission) {
+  if (studentResultHasTopicBreakdown(quiz, submission)) {
+    try {
+      printHtmlPaginated(buildStudentSummaryPdfHtml(quiz, submission, { paged: true }), { title: 'Student Result Summary' });
+      return;
+    } catch (e) {
+      // fall through to the canvas-based print below
+    }
+  }
   const ranks = computeRankingForQuiz(submission.quizId);
   const rankValue = getSubmissionRank(submission, ranks) || '-';
   const html = buildStudentResultFullHtml(quiz, submission, rankValue, { includeActions: false, embedStyles: false });
