@@ -1824,8 +1824,14 @@ async function pullNetworkState(force = false) {
   return networkSyncInFlight;
 }
 
+// Bulk per-key state push (teachers / students / tokenTransactions, plus the
+// anonymous-student `submissions` path). This is an automatic write driven by
+// save() — so it makes exactly ONE attempt, no retry loop, no cooldown. If it
+// fails the key stays in dirtyNetworkKeys and uploads on the next manual
+// "Force Sync Now" click. Skips entirely when the browser reports it's offline.
 async function pushNetworkValue(key, value, options = {}) {
   if (!canUseNetworkSync() || !NETWORK_STATE_KEY_MAP[key]) return false;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) { markNetworkKeyDirty(key); return false; }
   // The server requires an auth session for every state key except `submissions`.
   // If we have no token yet (anonymous page load, student-only flow, etc.), mark
   // the key dirty so it'll be re-attempted after a successful login, and skip
@@ -1892,10 +1898,9 @@ async function pushNetworkValue(key, value, options = {}) {
   pendingNetworkWrites.add(key);
   const writePromise = (async () => {
     try {
-      // fetchWithRetry: 1 try + up to 4 retries with 2s/4s/8s/16s backoff, then
-      // it throws. No background retry timer — if it still fails, the key stays
-      // dirty and uploads on the next "Sync Now" click.
-      const res = await fetchWithRetry(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
+      // One attempt only — automatic save() pushes never retry. A failure just
+      // leaves the key dirty for the next manual "Force Sync Now".
+      const res = await makeAbortableSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
         headers: withAuthHeader({ 'Content-Type': 'application/json' }),
         body
@@ -1903,6 +1908,13 @@ async function pushNetworkValue(key, value, options = {}) {
       if (res.status === 401) {
         networkSyncFailed = true;
         networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+        markNetworkKeyDirty(key);
+        return false;
+      }
+      if (res.status === 402 || res.status === 429 || res.status >= 500) {
+        // Backend paused / throttled — leave it dirty, no toast (this is an
+        // automatic write; setNetworkSyncPaused only toasts on a user click).
+        setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
         markNetworkKeyDirty(key);
         return false;
       }
@@ -1968,12 +1980,20 @@ async function syncSharedKeys(keys = []) {
 // edited quiz never triggers a full /api/state/quizzes upload (which can blow
 // past Vercel's 4.5 MB JSON limit when quizzes embed images). The bulk path is
 // still the reconciler-of-last-resort and continues to run on the polling loop.
-async function pushSingleQuizToCloud(quiz) {
+// options.auto: this is an automatic per-quiz push fired right after an edit /
+// submit (not a user clicking a Sync button). In that mode we make exactly ONE
+// attempt — no fetchWithRetry backoff loop — and we skip entirely when the
+// browser reports it's offline. On failure the quiz simply stays "Pending cloud
+// sync" so the per-quiz "Sync To Cloud" button is the recovery path; no banner.
+async function pushSingleQuizToCloud(quiz, options = {}) {
   if (!quiz || !quiz.id) return false;
   if (!canUseNetworkSync()) return false;
+  if (options.auto && typeof navigator !== 'undefined' && navigator.onLine === false) return false;
   if (!getAuthSessionToken()) {
-    networkSyncFailed = true;
-    networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    if (!options.auto) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    }
     return false;
   }
   let body;
@@ -1992,19 +2012,27 @@ async function pushSingleQuizToCloud(quiz) {
     const compressed = await gzipBodyIfPossible(body);
     const headers = withAuthHeader({ 'Content-Type': 'application/json' });
     if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
-    const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`), {
-      method: 'PUT',
-      headers,
-      body: compressed.body
-    });
+    const requestOptions = { method: 'PUT', headers, body: compressed.body };
+    const url = buildApiUrl(`/api/quizzes/${encodeURIComponent(quiz.id)}`);
+    // auto = one shot (makeAbortableSyncFetch); manual = fetchWithRetry's
+    // 1+4 attempts with 2s/4s/8s/16s backoff.
+    const res = options.auto
+      ? await makeAbortableSyncFetch(url, requestOptions)
+      : await fetchWithRetry(url, requestOptions);
     if (res.status === 401) {
-      networkSyncFailed = true;
-      networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      if (!options.auto) {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      }
       return false;
     }
     if (!res.ok) {
-      networkSyncFailed = true;
-      networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save quiz'));
+      if (options.auto) {
+        console.warn('Auto-sync of quiz', quiz.id, 'failed:', res.status);
+      } else {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save quiz'));
+      }
       return false;
     }
     let payload = null;
@@ -2016,6 +2044,10 @@ async function pushSingleQuizToCloud(quiz) {
     markQuizzesCloudSynced([quiz.id], syncedAt);
     return true;
   } catch (err) {
+    if (options.auto) {
+      console.warn('Auto-sync of quiz', quiz.id, 'failed:', err && err.message ? err.message : err);
+      return false;
+    }
     networkSyncFailed = true;
     let reason;
     if (err && err.code === 'sync-paused') {
@@ -2035,13 +2067,16 @@ async function pushSingleQuizToCloud(quiz) {
 // Replaces the old bulk PUT /api/state/submissions for teacher-side regrade
 // and delete-submission flows (the bulk path uploaded every submission in
 // localStorage, not just the affected quiz's). Returns true on success.
-async function pushSingleQuizSubmissionsToCloud(quizId, submissions) {
+async function pushSingleQuizSubmissionsToCloud(quizId, submissions, options = {}) {
   const id = (quizId || '').toString().trim();
   if (!id) return false;
   if (!canUseNetworkSync()) return false;
+  if (options.auto && typeof navigator !== 'undefined' && navigator.onLine === false) return false;
   if (!getAuthSessionToken()) {
-    networkSyncFailed = true;
-    networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    if (!options.auto) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    }
     return false;
   }
   const list = (Array.isArray(submissions) ? submissions : [])
@@ -2050,32 +2085,42 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions) {
   let body;
   try { body = JSON.stringify({ submissions: list }); }
   catch (err) {
-    networkSyncFailed = true;
-    networkSyncFailureMessage = `Could not serialize submissions for quiz ${id}: ${err && err.message ? err.message : 'unknown error'}`;
+    if (!options.auto) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = `Could not serialize submissions for quiz ${id}: ${err && err.message ? err.message : 'unknown error'}`;
+    }
     return false;
   }
   if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
-    networkSyncFailed = true;
-    networkSyncFailureMessage = `Cannot upload submissions for quiz ${id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit.`;
+    if (!options.auto) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = `Cannot upload submissions for quiz ${id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit.`;
+    }
     return false;
   }
   try {
     const compressed = await gzipBodyIfPossible(body);
     const headers = withAuthHeader({ 'Content-Type': 'application/json' });
     if (compressed.encoding) headers['Content-Encoding'] = compressed.encoding;
-    const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`), {
-      method: 'PUT',
-      headers,
-      body: compressed.body
-    });
+    const url = buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`);
+    const requestOptions = { method: 'PUT', headers, body: compressed.body };
+    const res = options.auto
+      ? await makeAbortableSyncFetch(url, requestOptions)
+      : await fetchWithRetry(url, requestOptions);
     if (res.status === 401) {
-      networkSyncFailed = true;
-      networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      if (!options.auto) {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      }
       return false;
     }
     if (!res.ok) {
-      networkSyncFailed = true;
-      networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save submissions'));
+      if (options.auto) {
+        console.warn('Auto-sync of submissions for quiz', id, 'failed:', res.status);
+      } else {
+        networkSyncFailed = true;
+        networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save submissions'));
+      }
       return false;
     }
     networkSyncReady = true;
@@ -2083,6 +2128,10 @@ async function pushSingleQuizSubmissionsToCloud(quizId, submissions) {
     networkSyncFailureMessage = '';
     return true;
   } catch (err) {
+    if (options.auto) {
+      console.warn('Auto-sync of submissions for quiz', id, 'failed:', err && err.message ? err.message : err);
+      return false;
+    }
     networkSyncFailed = true;
     let reason;
     if (err && err.code === 'sync-paused') reason = err.message || 'Cloud sync paused.';
@@ -2644,7 +2693,7 @@ function updateTeacherProfileRecord(existingTeacherId, nextProfile = {}, options
     // forget — this admin flow is rare and a per-quiz Sync from the dashboard
     // can repair anything that fails.
     if (reassigned.length && typeof pushSingleQuizToCloud === 'function') {
-      Promise.all(reassigned.map((quiz) => pushSingleQuizToCloud(quiz).catch(() => false))).catch(() => {});
+      Promise.all(reassigned.map((quiz) => pushSingleQuizToCloud(quiz, { auto: true }).catch(() => false))).catch(() => {});
     }
 
     const allStudents = getAllTeacherStudents();
@@ -5218,14 +5267,16 @@ function showQuizSetDetails(quizId) {
       saveAllQuizzes(quizzes, { skipNetworkSync: true });
       const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
       if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
-      const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz);
+      // Automatic per-quiz upload — ONE attempt, no retry loop (the manual
+      // "Sync To Cloud" button is the retrying recovery path).
+      const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz, { auto: true });
       // Submissions for THIS quiz only — bulk PUT /api/state/submissions is
       // blocked for teacher sessions (would re-upload every other quiz's
       // submissions too). Regraded rows ride the per-quiz endpoint instead.
       let submissionsCloudOk = true;
       if (didRegrade) {
         const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === updatedQuiz.id);
-        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(updatedQuiz.id, quizSubs);
+        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(updatedQuiz.id, quizSubs, { auto: true });
       }
       const quizCloudSaved = singleQuizOk && submissionsCloudOk;
       if (quizCloudSaved) {
@@ -12263,17 +12314,17 @@ function showCreateQuizModal(editQuizId = '') {
       const didRegrade = regradeSubmissionsForQuiz(qobj);
       if (state.currentQuiz && state.currentQuiz.id === id) state.currentQuiz = qobj;
       if (audienceMode === 'class') selectedStudents.forEach((student) => upsertStudentForTeacher(quizOwnerId, { ...student, sourceQuizId: id }, id));
-      // Per-quiz upload first (small payload, never trips the 4.5 MB Vercel
-      // JSON limit). Fall back to the bulk quizzes flush if it fails so a
-      // transient single-quiz failure doesn't strand the user offline.
-      const singleQuizOk = await pushSingleQuizToCloud(qobj);
+      // Automatic per-quiz upload — ONE attempt, no retry loop. If it fails the
+      // quiz just stays "Pending cloud sync" and the teacher uses the per-quiz
+      // "Sync To Cloud" button (which does retry) from the quiz list.
+      const singleQuizOk = await pushSingleQuizToCloud(qobj, { auto: true });
       // Submissions per-quiz instead of the bulk submissions push that's now
       // blocked for teachers. Students/teachers/token rows are still small
       // bulk syncs.
       let submissionsCloudOk = true;
       if (didRegrade) {
         const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === id);
-        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(id, quizSubs);
+        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(id, quizSubs, { auto: true });
       }
       const fallbackKeys = singleQuizOk ? [] : [STORAGE_KEYS.quizzes];
       const sharedSyncOk = await syncSharedKeys([
