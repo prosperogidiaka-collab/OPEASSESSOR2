@@ -1813,6 +1813,15 @@ async function pushNetworkValue(key, value, options = {}) {
     clearNetworkKeyDirty(key);
     return true;
   }
+  // Submissions on a TEACHER session also go per-quiz now via
+  // PUT /api/quizzes/<id> with { submissions: [...] }. Regrade and
+  // delete-submission flows call pushSingleQuizSubmissionsToCloud
+  // explicitly. Anonymous student-submit still uses the bulk PUT below
+  // because the public endpoint is the only path students have.
+  if (stateKey === 'submissions' && getAuthSessionToken()) {
+    clearNetworkKeyDirty(key);
+    return true;
+  }
   if (pendingNetworkWrites.has(key)) {
     markNetworkKeyDirty(key);
     if (!options.skipRetrySchedule) schedulePendingNetworkFlush();
@@ -1977,6 +1986,66 @@ async function pushSingleQuizToCloud(quiz) {
     }
     networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
     console.error('Per-quiz sync failed for', quiz.id, err);
+    return false;
+  }
+}
+
+// Push the submissions for a single quiz through PUT /api/quizzes/<id>.
+// Replaces the old bulk PUT /api/state/submissions for teacher-side regrade
+// and delete-submission flows (the bulk path uploaded every submission in
+// localStorage, not just the affected quiz's). Returns true on success.
+async function pushSingleQuizSubmissionsToCloud(quizId, submissions) {
+  const id = (quizId || '').toString().trim();
+  if (!id) return false;
+  if (!canUseNetworkSync()) return false;
+  if (!getAuthSessionToken()) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = 'Cloud sync paused: log out and log back in to push your saved changes.';
+    return false;
+  }
+  const list = (Array.isArray(submissions) ? submissions : [])
+    .filter((item) => item && typeof item === 'object' && (!item.quizId || item.quizId === id));
+  if (!list.length) return true; // nothing to push, treat as success
+  let body;
+  try { body = JSON.stringify({ submissions: list }); }
+  catch (err) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Could not serialize submissions for quiz ${id}: ${err && err.message ? err.message : 'unknown error'}`;
+    return false;
+  }
+  if (body.length > NETWORK_SYNC_MAX_BODY_BYTES) {
+    networkSyncFailed = true;
+    networkSyncFailureMessage = `Cannot upload submissions for quiz ${id}: payload is ${(body.length / 1024 / 1024).toFixed(2)} MB which exceeds the ${(NETWORK_SYNC_MAX_BODY_BYTES / 1024 / 1024).toFixed(0)} MB cloud limit.`;
+    return false;
+  }
+  try {
+    const res = await fetchWithRetry(buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`), {
+      method: 'PUT',
+      headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+      body
+    });
+    if (res.status === 401) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
+      return false;
+    }
+    if (!res.ok) {
+      networkSyncFailed = true;
+      networkSyncFailureMessage = explainNetworkSyncFailureMessage(await readApiErrorMessage(res, 'Failed to save submissions'));
+      return false;
+    }
+    networkSyncReady = true;
+    networkSyncFailed = false;
+    networkSyncFailureMessage = '';
+    return true;
+  } catch (err) {
+    networkSyncFailed = true;
+    let reason;
+    if (err && err.code === 'sync-paused') reason = err.message || 'Cloud sync paused.';
+    else if (err && err.name === 'AbortError') reason = `Upload of submissions for quiz ${id} timed out after ${Math.round(NETWORK_SYNC_REQUEST_TIMEOUT_MS / 1000)}s.`;
+    else reason = (err && err.message) ? err.message : 'Failed to save submissions';
+    networkSyncFailureMessage = explainNetworkSyncFailureMessage(reason);
+    console.error('Per-quiz submissions sync failed for', id, err);
     return false;
   }
 }
@@ -2271,13 +2340,15 @@ async function deleteQuizById(quizId, options = {}) {
   if (changedSubmissions) save(STORAGE_KEYS.submissions, submissions);
 
   if (state.currentQuiz && state.currentQuiz.id === quizId) state.currentQuiz = null;
-  // Per-quiz push the tombstone — bulk PUT /api/state/quizzes is now a no-op.
-  // The submissions tombstones still ride the bulk submissions PUT (no
-  // per-submission endpoint yet).
+  // Per-quiz push for both the quiz tombstone AND its submission tombstones —
+  // bulk PUTs to /api/state/quizzes and /api/state/submissions are both
+  // blocked for teacher sessions, so propagation rides /api/quizzes/<id>.
   const quizPushed = await pushSingleQuizToCloud(tombstone);
-  const submissionsPushed = changedSubmissions
-    ? await syncSharedKeys([STORAGE_KEYS.submissions])
-    : true;
+  let submissionsPushed = true;
+  if (changedSubmissions) {
+    const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+    submissionsPushed = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
+  }
   const synced = quizPushed && submissionsPushed;
   if (options.onDeleted) options.onDeleted();
   if (synced) {
@@ -5086,11 +5157,15 @@ function showQuizSetDetails(quizId) {
       const didRegrade = regradeSubmissionsForQuiz(updatedQuiz);
       if (state.currentQuiz && state.currentQuiz.id === updatedQuiz.id) state.currentQuiz = updatedQuiz;
       const singleQuizOk = await pushSingleQuizToCloud(updatedQuiz);
-      const sharedSyncOk = await syncSharedKeys([
-        ...(singleQuizOk ? [] : [STORAGE_KEYS.quizzes]),
-        ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
-      ]);
-      const quizCloudSaved = singleQuizOk || sharedSyncOk;
+      // Submissions for THIS quiz only — bulk PUT /api/state/submissions is
+      // blocked for teacher sessions (would re-upload every other quiz's
+      // submissions too). Regraded rows ride the per-quiz endpoint instead.
+      let submissionsCloudOk = true;
+      if (didRegrade) {
+        const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === updatedQuiz.id);
+        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(updatedQuiz.id, quizSubs);
+      }
+      const quizCloudSaved = singleQuizOk && submissionsCloudOk;
       if (quizCloudSaved) {
         markQuizzesCloudSynced([updatedQuiz.id]);
         showNotification('Quiz content updated', 'success');
@@ -8142,6 +8217,13 @@ function buildPdfOptionListHtml(question = {}, options = {}) {
 function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   const correctionView = buildCorrectionQuestionEntries(submission, { subjectName: opts.subjectName || '', quiz });
   const entries = correctionView.entries.slice();
+  // The merged `question` carries live edits (topic, explanation, etc.) but
+  // its `options` and `answer` are in LIVE order — which doesn't match the
+  // student's stored letter when the quiz used shuffled options. The
+  // snapshot question is what the student actually saw, so we use it for
+  // anything index/letter-sensitive (verdict, option highlighting, "student
+  // answer" text). Live data still drives the explanatory metadata.
+  const liveQuestionMapForVerdict = quiz ? getQuizLiveQuestionMap(quiz) : null;
   const resolvedSubjectName = correctionView.subjectName;
   const breakdown = computeSubmissionSubjectBreakdown(quiz, submission);
   const subjectSummary = resolvedSubjectName
@@ -8167,16 +8249,22 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
   if (opts.showNegativePenalty) metaCards.push({ label: 'Negative Penalty', value: formatScoreValue(submission.negativePenalty || 0) });
   const questionCards = entries.map((entry) => {
     const question = entry.question || {};
+    const snapshotQuestion = entry.snapshotQuestion || question;
+    const sourceId = (snapshotQuestion && snapshotQuestion._sourceId) || (question && question._sourceId) || makeQuestionId(snapshotQuestion, entry.originalIndex);
+    const liveQuestion = liveQuestionMapForVerdict ? liveQuestionMapForVerdict[sourceId] : null;
     const qType = normalizeQuestionType(question.type);
     const rawChosen = submission.answers && submission.answers[entry.originalIndex] != null ? submission.answers[entry.originalIndex] : '';
     const chosen = rawChosen == null ? '' : rawChosen.toString();
-    // Use the same evaluator the marker uses, so the correction view shows
-    // the same verdict for every question type.
-    const verdict = evaluateAnswerForQuestion(question, chosen, null, entry.originalIndex);
+    // Verdict against the SNAPSHOT (the student's view). Pass the live map so
+    // the evaluator's text-comparison branch fires; that's the same branch the
+    // summary/regrade uses, so the per-question verdicts and the score line up.
+    const evaluatorMap = liveQuestion ? { [sourceId]: liveQuestion } : null;
+    const verdict = evaluateAnswerForQuestion(snapshotQuestion, chosen, null, entry.originalIndex, evaluatorMap);
     let statusText = 'Incorrect';
     if (verdict === 'correct') statusText = 'Correct';
     else if (verdict === 'pending') statusText = 'Pending Review';
     else if (verdict === 'unanswered') statusText = chosen ? 'Incorrect' : 'No answer';
+    // Metadata (topic / explanation / learning point) still tracks live edits.
     const topic = question.topic || entry.subject || 'General';
     const keyConcept = question.keyConcept || question.topic || entry.subject || 'General';
     const explanation = question.explanation || 'No explanation provided yet.';
@@ -8187,10 +8275,31 @@ function buildCorrectionPdfDocumentHtml(submission, quiz, opts = {}) {
     let correctAnswerText = '';
     let optionsBlock = '';
     if (qType === 'mcq') {
-      const correct = (question.answer || '').toString().toUpperCase();
-      studentAnswerText = chosen ? `${chosen.toUpperCase()}. ${getDisplayOptionText(question, chosen.toUpperCase())}` : 'No answer';
-      correctAnswerText = correct ? `${correct}. ${getDisplayOptionText(question, correct)}` : 'Not set';
-      optionsBlock = `<div class="pdf-meta-line"><strong>Options:</strong></div>${buildPdfOptionListHtml(question, { selectedAnswer: chosen.toUpperCase(), correctAnswer: correct })}`;
+      // Render the option order the STUDENT saw (snapshot). chosen is a letter
+      // pointing into snapshot.options, so highlighting + "Student answer"
+      // text are correct against the snapshot question.
+      const snapOptions = Array.isArray(snapshotQuestion.options) ? snapshotQuestion.options : (Array.isArray(question.options) ? question.options : []);
+      const liveOptions = liveQuestion && Array.isArray(liveQuestion.options) ? liveQuestion.options : null;
+      const liveCorrectLetter = ((liveQuestion && liveQuestion.answer) || question.answer || snapshotQuestion.answer || '').toString().toUpperCase();
+      const liveCorrectIdx = liveCorrectLetter ? liveCorrectLetter.charCodeAt(0) - 65 : -1;
+      const liveCorrectText = liveOptions && liveCorrectIdx >= 0 ? (liveOptions[liveCorrectIdx] || '') : '';
+      // Map live correct text → letter in the snapshot order so the option
+      // list highlights the right row. Falls back to snapshot.answer if the
+      // live correct option no longer exists in the snapshot (e.g., teacher
+      // replaced it after this submission was recorded).
+      let snapCorrectIdx = liveCorrectText ? snapOptions.findIndex((opt) => opt === liveCorrectText) : -1;
+      if (snapCorrectIdx < 0 && snapshotQuestion.answer) {
+        const snapAnsLetter = snapshotQuestion.answer.toString().toUpperCase();
+        snapCorrectIdx = snapAnsLetter ? snapAnsLetter.charCodeAt(0) - 65 : -1;
+      }
+      const correctLetterForDisplay = snapCorrectIdx >= 0 ? String.fromCharCode(65 + snapCorrectIdx) : '';
+      studentAnswerText = chosen
+        ? `${chosen.toUpperCase()}. ${getDisplayOptionText(snapshotQuestion, chosen.toUpperCase())}`
+        : 'No answer';
+      correctAnswerText = correctLetterForDisplay
+        ? `${correctLetterForDisplay}. ${getDisplayOptionText(snapshotQuestion, correctLetterForDisplay)}`
+        : 'Not set';
+      optionsBlock = `<div class="pdf-meta-line"><strong>Options:</strong></div>${buildPdfOptionListHtml(snapshotQuestion, { selectedAnswer: chosen.toUpperCase(), correctAnswer: correctLetterForDisplay })}`;
     } else if (qType === 'yesno') {
       studentAnswerText = chosen || 'No answer';
       correctAnswerText = (question.answer || 'Not set').toString();
@@ -8348,7 +8457,12 @@ async function markSubmissionCorrectionShared(quizId, email, submittedAt, patch 
     updatedAt: new Date().toISOString()
   };
   saveAllSubmissions(all);
-  await syncSharedKeys([STORAGE_KEYS.submissions]);
+  // Per-quiz submissions push (bulk PUT /api/state/submissions is now blocked
+  // for teacher sessions). Falls through silently if quizId is unknown.
+  if (quizId) {
+    const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+    await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
+  }
   return true;
 }
 
@@ -9506,7 +9620,11 @@ function wireEssayGradingPanel(quiz, submission) {
       submission.essayScores = target.essayScores;
       submission.essayComments = target.essayComments;
       applyGradeToSubmission(submission, grade);
-      syncSharedKeys([STORAGE_KEYS.submissions]).catch(() => {});
+      // Per-quiz submissions push (bulk submissions PUT is blocked for teachers).
+      if (submission.quizId) {
+        const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === submission.quizId);
+        pushSingleQuizSubmissionsToCloud(submission.quizId, quizSubs).catch(() => {});
+      }
       showNotification('Essay score & remarks saved.', 'success', 4000);
       // Re-render the result modal to refresh score / Pending Review status.
       const modal = document.getElementById('studentResultModal');
@@ -10966,7 +11084,9 @@ function renderResultsView() {
           all[index].name = trimmedName;
           all[index].updatedAt = new Date().toISOString();
           saveAllSubmissions(all);
-          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+          // Per-quiz submissions push (bulk PUT blocked for teachers).
+          const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+          const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
           showNotification(sharedSyncOk ? 'Student name updated' : `Student name updated on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
           render();
           return;
@@ -10994,7 +11114,9 @@ function renderResultsView() {
           if (idx2 >= 0) {
             subsAll2[idx2] = s;
             saveAllSubmissions(subsAll2);
-            await syncSharedKeys([STORAGE_KEYS.submissions]);
+            // Per-quiz push.
+            const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((sub) => sub && sub.quizId === s.quizId);
+            await pushSingleQuizSubmissionsToCloud(s.quizId, quizSubs);
           }
           render();
         } catch (e) { console.error(e); showNotification('Error generating PDF', 'error'); }
@@ -11036,7 +11158,9 @@ function renderResultsView() {
             updatedAt: new Date().toISOString()
           };
           save(STORAGE_KEYS.submissions, all);
-          const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+          // Per-quiz tombstone push (bulk PUT blocked for teachers).
+          const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === quizId);
+          const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(quizId, quizSubs);
           showNotification(sharedSyncOk ? 'Submission deleted' : `Submission deleted on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
           render();
         }
@@ -12067,14 +12191,21 @@ function showCreateQuizModal(editQuizId = '') {
       // JSON limit). Fall back to the bulk quizzes flush if it fails so a
       // transient single-quiz failure doesn't strand the user offline.
       const singleQuizOk = await pushSingleQuizToCloud(qobj);
+      // Submissions per-quiz instead of the bulk submissions push that's now
+      // blocked for teachers. Students/teachers/token rows are still small
+      // bulk syncs.
+      let submissionsCloudOk = true;
+      if (didRegrade) {
+        const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === id);
+        submissionsCloudOk = await pushSingleQuizSubmissionsToCloud(id, quizSubs);
+      }
       const fallbackKeys = singleQuizOk ? [] : [STORAGE_KEYS.quizzes];
       const sharedSyncOk = await syncSharedKeys([
         ...fallbackKeys,
         STORAGE_KEYS.students,
-        ...((accessResult.mode === 'token' || accessResult.mode === 'unlimited') ? [STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions] : []),
-        ...(didRegrade ? [STORAGE_KEYS.submissions] : [])
+        ...((accessResult.mode === 'token' || accessResult.mode === 'unlimited') ? [STORAGE_KEYS.teachers, STORAGE_KEYS.tokenTransactions] : [])
       ]);
-      const quizCloudSaved = singleQuizOk || sharedSyncOk;
+      const quizCloudSaved = singleQuizOk && submissionsCloudOk && sharedSyncOk;
       if (quizCloudSaved) {
         markQuizzesCloudSynced([id]);
       }
@@ -13345,7 +13476,9 @@ function showEditSubmissionScoreModal(quiz, submission) {
     const nextGrade = buildSubmissionGradeState(all[index], quiz || {}, gradeSubmissionForQuiz(all[index], quiz || {}));
     applyGradeToSubmission(all[index], nextGrade);
     saveAllSubmissions(all);
-    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+    // Per-quiz submissions push.
+    const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === submission.quizId);
+    const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(submission.quizId, quizSubs);
     modal.remove();
     showNotification(sharedSyncOk ? 'Student score updated' : `Student score updated on this device. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
     render();
@@ -13363,7 +13496,8 @@ function showEditSubmissionScoreModal(quiz, submission) {
     const nextGrade = buildSubmissionGradeState(all[index], quiz || {}, gradeSubmissionForQuiz(all[index], quiz || {}));
     applyGradeToSubmission(all[index], nextGrade);
     saveAllSubmissions(all);
-    const sharedSyncOk = await syncSharedKeys([STORAGE_KEYS.submissions]);
+    const quizSubs = getAllSubmissions({ includeDeleted: true }).filter((s) => s && s.quizId === submission.quizId);
+    const sharedSyncOk = await pushSingleQuizSubmissionsToCloud(submission.quizId, quizSubs);
     modal.remove();
     showNotification(sharedSyncOk ? 'Student score reset to auto grade' : `Student score reset locally. ${getSharedSyncWarningMessage()}`, sharedSyncOk ? 'success' : 'warning', 7000);
     render();

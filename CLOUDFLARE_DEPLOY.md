@@ -169,7 +169,7 @@ The auth layer enforces these rules:
 | `/api/auth/teacher/admin-reset-password` | POST | super-admin session |
 | `/api/auth/logout` | POST | none (stateless tokens) |
 | `/api/quizzes/<id>` | GET | teacher session — returns `{ quiz, submissions }` for that quiz only, scoped by `teacher_id` (super-admin sees any) |
-| `/api/quizzes/<id>` | PUT/POST | teacher session (must own the quiz, or super-admin) |
+| `/api/quizzes/<id>` | PUT/POST | teacher session (must own the quiz, or super-admin). Body shapes accepted: (a) bare `<quiz>` for legacy per-quiz save, (b) `{ quiz?, submissions? }` bundle — submissions get upserted with `submission_id` upsert; each must have `quizId === <id>` or 400. Submissions-only body is allowed if the quiz already exists. Used to be served by bulk PUT /api/state/{quizzes,submissions} — now those bulk endpoints are no-ops for teacher sessions. |
 | `/api/submissions/share/<shareKey>` | GET | **public** — returns `{ submission, quiz }` for the given share key. No session: the random share key IS the access token. Used by the SPA's `/student-correction/<shareKey>` route so a student opening the link from WhatsApp / email on a different device can load their correction. |
 | `/api/state` | GET | session required; teacher sessions see only their own rows; super-admin sees all (password hashes redacted either way) |
 | `/api/state/teachers` | GET (any session) / PUT (super-admin only) | teachers GET returns only the caller's own row unless super-admin |

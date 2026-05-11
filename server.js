@@ -1351,26 +1351,64 @@ async function handleApi(req, res) {
     if (req.method === 'PUT' || req.method === 'POST') {
       try {
         const body = await readRequestBody(req);
-        const parsedQuiz = JSON.parse(body || '{}');
-        if (!parsedQuiz || typeof parsedQuiz !== 'object' || Array.isArray(parsedQuiz)) {
-          return sendJson(req, res, 400, { error: 'Quiz body must be an object' });
+        const parsedBody = JSON.parse(body || '{}');
+        if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+          return sendJson(req, res, 400, { error: 'Body must be a JSON object' });
         }
-        const bodyTeacherId = (parsedQuiz.teacherId || '').toString().trim().toLowerCase();
-        if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
-          return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' });
+        // Two accepted shapes (mirrors functions/api/quizzes/[id].js):
+        //   1) <quiz> — bare quiz, legacy per-quiz save.
+        //   2) { quiz?, submissions? } — bundle for teacher-side regrade /
+        //      delete flows so they don't fall back to bulk submissions PUT.
+        const isBundle = Array.isArray(parsedBody.submissions) || (parsedBody.quiz && typeof parsedBody.quiz === 'object' && !Array.isArray(parsedBody.quiz));
+        const parsedQuiz = isBundle
+          ? (parsedBody.quiz && typeof parsedBody.quiz === 'object' && !Array.isArray(parsedBody.quiz) ? parsedBody.quiz : null)
+          : parsedBody;
+        const submissionsInput = isBundle && Array.isArray(parsedBody.submissions) ? parsedBody.submissions : null;
+        if (!parsedQuiz && !submissionsInput) {
+          return sendJson(req, res, 400, { error: 'Body must include quiz, submissions, or both' });
         }
-        if (!isAdmin && !bodyTeacherId) parsedQuiz.teacherId = sessionEmail;
-        // Ownership check against the existing row, mirroring the Cloudflare path.
+        if (parsedQuiz) {
+          const bodyTeacherId = (parsedQuiz.teacherId || '').toString().trim().toLowerCase();
+          if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
+            return sendJson(req, res, 403, { error: 'Cannot save a quiz owned by another teacher' });
+          }
+          if (!isAdmin && !bodyTeacherId) parsedQuiz.teacherId = sessionEmail;
+        }
+        // Ownership check against the existing row regardless of shape.
         const existingMap = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
         const existing = existingMap[quizId];
         const existingTeacher = (existing && (existing.teacherId || '')).toString().trim().toLowerCase();
         if (existingTeacher && existingTeacher !== sessionEmail && !isAdmin) {
           return sendJson(req, res, 403, { error: 'Quiz id is already owned by another teacher' });
         }
+        if (submissionsInput && !existing && !parsedQuiz) {
+          return sendJson(req, res, 404, { error: 'Quiz must exist before its submissions can be saved' });
+        }
         const syncedAt = new Date().toISOString();
-        const next = { ...parsedQuiz, id: quizId, cloudSyncedAt: syncedAt, updatedAt: parsedQuiz.updatedAt || syncedAt };
-        await stateStore.putStateValue('quizzes', { [quizId]: next });
-        return sendJson(req, res, 200, { ok: true, id: quizId, syncedAt });
+        if (parsedQuiz) {
+          const next = { ...parsedQuiz, id: quizId, cloudSyncedAt: syncedAt, updatedAt: parsedQuiz.updatedAt || syncedAt };
+          await stateStore.putStateValue('quizzes', { [quizId]: next });
+        }
+        let submissionsUpserted = 0;
+        if (submissionsInput) {
+          const cleaned = [];
+          for (let index = 0; index < submissionsInput.length; index += 1) {
+            const item = submissionsInput[index];
+            if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+            const itemQuizId = (item.quizId || '').toString().trim();
+            if (itemQuizId && itemQuizId !== quizId) {
+              return sendJson(req, res, 400, { error: `submissions[${index}].quizId does not match the quiz in the URL` });
+            }
+            cleaned.push({ ...item, quizId });
+          }
+          if (cleaned.length) {
+            // The state-store merges by submissionId, so passing the per-quiz
+            // slice doesn't clobber other quizzes' submissions.
+            await stateStore.putStateValue('submissions', cleaned);
+            submissionsUpserted = cleaned.length;
+          }
+        }
+        return sendJson(req, res, 200, { ok: true, id: quizId, syncedAt, submissionsUpserted });
       } catch (error) {
         const message = error.message || 'Invalid request body';
         const isBodyError = message === 'Payload too large' || /JSON/i.test(message);

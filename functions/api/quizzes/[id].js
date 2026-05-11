@@ -8,6 +8,40 @@ import {
 import { getSessionFromRequest } from '../_lib/auth.js';
 import { buildQuizRow } from '../../../state-store.js';
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeKey(value, fallback = '') {
+  return ((value == null ? '' : value) || fallback || '').toString().trim();
+}
+
+function normalizeLowerKey(value, fallback = '') {
+  return normalizeKey(value, fallback).toLowerCase();
+}
+
+function toIsoOrNull(value) {
+  if (!value) return null;
+  const stamp = new Date(value);
+  return Number.isNaN(stamp.getTime()) ? null : stamp.toISOString();
+}
+
+function buildSubmissionRowForQuiz(item, quizId, index = 0) {
+  // Mirror buildSubmissionRows() in state-store.js so the rows we upsert
+  // through the per-quiz endpoint look identical to the bulk path.
+  const baseSubmissionId = (item && item.submissionId)
+    ? normalizeKey(item.submissionId, `submission-${index}`)
+    : `${quizId}::${normalizeLowerKey(item && item.email)}::${(item && (item.submittedAt || item.updatedAt || item.startedAt || item.createdAt)) || `idx-${index}`}`;
+  return {
+    submission_id: baseSubmissionId,
+    quiz_id: quizId,
+    student_email: normalizeLowerKey(item && item.email),
+    submitted_at: toIsoOrNull(item && item.submittedAt),
+    updated_at: toIsoOrNull(item && (item.updatedAt || item.submittedAt || item.startedAt || item.createdAt)),
+    payload: { ...(item || {}), submissionId: baseSubmissionId, quizId }
+  };
+}
+
 const ALLOW = 'GET, PUT, POST, OPTIONS';
 
 let cachedClient = null;
@@ -123,24 +157,46 @@ export async function onRequest(context) {
     return jsonResponse(request, env, 400, { error: 'Invalid JSON body' }, {}, { allowMethods: ALLOW });
   }
 
-  const quiz = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  if (!quiz) {
-    return jsonResponse(request, env, 400, { error: 'Quiz body must be an object' }, {}, { allowMethods: ALLOW });
+  if (!isPlainObject(parsed)) {
+    return jsonResponse(request, env, 400, { error: 'Body must be a JSON object' }, {}, { allowMethods: ALLOW });
   }
 
-  const bodyTeacherId = (quiz.teacherId || '').toString().trim().toLowerCase();
-  if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
-    return jsonResponse(request, env, 403, { error: 'Cannot save a quiz owned by another teacher' }, {}, { allowMethods: ALLOW });
+  // Two accepted body shapes:
+  //   1) <quiz>                       — legacy bare-quiz upsert (per-quiz save).
+  //   2) { quiz?, submissions? }      — bundle: optionally upsert the quiz AND
+  //                                      any submissions for it. Used by the
+  //                                      teacher-side regrade / delete flows so
+  //                                      they don't have to fall back to bulk
+  //                                      PUT /api/state/submissions.
+  const isBundle = Array.isArray(parsed.submissions) || (isPlainObject(parsed.quiz) && parsed.submissions !== undefined);
+  const quiz = isBundle
+    ? (isPlainObject(parsed.quiz) ? parsed.quiz : null)
+    : parsed;
+  const submissionsInput = isBundle && Array.isArray(parsed.submissions) ? parsed.submissions : null;
+
+  if (!quiz && !submissionsInput) {
+    return jsonResponse(request, env, 400, { error: 'Body must include quiz, submissions, or both' }, {}, { allowMethods: ALLOW });
   }
-  if (!isAdmin && !bodyTeacherId) {
-    quiz.teacherId = sessionEmail;
+
+  if (quiz) {
+    const bodyTeacherId = (quiz.teacherId || '').toString().trim().toLowerCase();
+    if (!isAdmin && bodyTeacherId && bodyTeacherId !== sessionEmail) {
+      return jsonResponse(request, env, 403, { error: 'Cannot save a quiz owned by another teacher' }, {}, { allowMethods: ALLOW });
+    }
+    if (!isAdmin && !bodyTeacherId) {
+      quiz.teacherId = sessionEmail;
+    }
   }
 
   try {
     const supabase = await getSupabaseClient(env);
     const tablePrefix = readEnv(env, 'SUPABASE_TABLE_PREFIX', 'ope_').trim();
     const quizzesTable = `${tablePrefix}quizzes`;
+    const submissionsTable = `${tablePrefix}submissions`;
 
+    // Ownership check is done against the existing quiz row regardless of
+    // which body shape was sent — a teacher must own (or be admin for) the
+    // quiz before we accept a submissions upsert against its quiz_id.
     const { data: existing, error: lookupError } = await supabase
       .from(quizzesTable)
       .select('teacher_id')
@@ -154,20 +210,61 @@ export async function onRequest(context) {
     if (existing && existing.teacher_id && existing.teacher_id !== sessionEmail && !isAdmin) {
       return jsonResponse(request, env, 403, { error: 'Quiz id is already owned by another teacher' }, {}, { allowMethods: ALLOW });
     }
-
-    const syncedAt = new Date().toISOString();
-    const row = { ...buildQuizRow(id, quiz), synced_at: syncedAt };
-
-    const { error: upsertError } = await supabase
-      .from(quizzesTable)
-      .upsert([row], { onConflict: 'quiz_id' });
-    if (upsertError) {
-      const wrapped = new Error(`Supabase upsert failed for ${quizzesTable}: ${upsertError.message}`);
-      wrapped.cause = upsertError;
-      throw wrapped;
+    if (submissionsInput && !existing && !quiz) {
+      return jsonResponse(request, env, 404, { error: 'Quiz must exist before its submissions can be saved' }, {}, { allowMethods: ALLOW });
     }
 
-    return jsonResponse(request, env, 200, { ok: true, id, syncedAt }, {}, { allowMethods: ALLOW });
+    const syncedAt = new Date().toISOString();
+    let submissionsUpserted = 0;
+
+    if (quiz) {
+      const row = { ...buildQuizRow(id, quiz), synced_at: syncedAt };
+      const { error: upsertError } = await supabase
+        .from(quizzesTable)
+        .upsert([row], { onConflict: 'quiz_id' });
+      if (upsertError) {
+        const wrapped = new Error(`Supabase upsert failed for ${quizzesTable}: ${upsertError.message}`);
+        wrapped.cause = upsertError;
+        throw wrapped;
+      }
+    }
+
+    if (submissionsInput) {
+      // Validate every submission belongs to THIS quiz before we touch the
+      // database. Skip blank/non-object entries silently. A mismatched quizId
+      // is a hard 400 — refuse to write rows for a quiz the caller didn't
+      // address in the URL.
+      const submissionRows = [];
+      for (let index = 0; index < submissionsInput.length; index += 1) {
+        const item = submissionsInput[index];
+        if (!isPlainObject(item)) continue;
+        const itemQuizId = (item.quizId || '').toString().trim();
+        if (itemQuizId && itemQuizId !== id) {
+          return jsonResponse(request, env, 400, { error: `submissions[${index}].quizId does not match the quiz in the URL` }, {}, { allowMethods: ALLOW });
+        }
+        submissionRows.push(buildSubmissionRowForQuiz({ ...item, quizId: id }, id, index));
+      }
+      if (submissionRows.length) {
+        // Upsert in batches to stay well under the 4 MB body cap. 100 rows
+        // per batch keeps each request under typical limits even when
+        // submissions embed images in payload.
+        const BATCH = 100;
+        for (let from = 0; from < submissionRows.length; from += BATCH) {
+          const slice = submissionRows.slice(from, from + BATCH);
+          const { error: subUpsertError } = await supabase
+            .from(submissionsTable)
+            .upsert(slice, { onConflict: 'submission_id' });
+          if (subUpsertError) {
+            const wrapped = new Error(`Supabase upsert failed for ${submissionsTable}: ${subUpsertError.message}`);
+            wrapped.cause = subUpsertError;
+            throw wrapped;
+          }
+        }
+        submissionsUpserted = submissionRows.length;
+      }
+    }
+
+    return jsonResponse(request, env, 200, { ok: true, id, syncedAt, submissionsUpserted }, {}, { allowMethods: ALLOW });
   } catch (error) {
     return apiErrorResponse(request, env, error, 'Failed to save quiz', { allowMethods: ALLOW });
   }
