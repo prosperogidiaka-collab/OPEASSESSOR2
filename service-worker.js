@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ope-assessor-v47';
+const CACHE_NAME = 'ope-assessor-v48';
 const urlsToCache = [
   './',
   './index.html',
@@ -54,17 +54,9 @@ self.addEventListener('fetch', (event) => {
   );
 
   if (isApiRequest) {
-    event.respondWith(
-      fetch(event.request).catch(() => new Response(JSON.stringify({
-        error: 'Network unavailable'
-      }), {
-        status: 503,
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Cache-Control': 'no-store'
-        }
-      }))
-    );
+    // Don't touch /api/* at all — the page owns all sync behaviour now (manual
+    // only, with its own bounded retries). No SW-level fetch, no retry, and no
+    // synthetic 503 response that used to masquerade as a backend outage.
     return;
   }
 

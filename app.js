@@ -44,10 +44,10 @@ const NETWORK_STATE_KEY_MAP = {
   [STORAGE_KEYS.students]: 'students',
   [STORAGE_KEYS.tokenTransactions]: 'tokenTransactions'
 };
-// 15s poll keeps the teacher dashboard reactive without thrashing the main
-// thread or burning Vercel cold-starts every 5s. Submissions still flow in
-// near-real-time because students PUT directly when they submit, and the
-// teacher tab also force-pulls on focus / online / visibilitychange.
+// Sync is manual-only: it runs when the teacher clicks a Sync button, never on
+// a timer, focus, visibilitychange, online, or from the service worker. There
+// is still a single best-effort pull on first load so a teacher signing in on a
+// new browser sees their cloud data — that's a one-shot read, not a retry loop.
 const DEFAULT_NETWORK_SYNC_POLL_MS = 15000;
 const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
 // Cap how long the very first paint waits on the cloud pull. Keep this short
@@ -379,6 +379,13 @@ const dirtyNetworkKeys = new Set();
 let networkSyncRetryTimer = null;
 let networkSyncEventsBound = false;
 let lastNetworkPullAt = 0;
+// Sync is strictly manual now. `userInitiatedSync` is true only for the
+// duration of a click on a Sync button, so error toasts/banners surface ONLY
+// when the user actually asked for a sync. `lastSyncFailedForUser` persists
+// between renders so the "shared sync is not active" card appears only after a
+// user-initiated sync exhausted its retries — never because of a background read.
+let userInitiatedSync = false;
+let lastSyncFailedForUser = false;
 let serverPdfExportUnavailable = false;
 let _clientTrackingContextCache = null;
 let _clientTrackingContextPromise = null;
@@ -421,14 +428,11 @@ function clearNetworkKeyDirty(key) {
   dirtyNetworkKeys.delete(key);
 }
 
-function schedulePendingNetworkFlush(delayMs = DEFAULT_NETWORK_SYNC_RETRY_MS) {
-  if (!canUseNetworkSync()) return;
-  if (networkSyncRetryTimer) clearTimeout(networkSyncRetryTimer);
-  const waitMs = Math.max(250, Number(delayMs) || DEFAULT_NETWORK_SYNC_RETRY_MS);
-  networkSyncRetryTimer = setTimeout(() => {
-    networkSyncRetryTimer = null;
-    flushPendingNetworkWrites();
-  }, waitMs);
+// Manual-only sync: there are no background retry timers. Dirty keys just sit
+// in `dirtyNetworkKeys` and get flushed on the next explicit "Sync Now" click.
+// Kept as a no-op so the many existing call sites stay harmless.
+function schedulePendingNetworkFlush() {
+  if (networkSyncRetryTimer) { clearTimeout(networkSyncRetryTimer); networkSyncRetryTimer = null; }
 }
 
 async function flushPendingNetworkWrites(keys = [], options = {}) {
@@ -933,19 +937,9 @@ async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
 function bindNetworkSyncWindowEvents() {
   if (networkSyncEventsBound || typeof window === 'undefined') return;
   networkSyncEventsBound = true;
-  window.addEventListener('focus', () => {
-    runSharedSyncCycle({ forcePull: true, forceRender: true });
-  });
-  window.addEventListener('online', () => {
-    networkSyncFailed = false;
-    networkSyncFailureMessage = '';
-    schedulePendingNetworkFlush(250);
-    runSharedSyncCycle({ forcePull: true, forceRender: true });
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
-    runSharedSyncCycle({ forcePull: true, forceRender: true });
-  });
+  // No focus / online / visibilitychange auto-sync — sync is manual-only.
+  // We keep only the cross-tab `storage` listener so edits made in another tab
+  // of THIS browser refresh the UI; that's a local read, not a network call.
   window.addEventListener('storage', (event) => {
     const changedKey = (event && event.key) || '';
     if (!changedKey || event.oldValue === event.newValue) return;
@@ -1698,12 +1692,11 @@ function makeAbortableSyncFetch(url, options = {}, timeoutMs = NETWORK_SYNC_REQU
   return fetchPromise;
 }
 
-// Service-paused cooldown. When Supabase / the backend returns 402/429/503,
-// hammering it with retries doesn't help — the project is throttled or paused.
-// We park ALL sync activity for 5 minutes (canUseNetworkSync() returns false
-// during the window, so polling, save() auto-push, and user-initiated fetches
-// all skip out fast). After the window expires the next user action is free to
-// try again; if the backend is still down the next 503 just re-arms the pause.
+// Sync is manual-only now, so there is no automatic "cooldown" — after a sync
+// fails its bounded retries we simply wait for the next "Sync Now" click. These
+// constants are kept (NETWORK_SYNC_MAX_RETRIES drives fetchWithRetry's cap) and
+// networkSyncPausedUntil stays 0 so the remaining isNetworkSyncPaused() call
+// sites are harmless no-ops.
 const NETWORK_SYNC_PAUSE_DURATION_MS = 5 * 60 * 1000;
 const NETWORK_SYNC_RETRY_DELAY_MS = 20000;
 const NETWORK_SYNC_MAX_RETRIES = 4;
@@ -1714,53 +1707,61 @@ function isNetworkSyncPaused() {
 }
 
 function setNetworkSyncPaused(reason) {
-  const wasAlreadyPaused = isNetworkSyncPaused();
-  networkSyncPausedUntil = Date.now() + NETWORK_SYNC_PAUSE_DURATION_MS;
+  // No automatic cooldown anymore — sync is manual, so after a failure we just
+  // record it and wait for the next "Sync Now" click. (networkSyncPausedUntil
+  // is left at 0 so the remaining isNetworkSyncPaused() call sites are inert.)
   networkSyncFailed = true;
   networkSyncFailureMessage = reason || 'Cloud sync is paused.';
-  if (!wasAlreadyPaused && typeof showNotification === 'function') {
-    const minutes = Math.round(NETWORK_SYNC_PAUSE_DURATION_MS / 60000);
-    showNotification(`${networkSyncFailureMessage} Sync will retry automatically in ${minutes} minute(s), or click to retry sooner.`, 'warning', 9000);
+  // Only toast when the teacher explicitly asked for a sync. A background read
+  // hitting a 503 must stay silent.
+  if (userInitiatedSync && typeof showNotification === 'function') {
+    showNotification(`${networkSyncFailureMessage} Click Sync Now to try again.`, 'warning', 9000);
   }
 }
 
-// Retry wrapper for user-initiated sync fetches (per-quiz Sync, quiz save,
-// student correction fetch). Background paths (save() auto-push, polling)
-// keep using makeAbortableSyncFetch directly — they fail fast and rely on
-// the cooldown to throttle. Behaviour:
-//   - Try 1 immediate, then up to NETWORK_SYNC_MAX_RETRIES retries with
-//     NETWORK_SYNC_RETRY_DELAY_MS between each.
-//   - 402/429/503 → throw immediately with a "paused" error AND set the
-//     cooldown so unrelated background paths stop hammering too.
-//   - Other non-OK responses or thrown network errors → retry.
-//   - AbortError (timeout) → don't retry (user moved on or the request
-//     genuinely timed out).
+// Retry wrapper for a single sync request. One immediate try, then up to
+// NETWORK_SYNC_MAX_RETRIES (4) retries with exponential backoff: 2s, 4s, 8s,
+// 16s. After the cap we STOP — no cooldown, no background retry — and throw so
+// the caller can surface the error once and wait for the next "Sync Now" click.
+//   - AbortError (timeout): don't retry (caller moved on / request truly hung).
+//   - 402 / 429 / 5xx: transient backend — retry with backoff, then give up.
+//   - Other non-OK: retry with backoff, then return the response to the caller.
+function syncRetryDelayMs(attempt) {
+  return Math.pow(2, attempt) * 1000; // attempt 0 -> 2s, 1 -> 4s, 2 -> 8s, 3 -> 16s
+}
+
 async function fetchWithRetry(url, options = {}, attempt = 0) {
-  if (isNetworkSyncPaused()) {
-    const err = new Error('Cloud sync paused. Wait a few minutes, then try again.');
-    err.code = 'sync-paused';
-    throw err;
-  }
+  const MAX_RETRIES = NETWORK_SYNC_MAX_RETRIES;
   let res;
   try {
     res = await makeAbortableSyncFetch(url, options);
   } catch (err) {
     if (err && err.name === 'AbortError') throw err;
-    if (attempt < NETWORK_SYNC_MAX_RETRIES) {
-      await new Promise((resolve) => setTimeout(resolve, NETWORK_SYNC_RETRY_DELAY_MS));
+    if (attempt < MAX_RETRIES) {
+      const delay = syncRetryDelayMs(attempt);
+      console.log(`Sync request failed (${err && err.message ? err.message : 'network error'}). Retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
       return fetchWithRetry(url, options, attempt + 1);
     }
     throw err;
   }
-  if (res.status === 402 || res.status === 429 || res.status === 503) {
-    setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
-    const err = new Error('Cloud sync paused. Wait a few minutes, then try again.');
+  if (res.status === 402 || res.status === 429 || res.status >= 500) {
+    if (attempt < MAX_RETRIES) {
+      const delay = syncRetryDelayMs(attempt);
+      console.log(`Sync got ${res.status}. Retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return fetchWithRetry(url, options, attempt + 1);
+    }
+    setNetworkSyncPaused(`Cloud sync failed after ${MAX_RETRIES + 1} attempts (backend returned ${res.status}).`);
+    const err = new Error(`Cloud sync failed (backend returned ${res.status}). Click Sync Now to try again.`);
     err.code = 'sync-paused';
     err.status = res.status;
     throw err;
   }
-  if (!res.ok && attempt < NETWORK_SYNC_MAX_RETRIES) {
-    await new Promise((resolve) => setTimeout(resolve, NETWORK_SYNC_RETRY_DELAY_MS));
+  if (!res.ok && attempt < MAX_RETRIES) {
+    const delay = syncRetryDelayMs(attempt);
+    console.log(`Sync got ${res.status}. Retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
     return fetchWithRetry(url, options, attempt + 1);
   }
   return res;
@@ -1875,7 +1876,10 @@ async function pushNetworkValue(key, value, options = {}) {
   pendingNetworkWrites.add(key);
   const writePromise = (async () => {
     try {
-      const res = await makeAbortableSyncFetch(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
+      // fetchWithRetry: 1 try + up to 4 retries with 2s/4s/8s/16s backoff, then
+      // it throws. No background retry timer — if it still fails, the key stays
+      // dirty and uploads on the next "Sync Now" click.
+      const res = await fetchWithRetry(buildApiUrl(`/api/state/${encodeURIComponent(NETWORK_STATE_KEY_MAP[key])}`), {
         method: 'PUT',
         headers: withAuthHeader({ 'Content-Type': 'application/json' }),
         body
@@ -1883,14 +1887,6 @@ async function pushNetworkValue(key, value, options = {}) {
       if (res.status === 401) {
         networkSyncFailed = true;
         networkSyncFailureMessage = 'Cloud sync rejected: your teacher session is no longer valid. Log out and log back in to retry.';
-        markNetworkKeyDirty(key);
-        return false;
-      }
-      if (res.status === 402 || res.status === 429 || res.status === 503) {
-        // Backend paused / quota exceeded — arm the cooldown so the polling
-        // loop and the rest of save()'s auto-pushes stop hammering for the
-        // next few minutes (see fetchWithRetry's setNetworkSyncPaused).
-        setNetworkSyncPaused(`Cloud sync is paused (backend returned ${res.status}).`);
         markNetworkKeyDirty(key);
         return false;
       }
@@ -2394,11 +2390,9 @@ async function deleteQuizById(quizId, options = {}) {
 
 function startNetworkSyncLoop() {
   if (!canUseNetworkSync()) return;
+  // Manual-only sync — no polling interval. We still bind the cross-tab
+  // `storage` listener so multi-tab edits in this browser refresh the UI.
   bindNetworkSyncWindowEvents();
-  if (networkSyncTimer) return;
-  networkSyncTimer = setInterval(() => {
-    runSharedSyncCycle();
-  }, NETWORK_SYNC_CONFIG.pollIntervalMs);
 }
 
 async function initializeApp() {
@@ -2468,7 +2462,9 @@ async function initializeApp() {
   applySharedStateUiRefresh(startupSharedChanged, { suppressRender: true });
   render();
   startNetworkSyncLoop();
-  if (!networkSyncReady || networkSyncFailed) runSharedSyncCycle({ forcePull: true, forceRender: true });
+  // No automatic post-render sync. The one-shot startup pull above
+  // (hydrateSharedStateBeforeFirstRender) is the only load-time network read;
+  // anything else waits for the teacher to click Sync Now.
 }
 
 function save(key, value, options = {}) {
@@ -2482,6 +2478,10 @@ function save(key, value, options = {}) {
   if (options.skipNetworkSync) return;
   if (NETWORK_SYNC_KEYS.includes(key)) {
     markNetworkKeyDirty(key);
+    // Single best-effort PUT — no retry timer (schedulePendingNetworkFlush is a
+    // no-op now). This is also the path a student's submission takes to the
+    // cloud when they tap Submit, so it must stay; on failure the key just
+    // remains dirty and uploads on the next "Sync Now" click.
     pushNetworkValue(key, value);
   }
 }
@@ -4764,7 +4764,9 @@ function renderTeacherQuizzes() {
   const syncHelp = canUseNetworkSync()
     ? `<div class="card small" style="margin:0 0 16px;padding:12px 14px;background:#F0F9FF;border-color:#BAE6FD;color:#075985;line-height:1.55">Sync one quiz at a time using <strong>Test Manager → Sync To Cloud</strong> on the row below. Need a full refresh? Open <button id="openSyncSettingsFromQuizzesInfo" class="btn btn-ghost btn-sm" style="padding:2px 8px;margin:0 2px">Settings → Cloud Sync</button> and use Force Sync Now.</div>`
     : '';
-  const syncNotice = networkSyncFailed
+  // Only surface the "not active" card after a sync the teacher actually
+  // triggered failed — a quiet background read should never plant this banner.
+  const syncNotice = (networkSyncFailed && lastSyncFailedForUser)
     ? `<div class="card small" style="margin:0 0 16px;padding:14px 16px;border-color:#FDE68A;background:#FFFBEB;color:#92400E">Shared sync is not active right now.<div style="margin-top:8px;line-height:1.6">${escapeHtml(networkSyncFailureMessage || 'Fix the backend connection before sending quiz IDs or links to students.')}</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button id="openSyncSettingsFromQuizzes" class="btn btn-ghost btn-sm">Cloud Sync Settings</button><button id="testSyncFromQuizzes" class="btn btn-primary btn-sm">Test Connection</button></div></div>`
     : '';
   container.innerHTML = `<div class="h1">Quizzes</div><div class="small" style="margin-bottom:var(--space-2)">Manage your quizzes (edit, copy link, view results)</div>${syncHelp}${syncNotice}<div id="teacherQuizzesList" style="margin-top:16px"></div>`;
@@ -4775,11 +4777,19 @@ function renderTeacherQuizzes() {
     if (openSyncSettingsFromQuizzes) openSyncSettingsFromQuizzes.onclick = () => { state.view = 'teacher.settings'; render(); };
     const testSyncFromQuizzes = document.getElementById('testSyncFromQuizzes');
     if (testSyncFromQuizzes) testSyncFromQuizzes.onclick = async () => {
-      const health = await checkNetworkSyncHealth({ timeoutMs: 5000 });
-      if (health.ok) {
-        await runSharedSyncCycle({ forcePull: true, forceRender: true });
+      userInitiatedSync = true;
+      lastSyncFailedForUser = false;
+      try {
+        const health = await checkNetworkSyncHealth({ timeoutMs: 5000 });
+        if (health.ok) {
+          await runSharedSyncCycle({ forcePull: true, forceRender: true });
+        } else {
+          lastSyncFailedForUser = true;
+        }
+        showNotification(health.ok ? 'Cloud sync server is reachable' : health.message, health.ok ? 'success' : 'error', 9000);
+      } finally {
+        userInitiatedSync = false;
       }
-      showNotification(health.ok ? 'Cloud sync server is reachable' : health.message, health.ok ? 'success' : 'error', 9000);
       render();
     };
     const all = getAllQuizzes();
@@ -4834,12 +4844,16 @@ function renderTeacherQuizzes() {
           const originalLabel = triggerBtn.textContent;
           triggerBtn.disabled = true;
           triggerBtn.textContent = 'Syncing…';
+          userInitiatedSync = true;
+          lastSyncFailedForUser = false;
           try {
             const result = await syncSingleQuizWithCloud(quiz);
             const tone = result.ok ? (result.pulled === false ? 'warning' : 'success') : 'error';
+            if (!result.ok) lastSyncFailedForUser = true;
             showNotification(result.message, tone, result.ok ? 6000 : 9000);
             if (result.ok) render();
           } finally {
+            userInitiatedSync = false;
             triggerBtn.disabled = false;
             triggerBtn.textContent = originalLabel;
           }
@@ -5461,6 +5475,8 @@ function renderSettingsView() {
       forceSyncNowBtn.disabled = true;
       const originalLabel = forceSyncNowBtn.textContent;
       forceSyncNowBtn.textContent = 'Syncing…';
+      userInitiatedSync = true;
+      lastSyncFailedForUser = false;
       try {
         // Quizzes are excluded from the bulk flush — they sync exclusively
         // through /api/quizzes/<id>. Fan them out one at a time below so a
@@ -5476,25 +5492,34 @@ function renderSettingsView() {
           if (isSuperAdmin()) return true;
           return normalizeEmail(quiz.teacherId) === ownerId;
         });
-        let perQuizFailures = 0;
+        // Each pushSingleQuizToCloud already retries up to 4× with backoff via
+        // fetchWithRetry. If a quiz still fails after that, the backend is down —
+        // stop here rather than running the same doomed 30s retry storm for
+        // every remaining quiz. The teacher can click Sync Now again later.
+        let syncedQuizzes = 0;
+        let stoppedEarly = false;
         for (const quiz of ownQuizzes) {
-          if (isNetworkSyncPaused()) { perQuizFailures += 1; break; }
           const ok = await pushSingleQuizToCloud(quiz);
-          if (!ok) perQuizFailures += 1;
+          if (ok) { syncedQuizzes += 1; }
+          else { stoppedEarly = true; break; }
         }
-        const pulled = await pullNetworkState(true);
+        const pulled = stoppedEarly ? false : await pullNetworkState(true);
         renderSyncPendingStatus();
         renderSyncServerStatus();
-        if (flushed && pulled !== false && perQuizFailures === 0) {
-          showNotification(`Cloud sync completed (${ownQuizzes.length} quiz${ownQuizzes.length === 1 ? '' : 'es'} pushed individually).`, 'success', 6000);
-        } else if (perQuizFailures > 0) {
-          showNotification(`${ownQuizzes.length - perQuizFailures} of ${ownQuizzes.length} quiz(es) synced. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
+        if (flushed && pulled !== false && !stoppedEarly) {
+          showNotification(`Cloud sync completed (${syncedQuizzes} quiz${syncedQuizzes === 1 ? '' : 'es'} pushed individually).`, 'success', 6000);
+        } else if (stoppedEarly) {
+          lastSyncFailedForUser = true;
+          showNotification(`${syncedQuizzes} of ${ownQuizzes.length} quiz(es) synced before sync failed. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         } else {
+          lastSyncFailedForUser = true;
           showNotification(`Cloud sync had problems. ${getSharedSyncWarningMessage()}`, 'warning', 9000);
         }
       } catch (err) {
+        lastSyncFailedForUser = true;
         showNotification(`Force sync failed: ${err && err.message ? err.message : 'unknown error'}`, 'error', 9000);
       } finally {
+        userInitiatedSync = false;
         forceSyncNowBtn.disabled = false;
         forceSyncNowBtn.textContent = originalLabel;
       }
