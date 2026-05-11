@@ -1347,27 +1347,32 @@ async function handleApi(req, res) {
   // and per-quiz refreshes work against `npm start` too.
   if (route.startsWith('/api/quizzes/')) {
     const session = getSessionFromRequest(req);
-    if (!session) return sendJson(req, res, 401, { error: 'Authentication required' });
     const quizId = decodeURIComponent(route.replace('/api/quizzes/', '')).trim();
     if (!quizId) return sendJson(req, res, 400, { error: 'Missing quiz id' });
-    const sessionEmail = (session.email || '').toString().trim().toLowerCase();
-    const isAdmin = session.role === 'super_admin';
-    const scope = deriveScope(session);
+    const sessionEmail = session ? (session.email || '').toString().trim().toLowerCase() : '';
+    const isAdmin = !!session && session.role === 'super_admin';
 
     if (req.method === 'GET') {
       try {
-        // Scope-filtered read: a non-admin teacher only sees their own quizzes,
-        // so an unowned/missing quiz is indistinguishable (404) — no info leak.
-        const quizzes = (await stateStore.getStateValue('quizzes', scope)) || {};
-        const quiz = quizzes[quizId];
+        // Public, code-gated read (mirrors functions/api/quizzes/[id].js): a
+        // student opening a quiz by its code / ?q=<id> link has no session, so
+        // the code itself is the access token. Anonymous callers and teachers
+        // who don't own the quiz get the quiz only — never its submissions
+        // (PII). The owner / super-admin also gets the submissions.
+        const allQuizzes = (await stateStore.getStateValue('quizzes', buildAdminScope())) || {};
+        const quiz = allQuizzes[quizId];
         if (!quiz) return sendJson(req, res, 404, { error: 'Quiz not found' });
-        const allSubmissions = (await stateStore.getStateValue('submissions', scope)) || [];
+        const ownsQuiz = isAdmin || (!!sessionEmail && (quiz.teacherId || '').toString().trim().toLowerCase() === sessionEmail);
+        if (!ownsQuiz) return sendJson(req, res, 200, { quiz });
+        const allSubmissions = (await stateStore.getStateValue('submissions', buildAdminScope())) || [];
         const submissions = allSubmissions.filter((item) => item && item.quizId === quizId);
         return sendJson(req, res, 200, { quiz, submissions });
       } catch (error) {
         return sendJson(req, res, 500, { error: error.message || 'Failed to load quiz' });
       }
     }
+
+    if (!session) return sendJson(req, res, 401, { error: 'Authentication required' });
 
     if (req.method === 'PUT' || req.method === 'POST') {
       try {

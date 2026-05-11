@@ -3994,11 +3994,72 @@ function buildTeacherMobileNav() {
   return wrapper;
 }
 
+// Pull out the quiz id a student is trying to open (a bare 6-digit code, or the
+// ?q=<id> param of a magic link). Portable codes/links carry the whole quiz so
+// they don't need a cloud fetch and return ''.
+function quizIdFromAccess(access) {
+  if (!access) return '';
+  if (access.code) {
+    const code = access.code.toString().trim();
+    if (!code || code.toUpperCase().startsWith(PORTABLE_QUIZ_CODE_PREFIX)) return '';
+    return code;
+  }
+  if (access.link) {
+    try {
+      const params = new URLSearchParams((new URL(access.link)).search);
+      if (params.has('import')) return ''; // self-contained, no fetch needed
+      return (params.get('q') || '').toString().trim();
+    } catch (e) { return ''; }
+  }
+  return '';
+}
+
+// Fetch one quiz by id from the public GET /api/quizzes/<id>. This is THE path a
+// student takes when all they have is the 6-digit code / magic link and the
+// quiz isn't on this device yet. Single attempt — they can retry the button.
+async function fetchQuizFromCloudByAccess(access) {
+  const id = quizIdFromAccess(access);
+  if (!id || !canUseNetworkSync()) return null;
+  try {
+    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`), {
+      cache: 'no-store',
+      headers: getAuthSessionToken() ? withAuthHeader({}) : {}
+    });
+    if (!res.ok) return null;
+    const payload = await res.json();
+    const cloudQuiz = payload && payload.quiz && typeof payload.quiz === 'object' ? payload.quiz : null;
+    if (!cloudQuiz || !cloudQuiz.id) return null;
+    // Merge the cloud quiz into local storage so subsequent lookups (and the
+    // exam flow) find it. Don't re-upload — skipNetworkSync.
+    const localQuizzes = getAllQuizzes({ includeDeleted: true });
+    const merged = mergeRecordMapForSync(localQuizzes || {}, { [cloudQuiz.id]: cloudQuiz });
+    saveAllQuizzes(merged, { skipNetworkSync: true });
+    // Authenticated callers (the owner) also get this quiz's submissions back —
+    // merge those too so the teacher's results view is current.
+    if (Array.isArray(payload.submissions) && payload.submissions.length) {
+      const localSubs = getAllSubmissions({ includeDeleted: true });
+      const mergedSubs = mergeSubmissionListsForSync(localSubs || [], payload.submissions);
+      saveAllSubmissions(mergedSubs, { includeDeleted: true, skipNetworkSync: true });
+    }
+    return cloudQuiz;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function resolveQuizFromAccessWithSync(access) {
   let quiz = resolveQuizFromAccess(access);
   if (quiz || !canUseNetworkSync()) return quiz;
-  await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+  // Students have no session, so the bulk GET /api/state is a guaranteed no-op
+  // for them — go straight to the public per-quiz endpoint.
+  await fetchQuizFromCloudByAccess(access);
   quiz = resolveQuizFromAccess(access);
+  if (quiz) return quiz;
+  // Logged-in teachers can still fall back to the full snapshot pull.
+  if (getAuthSessionToken()) {
+    await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+    quiz = resolveQuizFromAccess(access);
+  }
   return quiz;
 }
 

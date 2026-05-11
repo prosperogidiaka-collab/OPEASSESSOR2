@@ -76,9 +76,6 @@ export async function onRequest(context) {
   }
 
   const session = getSessionFromRequest(env, request);
-  if (!session) {
-    return jsonResponse(request, env, 401, { error: 'Authentication required' }, {}, { allowMethods: ALLOW });
-  }
 
   const rawId = Array.isArray(params.id) ? params.id[0] : params.id;
   const id = decodeURIComponent((rawId || '').toString()).trim();
@@ -86,25 +83,27 @@ export async function onRequest(context) {
     return jsonResponse(request, env, 400, { error: 'Missing quiz id' }, {}, { allowMethods: ALLOW });
   }
 
-  const sessionEmail = (session.email || '').toString().trim().toLowerCase();
-  const isAdmin = session.role === 'super_admin';
+  const sessionEmail = session ? (session.email || '').toString().trim().toLowerCase() : '';
+  const isAdmin = !!session && session.role === 'super_admin';
 
   if (request.method === 'GET') {
+    // Public, code-gated read. A student opening a quiz by its 6-digit code /
+    // ?q=<id> link has no session, so GET must work unauthenticated — the code
+    // itself is the access token (same model as the public share-key correction
+    // endpoint, which already returns full quiz payloads). Anonymous callers and
+    // teachers who don't own the quiz get the quiz only — never the submissions
+    // list (PII). The owner / super-admin also gets that quiz's submissions.
     try {
       const supabase = await getSupabaseClient(env);
       const tablePrefix = readEnv(env, 'SUPABASE_TABLE_PREFIX', 'ope_').trim();
       const quizzesTable = `${tablePrefix}quizzes`;
       const submissionsTable = `${tablePrefix}submissions`;
 
-      // Per-quiz read. Filter by quiz_id + teacher_id so a teacher can never
-      // even probe for a quiz that isn't theirs (404 leaks no information about
-      // foreign rows). Super-admin skips the teacher_id filter.
-      let quizQuery = supabase
+      const { data: quizRow, error: quizError } = await supabase
         .from(quizzesTable)
         .select('quiz_id, teacher_id, title, created_at, updated_at, payload')
-        .eq('quiz_id', id);
-      if (!isAdmin) quizQuery = quizQuery.eq('teacher_id', sessionEmail);
-      const { data: quizRow, error: quizError } = await quizQuery.maybeSingle();
+        .eq('quiz_id', id)
+        .maybeSingle();
       if (quizError) {
         const wrapped = new Error(`Supabase lookup failed for ${quizzesTable}: ${quizError.message}`);
         wrapped.cause = quizError;
@@ -112,6 +111,18 @@ export async function onRequest(context) {
       }
       if (!quizRow) {
         return jsonResponse(request, env, 404, { error: 'Quiz not found' }, {}, { allowMethods: ALLOW });
+      }
+
+      const quiz = (quizRow && typeof quizRow.payload === 'object' && quizRow.payload) ? { ...quizRow.payload } : {};
+      if (!quiz.id) quiz.id = quizRow.quiz_id;
+      if (!quiz.teacherId && quizRow.teacher_id) quiz.teacherId = quizRow.teacher_id;
+      if (!quiz.title && quizRow.title) quiz.title = quizRow.title;
+      if (!quiz.createdAt && quizRow.created_at) quiz.createdAt = quizRow.created_at;
+      if (!quiz.updatedAt && quizRow.updated_at) quiz.updatedAt = quizRow.updated_at;
+
+      const ownsQuiz = isAdmin || (!!sessionEmail && (quizRow.teacher_id || '').toString().trim().toLowerCase() === sessionEmail);
+      if (!ownsQuiz) {
+        return jsonResponse(request, env, 200, { quiz }, {}, { allowMethods: ALLOW });
       }
 
       // Submissions table has no teacher_id column; ownership is verified via
@@ -127,13 +138,6 @@ export async function onRequest(context) {
         throw wrapped;
       }
 
-      const quiz = (quizRow && typeof quizRow.payload === 'object' && quizRow.payload) ? { ...quizRow.payload } : {};
-      if (!quiz.id) quiz.id = quizRow.quiz_id;
-      if (!quiz.teacherId && quizRow.teacher_id) quiz.teacherId = quizRow.teacher_id;
-      if (!quiz.title && quizRow.title) quiz.title = quizRow.title;
-      if (!quiz.createdAt && quizRow.created_at) quiz.createdAt = quizRow.created_at;
-      if (!quiz.updatedAt && quizRow.updated_at) quiz.updatedAt = quizRow.updated_at;
-
       const submissions = (submissionRows || []).map((row) => {
         const payload = (row && typeof row.payload === 'object' && row.payload) ? { ...row.payload } : {};
         if (!payload.submissionId && row.submission_id) payload.submissionId = row.submission_id;
@@ -148,6 +152,11 @@ export async function onRequest(context) {
     } catch (error) {
       return apiErrorResponse(request, env, error, 'Failed to load quiz', { allowMethods: ALLOW });
     }
+  }
+
+  // Writes (PUT / POST) still require a teacher / admin session.
+  if (!session) {
+    return jsonResponse(request, env, 401, { error: 'Authentication required' }, {}, { allowMethods: ALLOW });
   }
 
   let parsed;
