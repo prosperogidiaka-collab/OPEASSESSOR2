@@ -1674,10 +1674,12 @@ function applyNetworkSnapshot(snapshot) {
 // fat quiz upload (embedded images, gzipped) or a full /api/state pull over a
 // slow mobile connection — 12s was tripping the abort mid-upload.
 const NETWORK_SYNC_REQUEST_TIMEOUT_MS = 30000;
-// Vercel's default JSON body limit is ~4.5 MB. Stay under it so a fat
-// `quizzes` payload (with embedded images etc.) returns a useful error to the
-// user instead of a generic 413 / connection reset.
-const NETWORK_SYNC_MAX_BODY_BYTES = 4 * 1024 * 1024;
+// Upper bound for a single PUT body. Cloudflare Pages Functions accept much
+// larger bodies than Vercel's old ~4.5 MB cap, and Supabase's jsonb columns can
+// hold far more, so 8 MB gives image-heavy quizzes (after the on-sync image
+// shrink pass) plenty of room. Anything past this returns a clear "too large"
+// message telling the teacher to trim embedded images.
+const NETWORK_SYNC_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 // Gzip a JSON string with the browser's native CompressionStream so the
 // per-quiz PUT bodies (often 1–2 MB of JSON with embedded base64 images)
@@ -2037,6 +2039,23 @@ async function pushSingleQuizToCloud(quiz, options = {}) {
     }
     return false;
   }
+  // Shrink any oversized embedded images first so an image-heavy quiz uploads
+  // fast and stays under the body limit. If anything actually shrank, persist
+  // the slimmer copy locally too (no updatedAt bump — same content, smaller
+  // pixels) so we don't re-do this work on every sync and localStorage stays
+  // lean. Best-effort: on any failure we just push what we have.
+  try {
+    const slimmed = await shrinkQuizMediaForSync(quiz);
+    if (slimmed && slimmed !== quiz) {
+      quiz = slimmed;
+      const storedQuizzes = getAllStoredQuizzes();
+      if (storedQuizzes && storedQuizzes[quiz.id]) {
+        storedQuizzes[quiz.id] = { ...storedQuizzes[quiz.id], subjects: quiz.subjects };
+        saveAllQuizzes(storedQuizzes, { skipNetworkSync: true });
+      }
+      if (state.currentQuiz && state.currentQuiz.id === quiz.id) state.currentQuiz = { ...state.currentQuiz, subjects: quiz.subjects };
+    }
+  } catch (e) { /* push the original quiz if shrinking failed */ }
   let body;
   try { body = JSON.stringify(quiz); }
   catch (err) {
@@ -3563,31 +3582,113 @@ function renderQuestionMediaAssets(question = {}, placement = 'before') {
   `;
 }
 
+// Downscale + re-encode a base64 image data-URL to keep quiz payloads small
+// enough to sync quickly (a 1600px PNG screenshot can be 1–3 MB; the same image
+// at 1200px JPEG ~0.8 is usually well under 200 KB and still perfectly readable
+// for a quiz question). Flattens transparency onto white before encoding to
+// JPEG. Returns the original string unchanged if it isn't an image data-URL, if
+// there's no DOM, if the image fails to load, or if re-encoding wouldn't help.
+async function recompressDataUrlImage(dataUrl, options = {}) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl;
+  if (typeof document === 'undefined' || typeof Image === 'undefined') return dataUrl;
+  const maxDim = Number(options.maxDim) > 0 ? Number(options.maxDim) : 1200;
+  const quality = Number(options.quality) > 0 ? Number(options.quality) : 0.82;
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('image decode failed'));
+      img.src = dataUrl;
+    });
+    const ratio = Math.min(maxDim / (image.width || maxDim), maxDim / (image.height || maxDim), 1);
+    const w = Math.max(1, Math.round((image.width || maxDim) * ratio));
+    const h = Math.max(1, Math.round((image.height || maxDim) * ratio));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(image, 0, 0, w, h);
+    const out = canvas.toDataURL('image/jpeg', quality);
+    return (typeof out === 'string' && out.length && out.length < dataUrl.length) ? out : dataUrl;
+  } catch (e) {
+    return dataUrl;
+  }
+}
+
+// Recompress a base64 image stored in localStorage before we send it over the
+// wire. The threshold is on the data-URL string length (~1.37× the byte size),
+// so ~220 KB string ≈ ~160 KB image — anything bigger gets re-encoded, and if
+// it's still large after that, dropped to a smaller size/quality.
+const QUIZ_MEDIA_RECOMPRESS_THRESHOLD = 220 * 1024;
+async function shrinkOversizedDataUrlImage(src) {
+  if (typeof src !== 'string' || !src.startsWith('data:image/')) return src;
+  if (src.length <= QUIZ_MEDIA_RECOMPRESS_THRESHOLD) return src;
+  let out = await recompressDataUrlImage(src, { maxDim: 1200, quality: 0.78 });
+  if (out.length > QUIZ_MEDIA_RECOMPRESS_THRESHOLD * 1.6) {
+    out = await recompressDataUrlImage(src, { maxDim: 850, quality: 0.7 });
+  }
+  return out;
+}
+
+// Walk a quiz's questions and shrink any oversized embedded images. Returns the
+// same object reference when nothing changed, or a fresh copy with slimmed
+// mediaAssets. Used right before a per-quiz cloud PUT so an image-heavy quiz
+// (e.g. a maths paper with diagram screenshots) doesn't blow past the body
+// limit or take forever to upload. Best-effort — never throws.
+async function shrinkQuizMediaForSync(quiz) {
+  if (!quiz || typeof quiz !== 'object' || !Array.isArray(quiz.subjects)) return quiz;
+  let changed = false;
+  const shrinkQuestionList = async (questions) => {
+    if (!Array.isArray(questions) || !questions.length) return questions;
+    let listChanged = false;
+    const next = await Promise.all(questions.map(async (q) => {
+      const assets = q && Array.isArray(q.mediaAssets) ? q.mediaAssets : null;
+      if (!assets || !assets.length) return q;
+      let assetsChanged = false;
+      const nextAssets = await Promise.all(assets.map(async (asset) => {
+        const src = asset && typeof asset.src === 'string' ? asset.src : '';
+        if (!src.startsWith('data:image/') || src.length <= QUIZ_MEDIA_RECOMPRESS_THRESHOLD) return asset;
+        const slimmed = await shrinkOversizedDataUrlImage(src);
+        if (slimmed && slimmed !== src) { assetsChanged = true; return { ...asset, src: slimmed }; }
+        return asset;
+      }));
+      if (!assetsChanged) return q;
+      listChanged = true;
+      return { ...q, mediaAssets: nextAssets };
+    }));
+    if (listChanged) changed = true;
+    return listChanged ? next : questions;
+  };
+  const subjects = await Promise.all(quiz.subjects.map(async (subject) => {
+    if (!subject || typeof subject !== 'object') return subject;
+    const questions = await shrinkQuestionList(subject.questions);
+    const bankQuestions = await shrinkQuestionList(subject.bankQuestions);
+    if (questions === subject.questions && bankQuestions === subject.bankQuestions) return subject;
+    return { ...subject, questions, bankQuestions };
+  }));
+  return changed ? { ...quiz, subjects } : quiz;
+}
+
 function readImageFileAsDataUrl(file, options = {}) {
   return new Promise((resolve, reject) => {
     if (!file) return reject(new Error('No image file selected'));
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Unable to read image file'));
-    reader.onload = () => {
+    reader.onload = async () => {
       const source = reader.result;
-      if (!file.type || !file.type.startsWith('image/')) return resolve(source);
-      const image = new Image();
-      image.onerror = () => resolve(source);
-      image.onload = () => {
-        const maxWidth = Number(options.maxWidth) > 0 ? Number(options.maxWidth) : 1600;
-        const maxHeight = Number(options.maxHeight) > 0 ? Number(options.maxHeight) : 1600;
-        const ratio = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
-        if (ratio >= 1) return resolve(source);
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(image.width * ratio));
-        canvas.height = Math.max(1, Math.round(image.height * ratio));
-        const context = canvas.getContext('2d');
-        if (!context) return resolve(source);
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        const mimeType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-        resolve(canvas.toDataURL(mimeType, mimeType === 'image/png' ? undefined : 0.92));
-      };
-      image.src = source;
+      if (typeof source !== 'string' || !source.startsWith('data:image/')) return resolve(source);
+      // Always normalise uploaded images to a sync-friendly size/quality rather
+      // than only when they're huge — a 900px PNG screenshot is still megabytes.
+      try {
+        const maxDim = Number(options.maxWidth) > 0 ? Number(options.maxWidth) : 1200;
+        const quality = Number(options.quality) > 0 ? Number(options.quality) : 0.82;
+        resolve(await recompressDataUrlImage(source, { maxDim, quality }));
+      } catch (e) {
+        resolve(source);
+      }
     };
     reader.readAsDataURL(file);
   });
