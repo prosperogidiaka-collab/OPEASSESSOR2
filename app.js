@@ -2503,6 +2503,13 @@ async function initializeApp() {
     state.prefillQuizCode = id;
     state.view = 'student';
     hydratePrefilledQuizFromAccess();
+    // Warm the quiz from the public per-quiz endpoint in the background so it's
+    // already in localStorage by the time the student taps Start Exam. Fire and
+    // forget — no re-render (it would clobber whatever the student is typing);
+    // resolveQuizFromAccessWithSync re-fetches anyway if this hasn't landed yet.
+    if (!state.currentQuiz && canUseNetworkSync()) {
+      fetchQuizFromCloudByAccess({ code: (id || '').toString().trim() }).catch(() => {});
+    }
   }
   if (params.has('import')) {
     const quiz = decodeQuizFromString(params.get('import'));
@@ -4025,10 +4032,16 @@ async function fetchQuizFromCloudByAccess(access) {
       cache: 'no-store',
       headers: getAuthSessionToken() ? withAuthHeader({}) : {}
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn('Quiz lookup failed for', id, '— HTTP', res.status);
+      return null;
+    }
     const payload = await res.json();
     const cloudQuiz = payload && payload.quiz && typeof payload.quiz === 'object' ? payload.quiz : null;
-    if (!cloudQuiz || !cloudQuiz.id) return null;
+    if (!cloudQuiz || !cloudQuiz.id) {
+      console.warn('Quiz lookup for', id, 'returned no quiz payload');
+      return null;
+    }
     // Merge the cloud quiz into local storage so subsequent lookups (and the
     // exam flow) find it. Don't re-upload — skipNetworkSync.
     const localQuizzes = getAllQuizzes({ includeDeleted: true });
@@ -4043,6 +4056,7 @@ async function fetchQuizFromCloudByAccess(access) {
     }
     return cloudQuiz;
   } catch (e) {
+    console.warn('Quiz lookup for', id, 'errored:', e && e.message ? e.message : e);
     return null;
   }
 }
@@ -10699,6 +10713,29 @@ async function fetchRemoteCorrectionByShareKey(shareKey) {
   }
 }
 
+// Pull one submission (and its quiz) from the public /api/submissions/share/<key>
+// endpoint into local storage. THE recovery path for a student opening a result
+// / correction link on a device they didn't take the test on: they have no
+// session, so the bulk /api/state pull is a guaranteed no-op for them.
+async function hydrateSubmissionFromShareKey(shareKey) {
+  const key = (shareKey || '').toString().trim().toLowerCase();
+  if (!key || !canUseNetworkSync()) return false;
+  let remote = getRemoteCorrectionFromCache(key);
+  if (!remote && !remoteCorrectionFailed.has(key)) {
+    remote = await fetchRemoteCorrectionByShareKey(key);
+  }
+  if (!remote || !remote.submission) return false;
+  const localSubs = getAllSubmissions({ includeDeleted: true });
+  const mergedSubs = mergeSubmissionListsForSync(localSubs || [], [remote.submission]);
+  saveAllSubmissions(mergedSubs, { includeDeleted: true, skipNetworkSync: true });
+  if (remote.quiz && remote.quiz.id) {
+    const localQuizzes = getAllQuizzes({ includeDeleted: true });
+    const mergedQuizzes = mergeRecordMapForSync(localQuizzes || {}, { [remote.quiz.id]: remote.quiz });
+    saveAllQuizzes(mergedQuizzes, { skipNetworkSync: true });
+  }
+  return true;
+}
+
 function renderPrintRouteView() {
   const route = state.printRoute || {};
   let contentHtml = '';
@@ -13471,7 +13508,10 @@ function showCorrectionRequestModal(quiz, submission, onSave) {
 async function openStudentCorrectionByShareKey(shareKey, options = {}) {
   const key = (shareKey || '').trim().toLowerCase();
   if (!key) return showNotification('Correction link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+  if (!findSubmissionByShareKey(key) && options.refreshSync !== false && canUseNetworkSync()) {
+    if (getAuthSessionToken()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+    if (!findSubmissionByShareKey(key)) await hydrateSubmissionFromShareKey(key);
+  }
   const submission = findSubmissionByShareKey(key);
   if (!submission) return showNotification('That correction could not be verified on this device yet.', 'error', 7000);
   return openStudentCorrectionBySubmissionKey(
@@ -13527,7 +13567,10 @@ async function showStudentResultModalByLookup(quizId, identifier, includeActions
 async function showStudentResultModalByShareKey(shareKey, includeActions = true, options = {}) {
   const key = (shareKey || '').trim().toLowerCase();
   if (!key) return showNotification('Result link is incomplete', 'error');
-  if (options.refreshSync !== false && canUseNetworkSync()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+  if (!findSubmissionByShareKey(key) && options.refreshSync !== false && canUseNetworkSync()) {
+    if (getAuthSessionToken()) await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 });
+    if (!findSubmissionByShareKey(key)) await hydrateSubmissionFromShareKey(key);
+  }
   const submission = findSubmissionByShareKey(key);
   if (!submission) return showNotification('That certificate could not be verified on this device yet.', 'error', 7000);
   return showStudentResultModalBySubmissionKey(
