@@ -4337,6 +4337,42 @@ function reclaimOrphanLocalQuizzes() {
   }).catch(() => {});
 }
 
+// Pull ONE quiz + its submissions via GET /api/quizzes/<id>. This is the small,
+// reliable read the teacher's results view uses — unlike GET /api/state, which
+// ships every quiz (images and all) plus every submission and tends to die mid
+// transfer on a flaky mobile connection (ERR_HTTP2_PING_FAILED). The quiz owner
+// gets { quiz, submissions } back; merge both into local storage. Returns true
+// if the call succeeded (the caller should then re-render).
+async function pullQuizSubmissionsFromCloud(quizId) {
+  const id = (quizId || '').toString().trim();
+  if (!id || !canUseNetworkSync() || !getAuthSessionToken()) return false;
+  try {
+    const res = await makeAbortableSyncFetch(buildApiUrl(`/api/quizzes/${encodeURIComponent(id)}`), {
+      cache: 'no-store',
+      headers: withAuthHeader({})
+    });
+    if (!res.ok) {
+      console.warn('Quiz/submissions pull failed for', id, '— HTTP', res.status);
+      return false;
+    }
+    const payload = await res.json();
+    const cloudQuiz = payload && payload.quiz && typeof payload.quiz === 'object' ? payload.quiz : null;
+    if (cloudQuiz && cloudQuiz.id) {
+      const localQuizzes = getAllQuizzes({ includeDeleted: true });
+      saveAllQuizzes(mergeRecordMapForSync(localQuizzes || {}, { [cloudQuiz.id]: cloudQuiz }), { skipNetworkSync: true });
+    }
+    if (Array.isArray(payload.submissions)) {
+      const localSubs = getAllSubmissions({ includeDeleted: true });
+      saveAllSubmissions(mergeSubmissionListsForSync(localSubs || [], payload.submissions), { includeDeleted: true, skipNetworkSync: true });
+      console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud.`);
+    }
+    return true;
+  } catch (e) {
+    console.warn('Quiz/submissions pull errored for', id, ':', e && e.message ? e.message : e);
+    return false;
+  }
+}
+
 // Refresh the shared state once when the teacher navigates into (or between)
 // their dashboard pages so new student submissions / attempts appear. This is
 // the read-side counterpart to manual sync: it's reactive to an actual
@@ -11462,6 +11498,14 @@ function printStudentSummary(quiz, submission) {
 function renderResultsView() {
   const q = state.currentQuiz;
   if (!q) return document.createElement('div');
+  // First render after navigating into this quiz's results → pull its
+  // submissions from the cloud with the small per-quiz GET (not the heavy,
+  // flaky /api/state blob), then re-render. `_lastRenderedView` still holds the
+  // PREVIOUS view here (render() updates it after building the view), so this
+  // fires once per navigation in and doesn't loop on the follow-up re-render.
+  if (_lastRenderedView !== 'teacher.results' && _lastRenderedView !== 'results' && canUseNetworkSync() && getAuthSessionToken()) {
+    pullQuizSubmissionsFromCloud(q.id).then((ok) => { if (ok && state.view === 'teacher.results') render(); }).catch(() => {});
+  }
   regradeSubmissionsForQuiz(q);
   const submissions = getAllSubmissions().filter(s => s.quizId === q.id);
   const totalMarks = getQuizTotalMarks(q);
@@ -11550,7 +11594,10 @@ function renderResultsView() {
       btnRefreshResults.textContent = 'Refreshing…';
       try {
         if (canUseNetworkSync() && getAuthSessionToken()) {
-          await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 });
+          // The reliable bit first: this quiz's own submissions via the small
+          // per-quiz endpoint. Then a best-effort whole-dashboard refresh.
+          await pullQuizSubmissionsFromCloud(q.id);
+          await pullSharedStateSilently({ forcePull: true, timeoutMs: 8000 }).catch(() => {});
           _lastTeacherNavPullAt = Date.now();
         }
       } catch (e) {}

@@ -29,6 +29,7 @@ const INCLUDE = [
   'style.css',
   'ope-icon-192.png',
   'ope-icon-512.png',
+  'summary-preview.png',
   '_redirects',
   '_routes.json',
   '_headers'
