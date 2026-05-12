@@ -397,6 +397,9 @@ let _lastRenderedView = '';
 // page (so new student attempts show up). Not a timer — fires on navigation
 // only — and at most once a minute so it never becomes the old polling loop.
 let _lastTeacherNavPullAt = 0;
+// Which quiz the results view has already pulled submissions for this session.
+// Stops the per-quiz pull from re-firing on every re-render of the results page.
+let _resultsPulledForQuizId = '';
 let _pendingScrollRestore = null;
 let _overlayBodyLockObserver = null;
 
@@ -2721,14 +2724,58 @@ function slimSubmissionListForStorage(list) {
   return changed ? out : list;
 }
 
+// Webcam proctoring frames (snapshots[].data — a base64 JPEG every interval)
+// are by far the heaviest thing in a submission. With dozens of submissions
+// they alone can exceed the browser's localStorage quota. They're part of the
+// payload that's pushed to the cloud, so dropping them LOCALLY is lossless —
+// the frames re-arrive when that submission is pulled again. `keepFramesFor`
+// (a quizId) keeps frames for the quiz currently being looked at.
+function dropSubmissionWebcamFrames(list, keepFramesFor = null) {
+  return (Array.isArray(list) ? list : []).map((s) => {
+    if (!s || typeof s !== 'object' || !Array.isArray(s.snapshots) || !s.snapshots.length) return s;
+    if (keepFramesFor != null && String(s.quizId) === String(keepFramesFor)) return s;
+    if (!s.snapshots.some((sn) => sn && sn.data)) return s;
+    return { ...s, snapshots: s.snapshots.map((sn) => (sn && sn.data ? { at: sn.at } : sn)) };
+  });
+}
+
+// Write the submissions list to localStorage, surviving a near-full quota by
+// progressively shedding the bulkiest dispensable data (webcam frames). Returns
+// true if it managed to write something.
+function writeSubmissionsToStorage(list, keepFramesFor = null) {
+  const attempts = [
+    () => list,
+    () => dropSubmissionWebcamFrames(list, keepFramesFor),
+    () => dropSubmissionWebcamFrames(list, null)
+  ];
+  for (let i = 0; i < attempts.length; i += 1) {
+    try {
+      localStorage[STORAGE_KEYS.submissions] = JSON.stringify(attempts[i]());
+      if (i === 1) console.warn('Submissions storage was full — dropped webcam proctoring frames for other quizzes locally (still on the cloud).');
+      if (i === 2) console.warn('Submissions storage was very full — dropped ALL webcam proctoring frames locally (still on the cloud).');
+      return true;
+    } catch (e) { /* try the next, lighter attempt */ }
+  }
+  console.error('Submissions storage write failed even after dropping all webcam frames.');
+  if (typeof showNotification === 'function') showNotification('This device is low on storage — some data could not be saved. Clear old browsing data or use a different browser.', 'error', 9000);
+  return false;
+}
+
 function saveAllSubmissions(submissions, options = {}) {
   const keepDeleted = options.keepDeleted !== false;
-  const saveOptions = options.skipNetworkSync ? { skipNetworkSync: true } : undefined;
   const nextVisible = slimSubmissionListForStorage(Array.isArray(submissions) ? submissions : []);
   const nextValue = keepDeleted
     ? mergeSubmissionRecordsForSync(nextVisible, getAllStoredSubmissions().filter(isDeletedSubmission))
     : mergeSubmissionRecordsForSync(nextVisible, []);
-  save(STORAGE_KEYS.submissions, nextValue, saveOptions);
+  const wrote = writeSubmissionsToStorage(nextValue, options.keepFramesFor);
+  // Push the FULL value (with frames) to the cloud even if the local copy had
+  // to be trimmed — the cloud keeps the canonical, complete record. (For a
+  // logged-in teacher the bulk submissions push is a no-op anyway; this matters
+  // for the anonymous student-submit path.)
+  if (wrote && !options.skipNetworkSync && NETWORK_SYNC_KEYS.includes(STORAGE_KEYS.submissions)) {
+    markNetworkKeyDirty(STORAGE_KEYS.submissions);
+    pushNetworkValue(STORAGE_KEYS.submissions, nextValue);
+  }
 }
 function saveAllTeachers(t) { save(STORAGE_KEYS.teachers, t); }
 function saveAllTokenTransactions(transactions) { save(STORAGE_KEYS.tokenTransactions, Array.isArray(transactions) ? transactions : []); }
@@ -4356,15 +4403,33 @@ async function pullQuizSubmissionsFromCloud(quizId) {
       return false;
     }
     const payload = await res.json();
-    // We only want this quiz's SUBMISSIONS here — don't re-write the (image-
-    // heavy) quiz payload on every results-view open; it risks blowing the
-    // localStorage quota and the teacher already has the quiz locally anyway.
-    if (Array.isArray(payload.submissions)) {
-      const localSubs = getAllSubmissions({ includeDeleted: true });
-      saveAllSubmissions(mergeSubmissionListsForSync(localSubs || [], payload.submissions), { skipNetworkSync: true });
-      const storedForQuiz = getAllSubmissions().filter((s) => s && String(s.quizId) === String(id)).length;
-      console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud; ${storedForQuiz} now stored locally for it.`);
+    if (!Array.isArray(payload.submissions)) {
+      console.warn('Quiz/submissions pull for', id, '— response had no submissions array');
+      return true;
     }
+    const cloudSubs = payload.submissions.filter((s) => s && typeof s === 'object');
+    console.log(`Quiz ${id}: cloud returned ${payload.submissions.length} row(s), ${cloudSubs.length} usable —`,
+      cloudSubs.map((s) => ({ sid: s.submissionId, qid: s.quizId, email: s.email, when: s.submittedAt, deleted: !!s.deletedAt })));
+    // Merge cloud over local (cloud as primary, so a live cloud copy can't be
+    // beaten by a stale local one of the same id), then write straight to
+    // storage — going through saveAllSubmissions re-merges local "deleted"
+    // tombstones back in, which can hide a freshly-pulled live submission.
+    const localStored = getAllStoredSubmissions();
+    const merged = mergeSubmissionRecordsForSync(cloudSubs, Array.isArray(localStored) ? localStored : []);
+    const forQuiz = merged.filter((s) => s && String(s.quizId) === String(id));
+    const liveForQuiz = forQuiz.filter((s) => !isDeletedSubmission(s));
+    console.log(`Quiz ${id}: after merge — ${liveForQuiz.length} live / ${forQuiz.length} total for this quiz, ${merged.length} submissions overall.`);
+    const slimmed = slimSubmissionListForStorage(merged);
+    // keepFramesFor: id → keep webcam frames for the quiz being looked at, shed
+    // the rest if localStorage is full (the cloud keeps them all).
+    const wrote = writeSubmissionsToStorage(slimmed, id);
+    if (!wrote) {
+      console.error(`Quiz ${id}: could not write submissions to localStorage (${merged.length} submissions). They stay on the cloud; clear old browsing data or use a less-full browser.`);
+      return false;
+    }
+    clearNetworkKeyDirty(STORAGE_KEYS.submissions);
+    const storedForQuiz = getAllSubmissions().filter((s) => s && String(s.quizId) === String(id)).length;
+    console.log(`Pulled ${payload.submissions.length} submission(s) for quiz ${id} from cloud; ${storedForQuiz} now stored locally for it.`);
     return true;
   } catch (e) {
     console.warn('Quiz/submissions pull errored for', id, ':', e && e.message ? e.message : e);
@@ -11497,15 +11562,13 @@ function printStudentSummary(quiz, submission) {
 function renderResultsView() {
   const q = state.currentQuiz;
   if (!q) return document.createElement('div');
-  // First render after navigating into this quiz's results → pull its
-  // submissions from the cloud with the small per-quiz GET (not the heavy,
-  // flaky /api/state blob), then re-render. `_lastRenderedView` still holds the
-  // PREVIOUS view here (render() updates it after building the view), so this
-  // fires once per navigation in and doesn't loop on the follow-up re-render.
-  if (_lastRenderedView !== 'teacher.results' && _lastRenderedView !== 'results' && canUseNetworkSync() && getAuthSessionToken()) {
+  // Once per quiz per session: pull its submissions from the small per-quiz GET
+  // (not the heavy, flaky /api/state blob), then re-render. Guarded by
+  // _resultsPulledForQuizId so it can't re-fire on the follow-up re-render
+  // (which would loop). The Refresh button resets it to force a re-pull.
+  if (q.id && _resultsPulledForQuizId !== q.id && canUseNetworkSync() && getAuthSessionToken()) {
+    _resultsPulledForQuizId = q.id;
     pullQuizSubmissionsFromCloud(q.id).then((ok) => {
-      // Re-render if we're still looking at this quiz's results — regardless of
-      // the exact view-name string ('results' vs 'teacher.results').
       if (ok && state.currentQuiz && String(state.currentQuiz.id) === String(q.id)) render();
     }).catch(() => {});
   }
@@ -11602,7 +11665,9 @@ function renderResultsView() {
         if (canUseNetworkSync() && getAuthSessionToken()) {
           // The reliable bit first: this quiz's own submissions via the small
           // per-quiz endpoint. Then a best-effort whole-dashboard refresh.
+          _resultsPulledForQuizId = ''; // force the per-quiz pull to run again
           await pullQuizSubmissionsFromCloud(q.id);
+          _resultsPulledForQuizId = q.id;
           await pullSharedStateSilently({ forcePull: true, timeoutMs: 8000 }).catch(() => {});
           _lastTeacherNavPullAt = Date.now();
         }
