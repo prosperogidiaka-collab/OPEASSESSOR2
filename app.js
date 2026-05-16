@@ -59,6 +59,12 @@ const DEFAULT_NETWORK_SYNC_RETRY_MS = 1500;
 // so a slow/cold serverless backend doesn't leave the user staring at a blank
 // screen — the app falls back to local data and a background sync still runs.
 const DEFAULT_STARTUP_SYNC_TIMEOUT_MS = 2000;
+// Teacher/admin workspaces need a longer read window than the public/student
+// routes because /api/state can legitimately include many quizzes, teachers,
+// and submissions. If the wait still expires, we let the request finish in the
+// background and force a re-render when the late result lands.
+const DEFAULT_WORKSPACE_SYNC_TIMEOUT_MS = 12000;
+const DEFAULT_TEACHER_NAV_SYNC_TIMEOUT_MS = 10000;
 const PORTABLE_QUIZ_CODE_PREFIX = 'OPEQUIZ:';
 const MAX_PORTABLE_LINK_LENGTH = 3500;
 const DEFAULT_SUPPORT_SETTINGS = {
@@ -503,7 +509,9 @@ function writeLocalStorageValue(key, value) {
       skipAppStateStorageWritesForSession = true;
       return false;
     }
-    if (isQuotaExceededError(e)) notifyStorageQuotaExceeded();
+    if (isQuotaExceededError(e)) {
+      console.warn(`Local storage write skipped for ${key} because the browser quota is full.`);
+    }
     return false;
   }
 }
@@ -955,16 +963,33 @@ function shouldHydrateSharedStateOnStartup(params = new URLSearchParams()) {
 async function pullSharedStateSilently(options = {}) {
   if (!canUseNetworkSync()) return false;
   await flushPendingNetworkWrites([], { pullAfter: false });
-  return withTimeout(
-    pullNetworkState(options.forcePull !== false),
+  const pullPromise = Promise.resolve(pullNetworkState(options.forcePull !== false));
+  const timeoutToken = {};
+  const result = await withTimeout(
+    pullPromise,
     options.timeoutMs || DEFAULT_STARTUP_SYNC_TIMEOUT_MS,
-    false
+    timeoutToken
   );
+  if (result === timeoutToken) {
+    if (options.forceRenderOnLate) {
+      pullPromise
+        .then((changed) => {
+          if (changed) applySharedStateUiRefresh(true, { forceRender: true });
+        })
+        .catch(() => {});
+    }
+    return false;
+  }
+  return result;
 }
 
 async function hydrateSharedStateBeforeFirstRender(params = new URLSearchParams()) {
   if (!shouldHydrateSharedStateOnStartup(params)) return false;
-  return pullSharedStateSilently({ forcePull: true, timeoutMs: DEFAULT_STARTUP_SYNC_TIMEOUT_MS });
+  return pullSharedStateSilently({
+    forcePull: true,
+    timeoutMs: DEFAULT_STARTUP_SYNC_TIMEOUT_MS,
+    forceRenderOnLate: !!normalizeEmail(state.teacherId || getTeacherId())
+  });
 }
 
 async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
@@ -973,7 +998,8 @@ async function openTeacherWorkspace(targetView = 'teacher', options = {}) {
   if (sessionTeacherId && canUseNetworkSync() && shouldPullSharedState) {
     await pullSharedStateSilently({
       forcePull: options.forcePull !== false,
-      timeoutMs: options.timeoutMs || DEFAULT_STARTUP_SYNC_TIMEOUT_MS
+      timeoutMs: options.timeoutMs || DEFAULT_WORKSPACE_SYNC_TIMEOUT_MS,
+      forceRenderOnLate: true
     });
   }
   state.view = isTeacherLoggedIn() ? targetView : 'teacher.login';
@@ -2813,7 +2839,7 @@ function writeSubmissionsToStorage(list, keepFramesFor = null) {
     } catch (e) { /* try the next, lighter attempt */ }
   }
   console.error('Submissions storage write failed even after dropping all webcam frames.');
-  if (typeof showNotification === 'function') showNotification('This device is low on storage — some data could not be saved. Clear old browsing data or use a different browser.', 'error', 9000);
+  if (typeof showNotification === 'function') notifyStorageQuotaExceeded();
   return false;
 }
 
@@ -4594,7 +4620,11 @@ function maybePullSharedStateOnTeacherNav(previousView) {
   if (!canUseNetworkSync() || !getAuthSessionToken()) return;
   if (Date.now() - Math.max(_lastTeacherNavPullAt, lastNetworkPullAt) < 60000) return;
   _lastTeacherNavPullAt = Date.now();
-  pullSharedStateSilently({ forcePull: true, timeoutMs: 4500 })
+  pullSharedStateSilently({
+    forcePull: true,
+    timeoutMs: DEFAULT_TEACHER_NAV_SYNC_TIMEOUT_MS,
+    forceRenderOnLate: true
+  })
     .then((changed) => { if (changed) applySharedStateUiRefresh(true, { forceRender: true }); })
     .catch(() => {});
 }
@@ -5173,7 +5203,11 @@ function renderTeacherAuth() {
               expiresInMs: result.data.expiresInMs
             });
             await recordLocalAuthForPassword(id, password);
-            await pullSharedStateSilently({ forcePull: true, timeoutMs: 5000 }).catch(() => {});
+            await pullSharedStateSilently({
+              forcePull: true,
+              timeoutMs: DEFAULT_WORKSPACE_SYNC_TIMEOUT_MS,
+              forceRenderOnLate: true
+            }).catch(() => {});
             showNotification('Teacher ID created', 'success', 6000);
           } else {
             const isAdminLogin = id === SUPER_ADMIN_EMAIL;
@@ -5196,7 +5230,11 @@ function renderTeacherAuth() {
             // record (and quizzes/submissions) before the workspace renders —
             // otherwise a wiped device authenticates fine but getCurrentTeacher()
             // is empty and openTeacherWorkspace bounces straight back to login.
-            await pullSharedStateSilently({ forcePull: true, timeoutMs: 6000 }).catch(() => {});
+            await pullSharedStateSilently({
+              forcePull: true,
+              timeoutMs: DEFAULT_WORKSPACE_SYNC_TIMEOUT_MS,
+              forceRenderOnLate: true
+            }).catch(() => {});
           }
         } else {
           // Path B: offline. Allow login only — never registration — and only
