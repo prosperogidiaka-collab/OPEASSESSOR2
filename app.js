@@ -5577,17 +5577,43 @@ function getTeacherQuizKeys() {
   });
 }
 
+function buildQuestionBankQuizSummary(quiz = {}) {
+  const questionCount = (quiz.subjects || []).reduce((sum, subject) => {
+    const source = Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions;
+    return sum + ((source || []).filter(isMeaningfulQuestion).length);
+  }, 0);
+  return { ...quiz, questionCount };
+}
+
+function getAdminTemplateQuizKeys() {
+  const all = getAllQuizzes();
+  const myEmail = normalizeEmail(state.teacherId);
+  return Object.keys(all).filter((key) => {
+    const owner = normalizeEmail(all[key].teacherId || '');
+    return owner === SUPER_ADMIN_EMAIL && owner !== myEmail;
+  });
+}
+
+function canViewQuestionBankQuiz(quiz = null) {
+  if (!quiz) return false;
+  if (isSuperAdmin()) return true;
+  const owner = normalizeEmail(quiz.teacherId || '');
+  const current = normalizeEmail(state.teacherId);
+  return !!current && (!owner || owner === current || owner === SUPER_ADMIN_EMAIL);
+}
+
+function canSetQuizFromAdminTemplate(quiz = null) {
+  if (!quiz || isSuperAdmin()) return false;
+  return normalizeEmail(quiz.teacherId || '') === SUPER_ADMIN_EMAIL && !!normalizeEmail(state.teacherId);
+}
+
 function renderQuestionBankView() {
   const all = getAllQuizzes();
   const keys = getTeacherQuizKeys();
-  const quizSets = keys.map(id => {
-    const quiz = all[id];
-    const questionCount = (quiz.subjects || []).reduce((sum, subject) => {
-      const source = Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions;
-      return sum + ((source || []).filter(isMeaningfulQuestion).length);
-    }, 0);
-    return { ...quiz, questionCount };
-  }).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const quizSets = keys.map((id) => buildQuestionBankQuizSummary(all[id])).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const adminQuizSets = isSuperAdmin()
+    ? []
+    : getAdminTemplateQuizKeys().map((id) => buildQuestionBankQuizSummary(all[id])).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   const container = document.createElement('div');
   container.innerHTML = `
@@ -5618,18 +5644,71 @@ function renderQuestionBankView() {
         </table>
       </div>
     </div>
+    ${isSuperAdmin() ? '' : `
+      <div class="card" style="margin-top:16px">
+        <div class="card-header"><h3>Admin Quizzes</h3></div>
+        <div class="small" style="padding:0 16px 14px;line-height:1.7">Question content prepared by the admin appears here. View the content first if you want to inspect it, or choose Set Quiz to open the normal quiz-setting workspace with that content already loaded under your account.</div>
+        <div class="table-wrap">
+          <table class="table-dense">
+            <thead><tr><th>Quiz</th><th>Quiz ID</th><th>Subjects</th><th>Questions</th><th>Updated</th><th>Actions</th></tr></thead>
+            <tbody>
+              ${adminQuizSets.map((q) => `
+                <tr>
+                  <td>${escapeHtml(q.title || 'Untitled Quiz')}</td>
+                  <td>${escapeHtml(q.id || '')}</td>
+                  <td>${(q.subjects || []).length}</td>
+                  <td>${q.questionCount}</td>
+                  <td>${q.updatedAt ? new Date(q.updatedAt).toLocaleString() : q.createdAt ? new Date(q.createdAt).toLocaleString() : 'Not recorded'}</td>
+                  <td>
+                    <div class="row-action-shell">
+                      <select class="input-beautiful row-action-select adminQuizActionSelect" data-id="${escapeHtml(q.id || '')}">
+                        <option value="">Choose action</option>
+                        <option value="view-content">View Content</option>
+                        <option value="set-quiz">Set Quiz</option>
+                      </select>
+                      <button class="btn btn-ghost btn-sm btnApplyAdminQuizAction" data-id="${escapeHtml(q.id || '')}">Apply</button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('') || '<tr><td colspan="6">No admin quizzes are available yet. When the admin saves and syncs one, it will appear here.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `}
   `;
   setTimeout(() => {
     document.getElementById('bankCreateQuiz').onclick = () => { canSetQuestions() ? showCreateQuizModal() : showLicenseRequired(); };
     document.querySelectorAll('.btnViewQuizSet').forEach(btn => btn.onclick = (ev) => showQuizSetDetails(ev.currentTarget.dataset.id));
+    document.querySelectorAll('.btnApplyAdminQuizAction').forEach((button) => {
+      button.onclick = (event) => {
+        const quizId = event.currentTarget.dataset.id || '';
+        const selector = event.currentTarget.parentElement.querySelector('.adminQuizActionSelect');
+        const action = selector ? selector.value : '';
+        if (!action) return showNotification('Choose an action first', 'error');
+        if (action === 'view-content') {
+          showQuizSetDetails(quizId);
+        } else if (action === 'set-quiz') {
+          if (!canSetQuestions()) return showLicenseRequired();
+          showCreateQuizModal('', { templateQuizId: quizId });
+        }
+        if (selector) selector.value = '';
+      };
+    });
   }, 0);
   return container;
 }
 
 function showQuizSetDetails(quizId) {
   const quiz = getAllQuizzes()[quizId];
-  if (!quiz || (quiz.teacherId !== state.teacherId && !isSuperAdmin())) return showNotification('Quiz set not found', 'error');
+  if (!quiz || !canViewQuestionBankQuiz(quiz)) return showNotification('Quiz set not found', 'error');
   const canEditThisQuiz = normalizeEmail(quiz.teacherId) === normalizeEmail(state.teacherId) && canSetQuestions();
+  const canSetFromTemplate = canSetQuizFromAdminTemplate(quiz);
+  const contentInfoMessage = canEditThisQuiz
+    ? 'Spacing, line breaks, bold text, lists, superscript, subscript, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.'
+    : canSetFromTemplate
+      ? 'This admin quiz is view-only here. Use Set Quiz to open the normal quiz-setting workspace with this content already loaded under your account.'
+      : 'This content is view-only in your current role or current token access state.';
   let modal = document.getElementById('quizSetDetails'); if (modal) modal.remove();
   modal = document.createElement('div'); modal.id='quizSetDetails'; modal.style.position='fixed'; modal.style.inset='0'; modal.style.background='rgba(0,0,0,0.45)'; modal.style.zIndex=20000; modal.style.display='flex'; modal.style.alignItems='center'; modal.style.justifyContent='center';
   const inner = document.createElement('div'); inner.className='card-beautiful p-6'; inner.style.width='94%'; inner.style.maxWidth='1000px'; inner.style.maxHeight='86vh'; inner.style.overflow='auto';
@@ -5795,7 +5874,7 @@ function showQuizSetDetails(quizId) {
           ${canEditThisQuiz ? '<button type="button" id="saveQuizContentChanges" class="btn btn-primary btn-sm">Save Content Changes</button>' : ''}
         </div>
       </div>
-      <div class="small" style="margin-bottom:12px;line-height:1.7">${canEditThisQuiz ? 'Spacing, line breaks, bold text, lists, superscript, subscript, and special characters stay visible here while you edit. Save when you finish this subject so the updated content is used the next time students open this quiz.' : 'This content is view-only in your current role or current token access state.'}</div>
+      <div class="small" style="margin-bottom:12px;line-height:1.7">${escapeHtml(contentInfoMessage)}</div>
       <div class="card" style="padding:14px;margin-bottom:14px">
         <div class="h3">${getSubjectLabel(subject, selectedSubjectIndex)}</div>
         <div id="quizSubjectQuestionCount" class="small" style="margin-top:6px">${questions.length} question(s) in this subject</div>
@@ -5902,23 +5981,32 @@ function showQuizSetDetails(quizId) {
       <div>
         <div class="h2">${escapeHtml(quiz.title)}</div>
         <div class="small">Quiz ID: ${quiz.id}</div>
-        <div class="small">Student code: ${escapeHtml(quiz.id)}</div>
+        <div class="small">${canSetFromTemplate ? 'Admin quiz template' : `Student code: ${escapeHtml(quiz.id)}`}</div>
       </div>
       <button id="closeQuizSetDetails" class="btn btn-ghost">Close</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-      <button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>
-      <button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>
-      <button id="shareQuizSetLink" class="btn btn-ghost btn-sm">Share Link</button>
+      ${canSetFromTemplate ? '<button id="setQuizFromTemplateBtn" class="btn btn-primary btn-sm">Set Quiz</button>' : ''}
+      ${canSetFromTemplate ? '' : '<button id="copyQuizSetId" class="btn btn-ghost btn-sm">Copy Student Code</button>'}
+      ${canSetFromTemplate ? '' : '<button id="copyQuizSetLink" class="btn btn-primary btn-sm">Copy Link</button>'}
+      ${canSetFromTemplate ? '' : '<button id="shareQuizSetLink" class="btn btn-ghost btn-sm">Share Link</button>'}
       ${canEditThisQuiz ? '<button id="deleteQuizSetBtn" class="btn btn-ghost btn-sm">Delete Quiz</button>' : ''}
     </div>
     <div id="quizSetDetailsBody"></div>
   `;
   modal.appendChild(inner); document.body.appendChild(modal);
   document.getElementById('closeQuizSetDetails').onclick = () => modal.remove();
-  document.getElementById('copyQuizSetId').onclick = async () => { await copyQuizAccessCode(getAllQuizzes()[quizId] || draftQuiz); };
-  document.getElementById('copyQuizSetLink').onclick = async () => { await copyQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
-  document.getElementById('shareQuizSetLink').onclick = async () => { await shareQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
+  const setQuizFromTemplateBtn = document.getElementById('setQuizFromTemplateBtn');
+  if (setQuizFromTemplateBtn) setQuizFromTemplateBtn.onclick = () => {
+    modal.remove();
+    showCreateQuizModal('', { templateQuizId: quizId });
+  };
+  const copyQuizSetIdBtn = document.getElementById('copyQuizSetId');
+  if (copyQuizSetIdBtn) copyQuizSetIdBtn.onclick = async () => { await copyQuizAccessCode(getAllQuizzes()[quizId] || draftQuiz); };
+  const copyQuizSetLinkBtn = document.getElementById('copyQuizSetLink');
+  if (copyQuizSetLinkBtn) copyQuizSetLinkBtn.onclick = async () => { await copyQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
+  const shareQuizSetLinkBtn = document.getElementById('shareQuizSetLink');
+  if (shareQuizSetLinkBtn) shareQuizSetLinkBtn.onclick = async () => { await shareQuizAccessLink(getAllQuizzes()[quizId] || draftQuiz); };
   const deleteQuizSetBtn = document.getElementById('deleteQuizSetBtn');
   if (deleteQuizSetBtn) deleteQuizSetBtn.onclick = async () => {
     const deleted = await deleteQuizById(quizId, { onDeleted: () => modal.remove() });
@@ -6476,6 +6564,19 @@ function renderTeacherGuideView() {
         'Add certificate signatories only if you need them, and decide whether each signatory name should show or stay hidden on the certificate.',
         'Saving a brand-new quiz uses either 1 Token or your active unlimited plan on the registered device. Editing an existing quiz does not deduct a token.',
         'Save the quiz, then use Sync To Cloud if the quiz still shows Pending cloud sync.'
+      ]
+    },
+    {
+      id: 'admin-quizzes',
+      title: 'Use Admin Quizzes',
+      description: 'Reuse question content prepared by the admin.',
+      steps: [
+        'The super admin can open Question Bank, click Create Quiz, enter the question content, and save it as an admin quiz.',
+        'After the admin syncs that quiz, registered teachers can open Question Bank and scroll to the Admin Quizzes section.',
+        'Use the action dropdown on any admin quiz row and choose View Content when you want to inspect the full questions first.',
+        'Choose Set Quiz from the same dropdown when you want to use that content for your own students.',
+        'Set Quiz opens the normal quiz-setting workspace with the admin content already loaded, but it does not change the original admin quiz.',
+        'From that screen, you can edit the title, choose Public or Uploaded class, add or change the class, preview the questions, adjust settings, and save as your own quiz normally.'
       ]
     },
     {
@@ -8818,7 +8919,7 @@ function toSuperscriptText(value = '') {
 }
 
 function sanitizeScientificText(value = '') {
-  let text = (value || '').toString();
+  let text = decodeHtmlEntitiesDeep(value);
   text = text.replace(/\u00A0/g, ' ');
   text = text.replace(/©/g, 'Ω');
   text = text.replace(/¼F/gi, 'µF');
@@ -8827,6 +8928,39 @@ function sanitizeScientificText(value = '') {
   text = text.replace(/([0-9])\s*[xX]\s*10\s*(?:\^|\{)\s*([+\-−]?\d+)/g, (_, base, exponent) => `${base} × 10${toSuperscriptText(exponent)}`);
   text = text.replace(/10\s*(?:\^|\{)\s*([+\-−]?\d+)/g, (_, exponent) => `10${toSuperscriptText(exponent)}`);
   text = text.replace(/\bdeg\s*C\b/gi, '°C');
+  return text;
+}
+
+function decodeHtmlEntityReference(entity = '') {
+  const raw = (entity || '').toString();
+  const normalized = raw.toLowerCase();
+  const named = {
+    amp: '&',
+    apos: "'",
+    quot: '"',
+    lt: '<',
+    gt: '>',
+    nbsp: ' ',
+    '#39': "'"
+  };
+  if (Object.prototype.hasOwnProperty.call(named, normalized)) return named[normalized];
+  if (normalized.startsWith('#x')) {
+    const code = parseInt(normalized.slice(2), 16);
+    if (Number.isFinite(code)) return String.fromCodePoint(code);
+  } else if (normalized.startsWith('#')) {
+    const code = parseInt(normalized.slice(1), 10);
+    if (Number.isFinite(code)) return String.fromCodePoint(code);
+  }
+  return `&${raw};`;
+}
+
+function decodeHtmlEntitiesDeep(value = '', maxPasses = 4) {
+  let text = value == null ? '' : String(value);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const decoded = text.replace(/&(#x?[0-9a-f]+|[a-z][a-z0-9]+);/gi, (_, entity) => decodeHtmlEntityReference(entity));
+    if (decoded === text) break;
+    text = decoded;
+  }
   return text;
 }
 
@@ -12272,11 +12406,15 @@ function autoSubmit() {
 // =================== Quiz Creation / Import / Template ===================
 function gen6DigitId() { return Math.floor(100000 + Math.random()*900000).toString(); }
 
-function showCreateQuizModal(editQuizId = '') {
+function showCreateQuizModal(editQuizId = '', options = {}) {
   if (!requireTeacher()) return render();
   if (!canSetQuestions()) return showLicenseRequired();
   const editingQuiz = editQuizId ? getAllQuizzes()[editQuizId] : null;
+  const templateQuiz = !editingQuiz && options.templateQuizId ? getAllQuizzes()[options.templateQuizId] : null;
   if (editingQuiz && editingQuiz.teacherId !== state.teacherId && !isSuperAdmin()) return showNotification('Access denied: this quiz belongs to another teacher', 'error');
+  if (!editingQuiz && options.templateQuizId && !templateQuiz) return showNotification('Admin quiz template not found', 'error');
+  if (templateQuiz && !canSetQuizFromAdminTemplate(templateQuiz)) return showNotification('Admin quiz template not found', 'error');
+  const templateMode = !!templateQuiz && !editingQuiz;
   const quizOwnerId = editingQuiz?.teacherId || state.teacherId;
   const classNames = getTeacherClassNames(quizOwnerId);
   const classOptionsMarkup = classNames.map((className) => `<option value="${escapeHtml(className)}">${escapeHtml(className)}</option>`).join('');
@@ -12287,8 +12425,8 @@ function showCreateQuizModal(editQuizId = '') {
     <div class="quiz-builder-header">
       <div>
         <div class="quiz-builder-kicker">Quiz Workspace</div>
-        <h3>${editingQuiz ? 'Edit Quiz' : 'Create Quiz'}</h3>
-        <p>Organize your assessment settings in clear sections, then save without changing the underlying quiz logic.</p>
+        <h3>${editingQuiz ? 'Edit Quiz' : templateMode ? 'Set Quiz from Admin Content' : 'Create Quiz'}</h3>
+        <p>${templateMode ? 'The admin question content is already loaded below. Review the settings, choose Public or Uploaded class, preview anything you want, and save to create your own quiz.' : 'Organize your assessment settings in clear sections, then save without changing the underlying quiz logic.'}</p>
       </div>
       <button id="closeCreate" class="btn-secondary quiz-close-btn" aria-label="Close quiz editor">Close</button>
     </div>
@@ -12847,6 +12985,21 @@ function showCreateQuizModal(editQuizId = '') {
       document.getElementById('cqWebcamRequired').checked = !!editingQuiz.webcamRequired;
       document.getElementById('cqDefaultQuestionType').value = normalizeQuestionType(editingQuiz.defaultQuestionType || inferQuizDefaultQuestionType(editingQuiz));
       normalizeCertificateSignatories(editingQuiz.certificateSignatories).forEach(createSignatoryRow);
+    } else if (templateQuiz) {
+      document.getElementById('cqTitle').value = templateQuiz.title || '';
+      subjectsList.innerHTML = '';
+      (templateQuiz.subjects || []).forEach(subject => createSubjectRow({
+        name: subject.name || 'General',
+        questionCount: subject.questionCount ?? null,
+        totalMarks: subject.totalMarks ?? subject.maxScore ?? null,
+        importedQuestions: Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions,
+        questionImages: Array.isArray(subject.questionImages) && subject.questionImages.length
+          ? subject.questionImages
+          : deriveSubjectQuestionImagesFromQuestions(Array.isArray(subject.bankQuestions) && subject.bankQuestions.length ? subject.bankQuestions : subject.questions)
+      }));
+      audienceSelect.value = 'public';
+      document.getElementById('cqCalculatorType').value = 'basic';
+      document.getElementById('cqDefaultQuestionType').value = normalizeQuestionType(templateQuiz.defaultQuestionType || inferQuizDefaultQuestionType(templateQuiz));
     } else {
       audienceSelect.value = 'public';
       document.getElementById('cqCalculatorType').value = 'basic';
@@ -14911,5 +15064,3 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
   }
 });
-
-

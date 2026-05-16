@@ -77,7 +77,7 @@ function toSuperscriptText(value = '') {
 }
 
 function sanitizeScientificText(value = '') {
-  let text = (value || '').toString();
+  let text = decodeHtmlEntitiesDeep(value);
   text = text.replace(/\u00A0/g, ' ');
   text = text.replace(/©/g, 'Ω');
   text = text.replace(/¼F/gi, 'µF');
@@ -87,6 +87,49 @@ function sanitizeScientificText(value = '') {
   text = text.replace(/10\s*(?:\^|\{)\s*([+\-−]?\d+)/g, (_, exponent) => `10${toSuperscriptText(exponent)}`);
   text = text.replace(/\bdeg\s*C\b/gi, '°C');
   return text;
+}
+
+function decodeHtmlEntityReference(entity = '') {
+  const raw = (entity || '').toString();
+  const normalized = raw.toLowerCase();
+  const named = {
+    amp: '&',
+    apos: "'",
+    quot: '"',
+    lt: '<',
+    gt: '>',
+    nbsp: ' ',
+    '#39': "'"
+  };
+  if (Object.prototype.hasOwnProperty.call(named, normalized)) return named[normalized];
+  if (normalized.startsWith('#x')) {
+    const code = parseInt(normalized.slice(2), 16);
+    if (Number.isFinite(code)) return String.fromCodePoint(code);
+  } else if (normalized.startsWith('#')) {
+    const code = parseInt(normalized.slice(1), 10);
+    if (Number.isFinite(code)) return String.fromCodePoint(code);
+  }
+  return `&${raw};`;
+}
+
+function decodeHtmlEntitiesDeep(value = '', maxPasses = 4) {
+  let text = value == null ? '' : String(value);
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const decoded = text.replace(/&(#x?[0-9a-f]+|[a-z][a-z0-9]+);/gi, (_, entity) => decodeHtmlEntityReference(entity));
+    if (decoded === text) break;
+    text = decoded;
+  }
+  return text;
+}
+
+function decodeHtmlEntitiesInTextSegments(html = '') {
+  return (html || '')
+    .split(/(<[^>]+>)/g)
+    .map((segment) => {
+      if (!segment || segment.startsWith('<')) return segment;
+      return escapeHtml(sanitizeScientificText(segment));
+    })
+    .join('');
 }
 
 function normalizeRichText(value) {
@@ -121,18 +164,19 @@ function renderRichTextHtml(value = '') {
   if (!hasRichTextMarkup(raw)) {
     return escapeHtml(sanitizeScientificText(raw)).replace(/\n/g, '<br>');
   }
-  return sanitizeBasicHtml(raw);
+  return decodeHtmlEntitiesInTextSegments(sanitizeBasicHtml(raw))
+    .replace(/(?:<br\s*\/?>\s*){3,}/gi, '<br><br>');
 }
 
 function stripHtmlToText(value = '') {
-  return normalizeRichText(value)
+  return sanitizeScientificText(normalizeRichText(value)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|ul|ol)>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+    .trim());
 }
 
 function optionText(question, letter) {
